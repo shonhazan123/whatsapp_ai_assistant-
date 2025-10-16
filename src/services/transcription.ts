@@ -7,19 +7,13 @@ import { logger } from '../utils/logger';
 
 export async function transcribeAudio(audioBuffer: Buffer): Promise<string> {
   try {
-    const formData = new FormData();
-    
-    // Convert buffer to stream
-    const audioStream = Readable.from(audioBuffer);
-    formData.append('file', audioStream, {
-      filename: 'audio.ogg',
-      contentType: 'audio/ogg'
-    });
-    formData.append('model', 'whisper-1');
+    // Create a File-like object from the buffer
+    const audioFile = new File([audioBuffer], 'audio.ogg', { type: 'audio/ogg' });
 
     const transcription = await openai.audio.transcriptions.create({
-      file: audioStream as any,
-      model: 'whisper-1'
+      file: audioFile,
+      model: 'whisper-1',
+      language: 'he' // Hebrew language support
     });
 
     logger.info('Audio transcribed successfully');

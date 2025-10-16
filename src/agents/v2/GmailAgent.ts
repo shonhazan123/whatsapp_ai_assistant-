@@ -1,0 +1,76 @@
+import { BaseAgent } from '../../core/base/BaseAgent';
+import { FunctionDefinition } from '../../core/types/AgentTypes';
+import { IFunctionHandler } from '../../core/interfaces/IAgent';
+import { OpenAIService } from '../../services/ai/OpenAIService';
+import { GmailService } from '../../services/email/GmailService';
+import { logger } from '../../utils/logger';
+import { GmailFunction } from '../functions/GmailFunctions';
+
+export class GmailAgent extends BaseAgent {
+  private gmailService: GmailService;
+
+  constructor(
+    openaiService: OpenAIService,
+    functionHandler: IFunctionHandler,
+    loggerInstance: any = logger
+  ) {
+    super(openaiService, functionHandler, logger);
+
+    // Initialize services
+    this.gmailService = new GmailService(logger);
+
+    // Register functions
+    this.registerFunctions();
+  }
+
+  async processRequest(message: string, userPhone: string): Promise<string> {
+    try {
+      this.logger.info('📧 Gmail Agent activated');
+      this.logger.info(`📝 Processing email request: "${message}"`);
+      
+      return await this.executeWithAI(
+        message,
+        userPhone,
+        this.getSystemPrompt(),
+        this.getFunctions()
+      );
+    } catch (error) {
+      this.logger.error('Gmail agent error:', error);
+      return 'Sorry, I encountered an error with your email request.';
+    }
+  }
+
+  getSystemPrompt(): string {
+    return `# Role  
+You are a Gmail agent. Your tasks include sending emails, retrieving emails, and managing email operations.
+
+# Available Functions
+
+1. **gmailOperations** - Handle all Gmail operations
+   - Send emails
+   - Get emails (all, unread, search)
+   - Reply to emails
+   - Mark emails as read/unread
+   - Get specific email by ID
+
+# CRITICAL LANGUAGE RULES:
+- ALWAYS respond in the same language as the user's message
+- If user writes in Hebrew, respond in Hebrew
+- If user writes in English, respond in English
+- For queries like "שלח מייל" or "בדוק את התיבה שלי", use appropriate Gmail operations
+
+Current date/time: ${new Date().toISOString()}
+User timezone: Asia/Jerusalem (UTC+3)
+
+Always respond in the same language as the user.`;
+  }
+
+  getFunctions(): FunctionDefinition[] {
+    return this.functionHandler.getRegisteredFunctions();
+  }
+
+  private registerFunctions(): void {
+    const gmailFunction = new GmailFunction(this.gmailService, this.logger);
+    this.functionHandler.registerFunction(gmailFunction);
+  }
+}

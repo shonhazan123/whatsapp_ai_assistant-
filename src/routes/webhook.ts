@@ -2,7 +2,7 @@ import express, { Request, Response } from 'express';
 import dotenv from 'dotenv';
 dotenv.config();
 import { WhatsAppWebhookPayload, WhatsAppMessage } from '../types';
-import { processMessage } from '../agents/mainAgent';
+import { processMessageV2 } from '../index-v2';
 import {
   sendWhatsAppMessage,
   sendTypingIndicator,
@@ -101,7 +101,7 @@ async function handleIncomingMessage(message: WhatsAppMessage): Promise<void> {
     // Step 3: Process the message through the AI agent
     logger.debug('Step 3: Processing through AI agent...');
     logger.info(`🤖 AI Processing: "${messageText}"`);
-    const response = await processMessage(userPhone, messageText);
+    const response = await processMessageV2(userPhone, messageText);
     logger.info(`💡 AI Response: "${response}"`);
 
     // Step 4: Send response back to user
