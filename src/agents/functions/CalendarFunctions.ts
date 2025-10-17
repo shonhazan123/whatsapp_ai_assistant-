@@ -125,7 +125,33 @@ export class CalendarFunction implements IFunction {
             this.logger.info(`📧 Extracted attendees: ${attendees.join(', ')}`);
           }
           
-          return await this.calendarService.createEvent(params);
+          // Create the event
+          const result = await this.calendarService.createEvent(params);
+          
+          // If event created successfully and has attendees, add meeting link
+          if (result.success && result.data && attendees.length > 0) {
+            const eventId = result.data.id;
+            const meetingLink = `https://calendar.google.com/calendar/event?eid=${eventId}`;
+            
+            // Store meeting link in result for email invitation
+            (result as any).meetingLink = meetingLink;
+            this.logger.info(`🔗 Generated meeting link: ${meetingLink}`);
+            
+            // Update result message to include meeting link
+            result.message = `✅ Event created successfully!
+
+📅 Event Details:
+- Title: ${params.summary}
+- Start: ${params.start}
+- End: ${params.end}
+- Attendees: ${attendees.join(', ')}
+
+🔗 Meeting link: ${meetingLink}
+
+Google Calendar has automatically sent email invitations to all attendees.`;
+          }
+          
+          return result;
 
         // ✅ Create multiple events
         case 'createMultiple':

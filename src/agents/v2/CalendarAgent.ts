@@ -66,6 +66,7 @@ When creating events, ALWAYS include attendees if email addresses are provided:
 - Use attendees parameter in create operation
 - Google Calendar will automatically send email invitations
 - Format: attendees: email@example.com
+- ALWAYS include meeting link in response: "Event created successfully. Meeting link: [URL]"
 
 Current date/time: ${new Date().toISOString()}
 User timezone: Asia/Jerusalem (UTC+3)

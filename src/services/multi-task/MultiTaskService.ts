@@ -132,6 +132,7 @@ Return ONLY a JSON array of tasks in this format:
       const tasks = parseResult.tasks;
       const results = [];
       let contactDetails: any = null;
+      let meetingLink: string | null = null;
 
       // Execute tasks in order
       for (let i = 0; i < tasks.length; i++) {
@@ -161,10 +162,10 @@ Return ONLY a JSON array of tasks in this format:
           continue;
         }
 
-        // Update task message with contact details
+        // Update task message with contact details and meeting link
         let taskMessage = task.message;
         if (contactDetails && task.requiresContactLookup) {
-          taskMessage = this.updateTaskWithContactDetails(task, contactDetails);
+          taskMessage = this.updateTaskWithContactDetails(task, contactDetails, meetingLink);
         }
 
         // Execute task with appropriate agent
@@ -179,6 +180,42 @@ Return ONLY a JSON array of tasks in this format:
         }
 
         const result = await agent.processRequest(taskMessage, userPhone);
+        
+        // Debug logging for calendar events
+        if (task.type === 'calendar_event') {
+          logger.info(`📅 Calendar event result: ${result}`);
+        }
+        
+        // Special handling for calendar events to extract meeting link
+        if (task.type === 'calendar_event' && result.includes('created') && result.includes('success')) {
+          // Try multiple patterns to extract meeting link
+          const linkPatterns = [
+            /🔗 Meeting link: (https:\/\/[^\s]+)/i,
+            /Meeting link: (https:\/\/[^\s]+)/i,
+            /קישור לפגישה: (https:\/\/[^\s]+)/i,
+            /(https:\/\/calendar\.google\.com\/calendar\/event\?eid=[^\s]+)/i,
+            /meeting link: (https:\/\/[^\s]+)/i
+          ];
+          
+          for (const pattern of linkPatterns) {
+            const linkMatch = result.match(pattern);
+            if (linkMatch) {
+              meetingLink = linkMatch[1];
+              logger.info(`🔗 Extracted meeting link: ${meetingLink}`);
+              break;
+            }
+          }
+          
+          // If no link found in response, generate one from event ID if available
+          if (!meetingLink) {
+            const eventIdMatch = result.match(/event.*id[:\s]*([a-zA-Z0-9_-]+)/i);
+            if (eventIdMatch) {
+              meetingLink = `https://calendar.google.com/calendar/event?eid=${eventIdMatch[1]}`;
+              logger.info(`🔗 Generated meeting link from event ID: ${meetingLink}`);
+            }
+          }
+        }
+        
         results.push({
           task: task.type,
           success: !result.includes('error'),
@@ -288,9 +325,9 @@ Return ONLY a JSON array of tasks in this format:
   }
 
   /**
-   * Update task message with contact details
+   * Update task message with contact details and meeting link
    */
-  private updateTaskWithContactDetails(task: Task, contactDetails: any): string {
+  private updateTaskWithContactDetails(task: Task, contactDetails: any, meetingLink?: string | null): string {
     if (task.type === 'calendar_event' && contactDetails.email) {
       // Create proper calendar event with attendees
       const tomorrow = new Date();
@@ -306,7 +343,51 @@ attendees: ${contactDetails.email}`;
     }
     
     if (task.type === 'email_invitation' && contactDetails.email) {
-      return `Send email to ${contactDetails.email} with invitation for meeting with ${contactDetails.name}`;
+      // Get meeting details from calendar event
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      const dateStr = tomorrow.toLocaleDateString('he-IL', { 
+        weekday: 'long', 
+        year: 'numeric', 
+        month: 'long', 
+        day: 'numeric' 
+      });
+      
+      if (meetingLink) {
+        return `שלח מייל ל-${contactDetails.email} עם הכותרת "הזמנה לפגישה" והתוכן הבא:
+        
+שלום ${contactDetails.name},
+
+אני מזמין אותך לפגישה:
+
+📅 שם הפגישה: פגישה עם ${contactDetails.name}
+📆 תאריך: ${dateStr}
+🕙 שעה: 10:00 - 11:00
+👤 משתתפים: ${contactDetails.name} ואני
+
+🔗 קישור לפגישה: ${meetingLink}
+
+אנא הודע לי אם אתה זמין בשעה זו.
+
+בברכה,
+[שמך]`;
+      } else {
+        return `שלח מייל ל-${contactDetails.email} עם הכותרת "הזמנה לפגישה" והתוכן:
+        
+שלום ${contactDetails.name},
+
+אני מזמין אותך לפגישה:
+
+📅 שם הפגישה: פגישה עם ${contactDetails.name}
+📆 תאריך: ${dateStr}
+🕙 שעה: 10:00 - 11:00
+👤 משתתפים: ${contactDetails.name} ואני
+
+אנא הודע לי אם אתה זמין בשעה זו.
+
+בברכה,
+[שמך]`;
+      }
     }
 
     return task.message;

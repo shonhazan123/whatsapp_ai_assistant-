@@ -39,7 +39,7 @@ export class GmailService {
     try {
       this.logger.info(`📧 Sending email to: ${request.to.join(', ')}`);
       
-      // Create email message
+      // Create email message with proper UTF-8 encoding
       const emailLines = [];
       emailLines.push(`To: ${request.to.join(', ')}`);
       
@@ -51,15 +51,21 @@ export class GmailService {
         emailLines.push(`Bcc: ${request.bcc.join(', ')}`);
       }
       
-      emailLines.push(`Subject: ${request.subject}`);
+      // Properly encode Hebrew subject
+      const encodedSubject = `=?UTF-8?B?${Buffer.from(request.subject).toString('base64')}?=`;
+      emailLines.push(`Subject: ${encodedSubject}`);
       emailLines.push('Content-Type: text/html; charset=utf-8');
+      emailLines.push('Content-Transfer-Encoding: base64');
       emailLines.push('');
-      emailLines.push(request.body);
+      
+      // Encode body in base64
+      const encodedBody = Buffer.from(request.body, 'utf8').toString('base64');
+      emailLines.push(encodedBody);
 
       const email = emailLines.join('\n');
       
-      // Encode email in base64
-      const encodedEmail = Buffer.from(email).toString('base64')
+      // Encode entire email in base64 for Gmail API
+      const encodedEmail = Buffer.from(email, 'utf8').toString('base64')
         .replace(/\+/g, '-')
         .replace(/\//g, '_')
         .replace(/=+$/, '');

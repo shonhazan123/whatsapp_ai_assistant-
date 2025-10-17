@@ -78,12 +78,16 @@ export class GmailFunction implements IFunction {
           if (!params.subject || !params.body) {
             return { success: false, error: 'Subject and body are required for send operation' };
           }
+          
+          // Detect language and format email accordingly
+          const { subject, body } = this.formatEmailByLanguage(params.subject, params.body);
+          
           return await this.gmailService.sendEmail({
             to: params.to,
             cc: params.cc,
             bcc: params.bcc,
-            subject: params.subject,
-            body: params.body
+            subject: subject,
+            body: body
           });
 
         case 'getAll':
@@ -134,5 +138,67 @@ export class GmailFunction implements IFunction {
       this.logger.error('Error in GmailFunction:', error);
       return { success: false, error: 'Failed to execute Gmail operation' };
     }
+  }
+
+  /**
+   * Format email content by language detection
+   */
+  private formatEmailByLanguage(subject: string, body: string): { subject: string, body: string } {
+    // Detect if content is in Hebrew
+    const isHebrew = /[\u0590-\u05FF]/.test(subject + body);
+    
+    if (isHebrew) {
+      // Format for Hebrew emails
+      return {
+        subject: subject,
+        body: this.formatHebrewEmailBody(body)
+      };
+    } else {
+      // Format for English emails
+      return {
+        subject: subject,
+        body: this.formatEnglishEmailBody(body)
+      };
+    }
+  }
+
+  /**
+   * Format Hebrew email body
+   */
+  private formatHebrewEmailBody(body: string): string {
+    // Don't add extra formatting if body already contains proper structure
+    if (body.includes('שלום') && body.includes('בברכה')) {
+      return body;
+    }
+    
+    return `שלום,
+
+${body}
+
+בברכה,
+המערכת האוטומטית
+
+---
+הודעה זו נשלחה אוטומטית מהמערכת.`;
+  }
+
+  /**
+   * Format English email body
+   */
+  private formatEnglishEmailBody(body: string): string {
+    // Don't add extra formatting if body already contains proper structure
+    if (body.includes('Hello') && body.includes('Best regards')) {
+      return body;
+    }
+    
+    return `Hello,
+
+${body}
+
+Best regards,
+Automated System
+
+---
+This message was sent automatically from the system.`;
   }
 }
