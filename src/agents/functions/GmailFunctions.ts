@@ -67,6 +67,14 @@ export class GmailFunction implements IFunction {
           if (!params.to || !Array.isArray(params.to) || params.to.length === 0) {
             return { success: false, error: 'Recipients (to) are required for send operation' };
           }
+          
+          // Validate email addresses
+          const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+          const invalidEmails = params.to.filter((email: string) => !emailRegex.test(email));
+          if (invalidEmails.length > 0) {
+            return { success: false, error: `Invalid email addresses: ${invalidEmails.join(', ')}` };
+          }
+          
           if (!params.subject || !params.body) {
             return { success: false, error: 'Subject and body are required for send operation' };
           }

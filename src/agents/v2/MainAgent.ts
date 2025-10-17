@@ -54,7 +54,7 @@ export class MainAgent extends BaseAgent {
       // Route to specialized agents or general conversation
       if (intent === 'calendar') {
         response = await this.routeToCalendarAgent(message, userPhone);
-      } else if (intent === 'email') {
+      } else if (intent === 'gmail') {
         response = await this.routeToGmailAgent(message, userPhone);
       } else if (intent === 'database') {
         response = await this.routeToDatabaseAgent(message, userPhone);

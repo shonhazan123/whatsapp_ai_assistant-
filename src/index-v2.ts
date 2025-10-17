@@ -1,52 +1,83 @@
 import { ServiceContainer } from './core/container/ServiceContainer';
-import { AgentFactory } from './core/factory/AgentFactory';
-import { OpenAIService } from './services/ai/OpenAIService';
-import { FunctionHandler } from './core/base/FunctionHandler';
+import { AgentManager } from './core/manager/AgentManager';
 import { logger } from './utils/logger';
+
+// Global AgentManager instance (singleton)
+let agentManager: AgentManager;
 
 // Initialize the new architecture
 function initializeArchitecture() {
-  // Get service container
-  const container = ServiceContainer.getInstance();
-  
-  // Initialize AgentFactory with dependencies
-  AgentFactory.initialize( container.getOpenAIService(), container.getFunctionHandler(),container.getLogger());
-  
-  logger.info('🚀 New architecture initialized successfully');
+  try {
+    logger.info('🚀 Initializing V2 architecture...');
+    
+    // Initialize AgentManager (handles all agents and orchestration as singletons)
+    agentManager = AgentManager.getInstance();
+    agentManager.initialize();
+    
+    logger.info('✅ V2 architecture initialized successfully');
+    logger.info('📊 AgentManager status:', agentManager.getStatus());
+    
+  } catch (error) {
+    logger.error('❌ Failed to initialize V2 architecture:', error);
+    throw error;
+  }
 }
 
-// Export the new processMessage function
-export async function processMessageV2(userPhone: string , messageText: string ): Promise<string> {
+
+
+
+// Export the new processMessage function with Advanced Orchestration
+export async function processMessageV2(userPhone: string, messageText: string): Promise<string> {
   try {
     // Initialize architecture if not already done
-    initializeArchitecture();
-    
-    // Create appropriate agent based on intent
-    const openaiService = ServiceContainer.getInstance().getOpenAIService();
-    const intent = await openaiService.detectIntent(messageText);
-        
-    // Route to appropriate agent
-    let agent;
-    switch (intent) {
-      case 'calendar':
-        agent = AgentFactory.getAgent('calendar');
-        break;
-      case 'email':
-        agent = AgentFactory.getAgent('email');
-        break;
-      case 'database':
-        agent = AgentFactory.getAgent('database');
-        break;
-      default:
-        agent = AgentFactory.getAgent('general');
-        break;
+    if (!agentManager) {
+      initializeArchitecture();
     }
     
-    // Process the request
-    const response = await agent.processRequest(messageText, userPhone);
+    // Ensure AgentManager is initialized
+    if (!agentManager.isInitialized()) {
+      throw new Error('AgentManager not properly initialized');
+    }
     
-    logger.info(`✅ Response generated for intent: ${intent}`);
-    return response;
+    const openaiService = ServiceContainer.getInstance().getOpenAIService();
+    const intent = await openaiService.detectIntent(messageText);
+    
+    logger.info(`🎯 Intent detected: ${intent}`);
+    
+    // Advanced Orchestration Routing using singleton agents
+    switch (intent) {
+      case 'planning':
+        // Use MainAgent for planning requests (simplified)
+        logger.info('🧠 Planning - using Main Agent');
+        return await agentManager.getMainAgent().processRequest(messageText, userPhone);
+        
+      case 'study-planning':
+        // Use MainAgent for study planning (simplified)
+        logger.info('📚 Study Planning - using Main Agent');
+        return await agentManager.getMainAgent().processRequest(messageText, userPhone);
+        
+      case 'multi-task':
+        // Use MultiAgentCoordinator singleton for complex multi-agent tasks
+        logger.info('🤝 Multi-Agent Coordination activated');
+        return await agentManager.getMultiAgentCoordinator().executeActions(messageText, userPhone);
+        
+      case 'calendar':
+        logger.info('📅 Calendar Agent activated');
+        return await agentManager.getCalendarAgent().processRequest(messageText, userPhone);
+        
+      case 'gmail':
+        logger.info('📧 Gmail Agent activated');
+        return await agentManager.getGmailAgent().processRequest(messageText, userPhone);
+        
+      case 'database':
+        logger.info('💾 Database Agent activated');
+        return await agentManager.getDatabaseAgent().processRequest(messageText, userPhone);
+        
+      default:  
+        // Use main agent for general requests
+        logger.info('🤖 Main Agent activated');
+        return await agentManager.getMainAgent().processRequest(messageText, userPhone);
+    }
     
   } catch (error) {
     logger.error('Error in processMessageV2:', error);
@@ -55,7 +86,7 @@ export async function processMessageV2(userPhone: string , messageText: string )
 }
 
 // Export services for external use
-export { ServiceContainer, AgentFactory };
+export { ServiceContainer, AgentManager };
 export * from './core/types/AgentTypes';
 export * from './services/database/TaskService';
 export * from './services/database/ContactService';

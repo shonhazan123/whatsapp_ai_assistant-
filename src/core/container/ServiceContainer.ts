@@ -7,6 +7,8 @@ import { ListService } from '../../services/database/ListService';
 import { UserDataService } from '../../services/database/UserDataService';
 import { CalendarService } from '../../services/calendar/CalendarService';
 import { GmailService } from '../../services/email/GmailService';
+import { ContactLookupService } from '../../services/contact/ContactLookupService';
+import { MultiTaskService } from '../../services/multi-task/MultiTaskService';
 
 export class ServiceContainer {
   private static instance: ServiceContainer;
@@ -47,6 +49,12 @@ export class ServiceContainer {
     // External services
     this.services.set('calendarService', new CalendarService(this.logger));
     this.services.set('gmailService', new GmailService(this.logger));
+    
+    // Contact lookup service
+    this.services.set('contactLookupService', new ContactLookupService(this));
+    
+    // Multi-task service
+    this.services.set('multiTaskService', new MultiTaskService(this));
 
     this.logger.info('🚀 ServiceContainer initialized with all services');
   }
@@ -107,5 +115,13 @@ export class ServiceContainer {
 
   getGmailService(): GmailService {
     return this.get<GmailService>('gmailService');
+  }
+
+  getContactLookupService(): ContactLookupService {
+    return this.get<ContactLookupService>('contactLookupService');
+  }
+
+  getMultiTaskService(): MultiTaskService {
+    return this.get<MultiTaskService>('multiTaskService');
   }
 }

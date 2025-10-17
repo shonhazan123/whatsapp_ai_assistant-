@@ -257,7 +257,7 @@ export class ContactFunction implements IFunction {
       },
       name: {
         type: 'string',
-        description: 'Contact name'
+        description: 'Contact name (for create, update, or search operations)'
       },
       phone: {
         type: 'string',
@@ -358,6 +358,78 @@ export class ContactFunction implements IFunction {
             limit: params.limit,
             offset: params.offset
           });
+
+        case 'search':
+          if (!params.name) {
+            return { success: false, error: 'Name is required for search operation' };
+          }
+          
+          this.logger.info(`🔍 Searching for contact: "${params.name}" for user: ${userId}`);
+          
+          // Search for contacts by name
+          const allContacts = await this.contactService.getAll({
+            userPhone: userId
+          });
+          
+          this.logger.info(`📋 ContactService response:`, allContacts);
+          
+          if (!allContacts.success || !allContacts.data) {
+            return { success: false, error: 'No contacts found' };
+          }
+          
+          // Handle the response structure from ContactService.getAll()
+          // It returns { contacts: [...], count: number }
+          let contacts: any[] = [];
+          if (allContacts.data.contacts && Array.isArray(allContacts.data.contacts)) {
+            contacts = allContacts.data.contacts;
+          } else if (Array.isArray(allContacts.data)) {
+            contacts = allContacts.data;
+          }
+          
+          this.logger.info(`📋 Found ${contacts.length} total contacts:`, contacts);
+          const searchName = params.name.toLowerCase().trim();
+          
+          // More flexible search - check if search name is contained in contact name
+          const matchingContacts = contacts.filter((contact: any) => {
+            if (!contact.name) return false;
+            const contactName = contact.name.toLowerCase().trim();
+            
+            // Exact match
+            if (contactName === searchName) return true;
+            
+            // Partial match - search name is contained in contact name
+            if (contactName.includes(searchName)) return true;
+            
+            // Reverse partial match - contact name is contained in search name
+            if (searchName.includes(contactName)) return true;
+            
+            // Word-by-word match for Hebrew names
+            const searchWords = searchName.split(/\s+/);
+            const contactWords = contactName.split(/\s+/);
+            
+            // Check if any search word matches any contact word
+            return searchWords.some((searchWord: string) => 
+              contactWords.some((contactWord: string) => 
+                contactWord.includes(searchWord) || searchWord.includes(contactWord)
+              )
+            );
+          });
+          
+          if (matchingContacts.length === 0) {
+            return { success: false, error: `No contact found with name "${params.name}"` };
+          }
+          
+          // Return the first matching contact with proper format
+          const foundContact = matchingContacts[0];
+          const responseMessage = `מצאתי איש קשר: שם: ${foundContact.name}, מייל: ${foundContact.email || 'לא זמין'}, טלפון: ${foundContact.phone || 'לא זמין'}`;
+          
+          this.logger.info(`✅ Contact search successful: ${foundContact.name} - ${foundContact.email}`);
+          
+          return {
+            success: true,
+            data: foundContact,
+            message: responseMessage
+          };
 
         case 'update':
           if (!params.contactId) {
@@ -529,7 +601,10 @@ export class ListFunction implements IFunction {
           properties: {
             listId: { type: 'string' },
             title: { type: 'string' },
-            items: { type: 'array' }
+            items: { 
+              type: 'array',
+              items: { type: 'string' }
+            }
           },
           required: ['listId']
         }

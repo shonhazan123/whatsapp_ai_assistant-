@@ -54,7 +54,7 @@ export class MultiAgentCoordinator {
   /**
    * Execute actions in parallel where possible
    */
-  async executeActions(
+  async executeActionsBatch(
     actions: AgentAction[],
     userPhone: string
   ): Promise<AgentActionResult[]> {
@@ -284,5 +284,22 @@ export class MultiAgentCoordinator {
     const totalDuration = results.reduce((sum, r) => sum + r.duration, 0);
 
     return `✅ Completed: ${successful}/${results.length} actions in ${totalDuration}ms${failed > 0 ? ` (${failed} failed)` : ''}`;
+  }
+
+  /**
+   * Execute actions for multi-task requests
+   */
+  async executeActions(messageText: string, userPhone: string): Promise<string> {
+    try {
+      // Use MultiTaskService for complex multi-agent coordination
+      const { MultiTaskService } = require('../services/multi-task/MultiTaskService');
+      const container = require('../core/container/ServiceContainer').ServiceContainer.getInstance();
+      
+      const multiTaskService = new MultiTaskService(container);
+      return await multiTaskService.executeMultiTask(messageText, userPhone);
+      
+    } catch (error) {
+      return 'An error occurred while coordinating multiple agents.';
+    }
   }
 }

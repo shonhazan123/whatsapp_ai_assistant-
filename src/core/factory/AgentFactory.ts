@@ -7,7 +7,7 @@ import { CalendarAgent } from '../../agents/v2/CalendarAgent';
 import { GmailAgent } from '../../agents/v2/GmailAgent';
 import { MainAgent } from '../../agents/v2/MainAgent';
 
-export type AgentType = 'database' | 'calendar' | 'email' | 'general';
+export type AgentType = 'database' | 'calendar' | 'gmail' | 'main';
 
 export class AgentFactory {
   private static instances: Map<AgentType, IAgent> = new Map();
@@ -50,7 +50,7 @@ export class AgentFactory {
         );
         break;
 
-      case 'email':
+      case 'gmail':
         agent = new GmailAgent(
           AgentFactory.openaiService,
           AgentFactory.functionHandler,
@@ -58,7 +58,7 @@ export class AgentFactory {
         );
         break;
 
-      case 'general':
+      case 'main':
         agent = new MainAgent(
           AgentFactory.openaiService,
           AgentFactory.functionHandler,
@@ -83,6 +83,6 @@ export class AgentFactory {
   }
 
   static getAllAgentTypes(): AgentType[] {
-    return ['database', 'calendar', 'email', 'general'];
+    return ['database', 'calendar', 'gmail', 'main'];
   }
 }

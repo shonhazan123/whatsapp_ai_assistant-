@@ -177,6 +177,10 @@ export class ContactService extends BaseService {
 
       const contacts = await this.executeQuery<Contact>(query, params);
 
+      this.logger.info(`📋 ContactService.getAll() - Query: ${query}`);
+      this.logger.info(`📋 ContactService.getAll() - Params:`, params);
+      this.logger.info(`📋 ContactService.getAll() - Found ${contacts.length} contacts:`, contacts);
+
       return this.createSuccessResponse({
         contacts,
         count: contacts.length

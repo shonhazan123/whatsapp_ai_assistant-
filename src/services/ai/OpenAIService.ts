@@ -48,7 +48,7 @@ export class OpenAIService {
     }
   }
 
-  async detectIntent(message: string): Promise<'calendar' | 'email' | 'database' | 'general'> {
+  async detectIntent(message: string): Promise<'calendar' | 'gmail' | 'database' | 'planning' | 'study-planning' | 'multi-task' | 'general'> {
     try {
       const completion = await this.createCompletion({
         messages: [
@@ -59,16 +59,25 @@ export class OpenAIService {
 CALENDAR - For scheduling, appointments, meetings, events, calendar queries
 Examples: "Schedule a meeting", "What's on my calendar?", "תקבע פגישה מחר", "Book appointment","תוסיף ליומן"
 
-EMAIL - For sending emails, checking inbox, email-related tasks
+GMAIL - For sending emails, checking inbox, email-related tasks
 Examples: "Send an email to John", "Check my inbox", "שלח מייל", "Reply to Sarah"
 
 DATABASE - For tasks, todos, contacts, lists, notes, reminders, retrieving existing data
 Examples: "Add task", "Create contact", "Make a list", "תזכורת", "Save note", "אילו רשימות יש לי", "מה המשימות שלי", "הצג לי הכל"
 
+PLANNING - For complex planning, organizing, project management
+Examples: "Plan my week", "Organize my schedule", "תכנן לי את השבוע", "Help me plan a project"
+
+STUDY-PLANNING - For academic planning, study schedules, learning plans
+Examples: "Plan my study schedule", "Help me study for exams", "תכנן לי לוח זמנים ללימודים", "Create study plan"
+
+MULTI-TASK - For complex requests involving multiple agents/operations
+Examples: "Schedule meeting and send email", "Create task and add to calendar", "תקבע פגישה ותשלח מייל", "תתאם לי פגישה מחר עם שון חזן בשעה עשר בבוקר ותשלח לו מייל"
+
 GENERAL - For conversations, questions, chitchat, anything else
 Examples: "Hello", "How are you?", "מה קורה", "Tell me a joke"
 
-Respond with ONLY ONE WORD: calendar, email, database, or general`
+Respond with ONLY ONE WORD: calendar, gmail, database, planning, study-planning, multi-task, or general`
           },
           {
             role: 'user',
@@ -81,11 +90,11 @@ Respond with ONLY ONE WORD: calendar, email, database, or general`
 
       const intent = completion.choices[0]?.message?.content?.trim().toLowerCase() || 'general';
       
-      const validIntents = ['calendar', 'email', 'database', 'general'];
+      const validIntents = ['calendar', 'gmail', 'database', 'general','multi-task','planning','study-planning'];
       const detectedIntent = validIntents.includes(intent) ? intent : 'general';
       
       this.logger.info(`🎯 Intent detected: ${detectedIntent}`);
-      return detectedIntent as 'calendar' | 'email' | 'database' | 'general';
+      return detectedIntent as 'calendar' | 'gmail' | 'database' | 'general' | 'planning' | 'study-planning' | 'multi-task';
       
     } catch (error) {
       this.logger.error('Error detecting intent:', error);
