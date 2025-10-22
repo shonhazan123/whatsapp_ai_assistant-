@@ -3,7 +3,7 @@ import { logger } from '../../utils/logger';
 import { ServiceContainer } from '../container/ServiceContainer';
 import { AgentFactory } from '../factory/AgentFactory';
 // import { PlanningAgent } from '../../agents/v2/PlanningAgent'; // Removed - not needed
-import { IAgent } from '../interfaces/IAgent';
+import { IAgent, AgentName } from '../interfaces/IAgent';
 
 /**
  * Singleton AgentManager that handles all agent initialization and lifecycle
@@ -11,7 +11,8 @@ import { IAgent } from '../interfaces/IAgent';
  */
 export class AgentManager {
   private static instance: AgentManager;
-  
+
+
   // Core agents (singletons)
   private databaseAgent: IAgent | null = null;
   private calendarAgent: IAgent | null = null;
@@ -63,7 +64,7 @@ export class AgentManager {
       
       logger.info('✅ AgentManager initialized successfully');
       logger.info('📋 Available agents: database, calendar, gmail, main');
-      logger.info('📋 Available orchestration: multi-agent-coordinator, planning-agent');
+      logger.info('📋 Available orchestration: multi-agent-coordinator');
       
     } catch (error) {
       logger.error('❌ Failed to initialize AgentManager:', error);
@@ -77,10 +78,10 @@ export class AgentManager {
   private initializeCoreAgents(): void {
     logger.info('🔧 Initializing core agents...');
     
-    this.databaseAgent = AgentFactory.getAgent('database');
-    this.calendarAgent = AgentFactory.getAgent('calendar');
-    this.gmailAgent = AgentFactory.getAgent('gmail');
-    this.mainAgent = AgentFactory.getAgent('main');
+    this.databaseAgent = AgentFactory.getAgent(AgentName.DATABASE);
+    this.calendarAgent = AgentFactory.getAgent(AgentName.CALENDAR);
+    this.gmailAgent = AgentFactory.getAgent(AgentName.GMAIL);
+    this.mainAgent = AgentFactory.getAgent(AgentName.MAIN);
     
     logger.info('✅ Core agents initialized');
   }

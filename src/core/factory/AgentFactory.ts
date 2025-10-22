@@ -1,4 +1,4 @@
-import { IAgent } from '../interfaces/IAgent';
+import { IAgent , AgentName } from '../interfaces/IAgent';
 import { OpenAIService } from '../../services/ai/OpenAIService';
 import { FunctionHandler } from '../base/FunctionHandler';
 import { logger } from '../../utils/logger';
@@ -7,7 +7,7 @@ import { CalendarAgent } from '../../agents/v2/CalendarAgent';
 import { GmailAgent } from '../../agents/v2/GmailAgent';
 import { MainAgent } from '../../agents/v2/MainAgent';
 
-export type AgentType = 'database' | 'calendar' | 'gmail' | 'main';
+export type AgentType = AgentName.DATABASE| AgentName.CALENDAR | AgentName.GMAIL | AgentName.MAIN;
 
 export class AgentFactory {
   private static instances: Map<AgentType, IAgent> = new Map();
@@ -34,7 +34,7 @@ export class AgentFactory {
     let agent: IAgent;
 
     switch (type) {
-      case 'database':
+      case AgentName.DATABASE:
         agent = new DatabaseAgent(
           AgentFactory.openaiService,
           AgentFactory.functionHandler,
@@ -42,7 +42,7 @@ export class AgentFactory {
         );
         break;
 
-      case 'calendar':
+      case AgentName.CALENDAR:
         agent = new CalendarAgent(
           AgentFactory.openaiService,
           AgentFactory.functionHandler,
@@ -50,7 +50,7 @@ export class AgentFactory {
         );
         break;
 
-      case 'gmail':
+      case AgentName.GMAIL:
         agent = new GmailAgent(
           AgentFactory.openaiService,
           AgentFactory.functionHandler,
@@ -58,7 +58,7 @@ export class AgentFactory {
         );
         break;
 
-      case 'main':
+      case AgentName.MAIN:
         agent = new MainAgent(
           AgentFactory.openaiService,
           AgentFactory.functionHandler,
@@ -83,6 +83,6 @@ export class AgentFactory {
   }
 
   static getAllAgentTypes(): AgentType[] {
-    return ['database', 'calendar', 'gmail', 'main'];
+    return [AgentName.DATABASE, AgentName.CALENDAR, AgentName.GMAIL, AgentName.MAIN];
   }
 }

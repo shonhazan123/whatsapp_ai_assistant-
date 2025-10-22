@@ -20,3 +20,10 @@ export interface IFunction {
   parameters: any;
   execute(args: any, userId: string): Promise<IResponse>;
 }
+export enum AgentName {
+  DATABASE = 'database',
+  CALENDAR = 'calendar',
+  GMAIL = 'gmail',
+  MAIN = 'main',
+  MULTI_TASK = 'multi-task'
+}

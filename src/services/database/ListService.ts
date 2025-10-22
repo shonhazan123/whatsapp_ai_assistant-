@@ -54,13 +54,14 @@ export class ListService extends BaseService {
         return this.createErrorResponse(validation);
       }
 
-      const itemCount = data.items?.length || 0;
+      const items = Array.isArray(data.items) ? data.items : [];
+      const itemCount = items.length;
       this.logger.info(`📝 Creating ${data.listType}: "${data.title}" with ${itemCount} items`);
       
       // Format content as structured JSON
       const content = {
         title: data.title || (data.listType === 'checklist' ? 'רשימת בדיקה' : 'הערה'),
-        items: (data.items || []).map((item: string) => ({
+        items: items.map((item: string) => ({
           text: item,
           checked: false,
           addedAt: new Date().toISOString()

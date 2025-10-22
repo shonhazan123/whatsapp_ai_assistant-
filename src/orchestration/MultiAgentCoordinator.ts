@@ -3,9 +3,11 @@ import { DatabaseAgent } from '../agents/v2/DatabaseAgent';
 import { GmailAgent } from '../agents/v2/GmailAgent';
 import { ServiceContainer } from '../core/container/ServiceContainer';
 import { logger } from '../utils/logger';
+import { AgentName } from '../core/interfaces/IAgent';
+import { AgentFactory } from '../core/factory/AgentFactory';
 
 export interface AgentAction {
-  agent: 'database' | 'calendar' | 'email';
+  agent: AgentName.DATABASE | AgentName.CALENDAR | AgentName.GMAIL;
   action: string;
   params: any;
   priority: 'high' | 'medium' | 'low';
@@ -36,15 +38,12 @@ export class MultiAgentCoordinator {
    */
   private initializeAgents(): void {
     try {
-      const openaiService = this.container.getOpenAIService();
-      const functionHandler = this.container.getFunctionHandler();
-      const loggerInstance = this.container.getLogger();
 
-      this.agents.set('database', new DatabaseAgent(openaiService, functionHandler, loggerInstance));
-      this.agents.set('calendar', new CalendarAgent(openaiService, functionHandler, loggerInstance));
-      this.agents.set('email', new GmailAgent(openaiService, functionHandler, loggerInstance));
-
+      this.agents.set(AgentName.DATABASE, AgentFactory.getAgent(AgentName.DATABASE));
+      this.agents.set(AgentName.CALENDAR, AgentFactory.getAgent(AgentName.CALENDAR));
+      this.agents.set(AgentName.GMAIL, AgentFactory.getAgent(AgentName.GMAIL));
       logger.info('✅ Multi-agent coordinator initialized');
+
     } catch (error) {
       logger.error('Error initializing agents:', error);
     }
@@ -160,11 +159,11 @@ export class MultiAgentCoordinator {
     // based on the action type and parameters
 
     switch (action.agent) {
-      case 'database':
+      case AgentName.DATABASE:
         return this.buildDatabaseMessage(action);
-      case 'calendar':
+      case AgentName.CALENDAR:
         return this.buildCalendarMessage(action);
-      case 'email':
+      case AgentName.GMAIL:
         return this.buildEmailMessage(action);
       default:
         return JSON.stringify(action.params);

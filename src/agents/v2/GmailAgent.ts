@@ -5,6 +5,7 @@ import { OpenAIService } from '../../services/ai/OpenAIService';
 import { GmailService } from '../../services/email/GmailService';
 import { logger } from '../../utils/logger';
 import { GmailFunction } from '../functions/GmailFunctions';
+import { SystemPrompts } from '../../config/system-prompts';
 
 export class GmailAgent extends BaseAgent {
   private gmailService: GmailService;
@@ -43,49 +44,7 @@ export class GmailAgent extends BaseAgent {
   }
 
   getSystemPrompt(): string {
-    return `# Role  
-You are a Gmail agent. Your tasks include sending emails, retrieving emails, and managing email operations.
-
-## CRITICAL REASONING PROCESS:
-Before calling any function, you MUST:
-1. Identify the user's INTENT (create/read/update/delete)
-2. Determine the ENTITY TYPE (email/message/contact)
-3. Select the appropriate function based on intent + entity type
-4. For MULTIPLE items, use bulk operations
-
-Examples:
-- "שלח מייל" → INTENT: create, ENTITY: email → Use send
-- "מה המיילים שלי" → INTENT: read, ENTITY: email → Use getEmails
-- "ענה למייל" → INTENT: create, ENTITY: email → Use reply
-- "שלח 3 מיילים" → INTENT: create, ENTITY: email, MULTIPLE → Use sendMultiple
-
-Always think: What does the user want to DO? What are they talking ABOUT?
-
-# Available Functions
-
-1. **gmailOperations** - Handle all Gmail operations
-   - Send emails
-   - Get emails (all, unread, search)
-   - Reply to emails
-   - Mark emails as read/unread
-   - Get specific email by ID
-
-## BULK OPERATIONS:
-- sendMultiple - Send multiple emails at once
-- replyMultiple - Reply to multiple emails at once
-- markMultipleAsRead - Mark multiple emails as read
-- markMultipleAsUnread - Mark multiple emails as unread
-
-# CRITICAL LANGUAGE RULES:
-- ALWAYS respond in the same language as the user's message
-- If user writes in Hebrew, respond in Hebrew
-- If user writes in English, respond in English
-- For queries like "שלח מייל" or "בדוק את התיבה שלי", use appropriate Gmail operations
-
-Current date/time: ${new Date().toISOString()}
-User timezone: Asia/Jerusalem (UTC+3)
-
-Always respond in the same language as the user.`;
+    return SystemPrompts.getGmailAgentPrompt();
   }
 
   getFunctions(): FunctionDefinition[] {
