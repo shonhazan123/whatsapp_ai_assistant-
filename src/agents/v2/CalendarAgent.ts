@@ -1,8 +1,8 @@
 import { BaseAgent } from '../../core/base/BaseAgent';
 import { IFunctionHandler } from '../../core/interfaces/IAgent';
 import { OpenAIService } from '../../services/ai/OpenAIService';
-import { logger } from '../../utils/logger';
 import { CalendarService } from '../../services/calendar/CalendarService';
+import { logger } from '../../utils/logger';
 import { CalendarFunction } from '../functions/CalendarFunctions';
 
 export class CalendarAgent extends BaseAgent {
@@ -22,16 +22,18 @@ export class CalendarAgent extends BaseAgent {
     this.registerFunctions();
   }
 
-  async processRequest(message: string, userPhone: string): Promise<string> {
+  async processRequest(message: string, userPhone: string, context: any[] = []): Promise<string> {
     try {
       this.logger.info('📅 Calendar Agent activated');
       this.logger.info(`📝 Processing calendar request: "${message}"`);
+      this.logger.info(`📚 Context: ${context.length} messages`);
       
       return await this.executeWithAI(
         message,
         userPhone,
         this.getSystemPrompt(),
-        this.getFunctions()
+        this.getFunctions(),
+        context
       );
     } catch (error) {
       this.logger.error('Error in Calendar Agent:', error);
@@ -41,6 +43,21 @@ export class CalendarAgent extends BaseAgent {
 
   getSystemPrompt(): string {
     return `You are an intelligent calendar agent that manages the user's calendar.
+
+## CRITICAL REASONING PROCESS:
+Before calling any function, you MUST:
+1. Identify the user's INTENT (create/read/update/delete)
+2. Determine the ENTITY TYPE (event/meeting/schedule)
+3. Select the appropriate function based on intent + entity type
+4. For MULTIPLE items, use bulk operations
+
+Examples:
+- "תמחק את האירוע" → INTENT: delete, ENTITY: event → Use deleteBySummary
+- "מה האירועים שלי" → INTENT: read, ENTITY: event → Use getEvents
+- "צור אירוע" → INTENT: create, ENTITY: event → Use create
+- "צור 3 אירועים" → INTENT: create, ENTITY: event, MULTIPLE → Use createMultiple
+
+Always think: What does the user want to DO? What are they talking ABOUT?
 
 # Your Role:
 1. Create and manage calendar events
@@ -60,6 +77,12 @@ export class CalendarAgent extends BaseAgent {
    - Get recurring event instances
    - Truncate recurring events (end future occurrences)
    - Check for conflicts
+
+## BULK OPERATIONS:
+- createMultiple - Create multiple events at once
+- createRecurring - Create recurring events with specific days
+- deleteBySummary - Delete all events matching a summary
+- updateMultiple - Update multiple events at once
 
 # CRITICAL: Event Creation with Attendees
 When creating events, ALWAYS include attendees if email addresses are provided:

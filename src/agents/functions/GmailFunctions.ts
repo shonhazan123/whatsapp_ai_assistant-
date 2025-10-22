@@ -1,6 +1,6 @@
 import { IFunction, IResponse } from '../../core/interfaces/IAgent';
+import { QueryResolver } from '../../core/orchestrator/QueryResolver';
 import { GmailService } from '../../services/email/GmailService';
-import { logger } from '../../utils/logger';
 
 export class GmailFunction implements IFunction {
   name = 'gmailOperations';
@@ -61,6 +61,7 @@ export class GmailFunction implements IFunction {
   async execute(args: any, userId: string): Promise<IResponse> {
     try {
       const { operation, ...params } = args;
+      const resolver = new QueryResolver();
 
       switch (operation) {
         case 'send':
@@ -104,32 +105,66 @@ export class GmailFunction implements IFunction {
           }
           return await this.gmailService.searchEmails(params.query, params.maxResults || 10);
 
-        case 'getById':
+        case 'getById': {
           if (!params.messageId) {
-            return { success: false, error: 'Message ID is required for getById operation' };
+            // Natural language: use query to find most relevant email
+            const q = params.query || params.subject || params.from || params.to;
+            if (!q) return { success: false, error: 'Provide a query/subject/from/to to locate the email' };
+            const result = await resolver.resolveOneOrAsk(q, userId, 'email');
+            if (result.disambiguation) {
+              return { success: false, error: resolver.formatDisambiguation('email', result.disambiguation.candidates) };
+            }
+            if (!result.entity?.id) return { success: false, error: 'No matching emails found' };
+            return await this.gmailService.getEmailById(result.entity.id);
           }
           return await this.gmailService.getEmailById(params.messageId);
+        }
 
-        case 'reply':
-          if (!params.messageId || !params.body) {
-            return { success: false, error: 'Message ID and body are required for reply operation' };
+        case 'reply': {
+          if (!params.body) return { success: false, error: 'Body is required for reply operation' };
+          let messageId = params.messageId;
+          if (!messageId) {
+            const q = params.query || params.subject || params.from || params.to;
+            if (!q) return { success: false, error: 'Provide a query/subject/from/to to locate the email to reply' };
+            const result = await resolver.resolveOneOrAsk(q, userId, 'email');
+            if (result.disambiguation) {
+              return { success: false, error: resolver.formatDisambiguation('email', result.disambiguation.candidates) };
+            }
+            if (!result.entity?.id) return { success: false, error: 'No matching emails found' };
+            messageId = result.entity.id;
           }
-          return await this.gmailService.replyToEmail({
-            messageId: params.messageId,
-            body: params.body
-          });
+          return await this.gmailService.replyToEmail({ messageId, body: params.body });
+        }
 
-        case 'markAsRead':
-          if (!params.messageId) {
-            return { success: false, error: 'Message ID is required for markAsRead operation' };
+        case 'markAsRead': {
+          let messageId = params.messageId;
+          if (!messageId) {
+            const q = params.query || params.subject || params.from || params.to;
+            if (!q) return { success: false, error: 'Provide a query/subject/from/to to locate the email to mark' };
+            const result = await resolver.resolveOneOrAsk(q, userId, 'email');
+            if (result.disambiguation) {
+              return { success: false, error: resolver.formatDisambiguation('email', result.disambiguation.candidates) };
+            }
+            if (!result.entity?.id) return { success: false, error: 'No matching emails found' };
+            messageId = result.entity.id;
           }
-          return await this.gmailService.markAsRead(params.messageId);
+          return await this.gmailService.markAsRead(messageId);
+        }
 
-        case 'markAsUnread':
-          if (!params.messageId) {
-            return { success: false, error: 'Message ID is required for markAsUnread operation' };
+        case 'markAsUnread': {
+          let messageId = params.messageId;
+          if (!messageId) {
+            const q = params.query || params.subject || params.from || params.to;
+            if (!q) return { success: false, error: 'Provide a query/subject/from/to to locate the email to mark' };
+            const result = await resolver.resolveOneOrAsk(q, userId, 'email');
+            if (result.disambiguation) {
+              return { success: false, error: resolver.formatDisambiguation('email', result.disambiguation.candidates) };
+            }
+            if (!result.entity?.id) return { success: false, error: 'No matching emails found' };
+            messageId = result.entity.id;
           }
-          return await this.gmailService.markAsUnread(params.messageId);
+          return await this.gmailService.markAsUnread(messageId);
+        }
 
         default:
           return { success: false, error: `Unknown operation: ${operation}` };

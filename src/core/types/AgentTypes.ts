@@ -35,6 +35,29 @@ export interface FunctionDefinition {
   };
 }
 
+// Phase 2: Shared types for QueryResolver
+export type EntityDomain = 'task' | 'event' | 'contact' | 'list' | 'email';
+
+export interface EntityReference {
+  id?: string; // when available
+  domain: EntityDomain;
+  canonical: string; // normalized label/summary/name
+  metadata?: Record<string, any>; // extra attributes (time, listName, attendees)
+}
+
+export interface ResolutionCandidate<T = any> {
+  entity: T;
+  reference: EntityReference;
+  score: number; // 0..1 confidence
+  reason?: string;
+}
+
+export interface ResolutionResult<T = any> {
+  intent?: string;
+  candidates: ResolutionCandidate<T>[];
+  disambiguationRequired: boolean;
+}
+
 export interface BaseRequest {
   userPhone: string;
 }
@@ -59,11 +82,12 @@ export interface GetRequest extends BaseRequest {
   offset?: number;
 }
 
-export interface BulkRequest extends BaseRequest {
-  items: any[];
-}
 
 export interface QueryRequest extends BaseRequest {
   query: string;
   filters?: Record<string, any>;
+}
+
+export interface CreateMultipleRequest extends BaseRequest {
+  items: any[];
 }

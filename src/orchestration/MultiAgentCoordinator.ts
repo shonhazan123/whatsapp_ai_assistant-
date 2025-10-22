@@ -1,8 +1,7 @@
-import { DatabaseAgent } from '../agents/v2/DatabaseAgent';
 import { CalendarAgent } from '../agents/v2/CalendarAgent';
+import { DatabaseAgent } from '../agents/v2/DatabaseAgent';
 import { GmailAgent } from '../agents/v2/GmailAgent';
 import { ServiceContainer } from '../core/container/ServiceContainer';
-import { AgentFactory } from '../core/factory/AgentFactory';
 import { logger } from '../utils/logger';
 
 export interface AgentAction {
@@ -289,14 +288,14 @@ export class MultiAgentCoordinator {
   /**
    * Execute actions for multi-task requests
    */
-  async executeActions(messageText: string, userPhone: string): Promise<string> {
+  async executeActions(messageText: string, userPhone: string, context: any[] = []): Promise<string> {
     try {
       // Use MultiTaskService for complex multi-agent coordination
       const { MultiTaskService } = require('../services/multi-task/MultiTaskService');
       const container = require('../core/container/ServiceContainer').ServiceContainer.getInstance();
       
       const multiTaskService = new MultiTaskService(container);
-      return await multiTaskService.executeMultiTask(messageText, userPhone);
+      return await multiTaskService.executeMultiTask(messageText, userPhone, context);
       
     } catch (error) {
       return 'An error occurred while coordinating multiple agents.';

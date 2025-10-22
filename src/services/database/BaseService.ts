@@ -1,6 +1,5 @@
 import { query } from '../../config/database';
-import { logger } from '../../utils/logger';
-import { IResponse, CreateRequest, UpdateRequest, DeleteRequest, GetRequest, BulkRequest } from '../../core/types/AgentTypes';
+import { IResponse } from '../../core/types/AgentTypes';
 
 export abstract class BaseService {
   constructor(protected logger: any = logger) {}

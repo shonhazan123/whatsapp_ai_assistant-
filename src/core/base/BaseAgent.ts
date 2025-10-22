@@ -1,7 +1,6 @@
-import { IAgent, FunctionDefinition, IResponse } from '../types/AgentTypes';
-import { IFunctionHandler } from '../interfaces/IAgent';
 import { OpenAIService } from '../../services/ai/OpenAIService';
-import { logger } from '../../utils/logger';
+import { IFunctionHandler } from '../interfaces/IAgent';
+import { FunctionDefinition, IAgent } from '../types/AgentTypes';
 
 export abstract class BaseAgent implements IAgent {
   protected functions: Map<string, any> = new Map();
@@ -16,13 +15,16 @@ export abstract class BaseAgent implements IAgent {
   abstract getSystemPrompt(): string;
   abstract getFunctions(): FunctionDefinition[];
 
-  protected async executeWithAI( message: string, userPhone: string, systemPrompt: string, functions: FunctionDefinition[] ): Promise<string> {
+  protected async executeWithAI( message: string, userPhone: string, systemPrompt: string, functions: FunctionDefinition[], context: any[] = [] ): Promise<string> {
     try {
+      const messages = [
+        { role: 'system', content: systemPrompt },
+        ...context,
+        { role: 'user', content: message }
+      ];
+
       const completion = await this.openaiService.createCompletion({
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: message }
-        ],
+        messages,
         functions,
         functionCall: 'auto'
       });
@@ -45,6 +47,7 @@ export abstract class BaseAgent implements IAgent {
         const finalCompletion = await this.openaiService.createCompletion({
           messages: [
             { role: 'system', content: systemPrompt },
+            ...context,
             { role: 'user', content: message },
             { 
               role: 'assistant' as const, 

@@ -1,13 +1,13 @@
 import { BaseAgent } from '../../core/base/BaseAgent';
-import { FunctionDefinition } from '../../core/types/AgentTypes';
 import { IFunctionHandler } from '../../core/interfaces/IAgent';
+import { FunctionDefinition } from '../../core/types/AgentTypes';
 import { OpenAIService } from '../../services/ai/OpenAIService';
-import { logger } from '../../utils/logger';
-import { TaskService } from '../../services/database/TaskService';
 import { ContactService } from '../../services/database/ContactService';
 import { ListService } from '../../services/database/ListService';
+import { TaskService } from '../../services/database/TaskService';
 import { UserDataService } from '../../services/database/UserDataService';
-import { TaskFunction, ContactFunction, ListFunction, UserDataFunction } from '../functions/DatabaseFunctions';
+import { logger } from '../../utils/logger';
+import { ContactFunction, ListFunction, TaskFunction, UserDataFunction } from '../functions/DatabaseFunctions';
 
 export class DatabaseAgent extends BaseAgent {
   private taskService: TaskService;
@@ -37,16 +37,18 @@ export class DatabaseAgent extends BaseAgent {
     this.registerFunctions();
   }
 
-  async processRequest(message: string, userPhone: string): Promise<string> {
+  async processRequest(message: string, userPhone: string, context: any[] = []): Promise<string> {
     try {
       this.logger.info('💾 Database Agent activated');
       this.logger.info(`📝 Processing database request: "${message}"`);
+      this.logger.info(`📚 Context: ${context.length} messages`);
       
       return await this.executeWithAI(
         message,
         userPhone,
         this.getSystemPrompt(),
-        this.getFunctions()
+        this.getFunctions(),
+        context
       );
     } catch (error) {
       this.logger.error('Database agent error:', error);
@@ -64,16 +66,20 @@ export class DatabaseAgent extends BaseAgent {
 - CONTACTS: contact_list.id, contact_list.contact_list_id → users.id, contact_list.name, contact_list.phone_number, contact_list.email
 - LISTS: lists.id, lists.list_id → users.id, lists.list_name ('note' or 'checklist'), lists.content (JSONB)
 
-## SUPPORTED INTENTS:
+## CRITICAL REASONING PROCESS:
+Before calling any function, you MUST:
+1. Identify the user's INTENT (create/read/update/delete)
+2. Determine the ENTITY TYPE (task/contact/list/event)
+3. Select the appropriate function based on intent + entity type
+4. For MULTIPLE items, use bulk operations
 
-1. ADD TASK - phrases: "add task", "remind me", "new task", "הוסף משימה", "תזכיר לי", "משימה חדשה"
-2. ADD SUBTASK - phrases: "add subtask", "new item", "הוסף תת משימה", "סעיף חדש"
-3. ADD CONTACT - phrases: "add contact", "create contact", "הוסף איש קשר", "צור רשימת אנשי קשר"
-4. CREATE LIST - phrases: "create list", "new note", "רשימת בדיקה", "צור פתק"
-5. GET TASKS - phrases: "what are my tasks", "show tasks", "מה המשימות שלי", "הצג משימות"
-6. COMPLETE TASK - phrases: "complete task", "done", "סיימתי משימה", "סמן כהושלם"
-7. GET ALL DATA - phrases: "what lists do I have", "show me everything", "אילו רשימות יש לי", "מה יש לי", "הצג לי הכל", "מה המשימות שלי", "אילו אנשי קשר יש לי"
-8. SEARCH CONTACT - phrases: "what is the email of", "מה המייל של", "חפש איש קשר", "מה הטלפון של", "find contact", "search contact"
+Examples:
+- "תמחק את הרשימה" → INTENT: delete, ENTITY: list → Use deleteList
+- "מה הרשימות שלי" → INTENT: read, ENTITY: list → Use getAllLists
+- "הוסף משימה" → INTENT: create, ENTITY: task → Use addTask
+- "הוסף 3 משימות" → INTENT: create, ENTITY: task, MULTIPLE → Use addMultipleTasks
+
+Always think: What does the user want to DO? What are they talking ABOUT?
 
 ## AVAILABLE FUNCTIONS:
 
@@ -125,6 +131,14 @@ export class DatabaseAgent extends BaseAgent {
   2. Use deleteItem operation with the correct listId and itemIndex
   3. Verify the operation was successful before confirming to the user
   4. NEVER say an item was deleted if the operation failed
+
+## CRITICAL DELETE CONFIRMATION RULES:
+- For ANY delete operation (deleteTask, deleteContact, deleteList, deleteItem), you MUST:
+  1. ALWAYS ask for confirmation before deleting
+  2. NEVER proceed with deletion without explicit user confirmation
+  3. Use phrases like "Are you sure you want to delete...?" or "האם אתה בטוח שברצונך למחוק...?"
+  4. Only execute the delete operation after user confirms with "yes", "כן", "delete", "מחק", etc.
+  5. If user says "no", "לא", "cancel", "בטל", then do NOT delete and inform them the operation was cancelled
 - When user asks "what was the list again?" or "מה הרשימה שוב?" or similar questions after discussing a specific list, you MUST:
   1. Remember the context from the conversation history
   2. Show the same list that was discussed in previous messages
@@ -141,11 +155,19 @@ export class DatabaseAgent extends BaseAgent {
 - Always include dueDate in ISO format: YYYY-MM-DDTHH:mm:ssZ
 - Default due date is TODAY if not specified: ${new Date().toISOString().split('T')[0]}T10:00:00Z
 
+## BULK OPERATIONS:
+- addMultipleTasks - Create multiple tasks at once
+- updateMultipleTasks - Update multiple tasks at once
+- deleteMultipleTasks - Delete multiple tasks at once
+- addMultipleContacts - Create multiple contacts at once
+- updateMultipleContacts - Update multiple contacts at once
+- deleteMultipleContacts - Delete multiple contacts at once
+- createMultipleLists - Create multiple lists at once
+- updateMultipleLists - Update multiple lists at once
+- deleteMultipleLists - Delete multiple lists at once
+
 ## BULK OPERATIONS RULES:
-- When user asks to create/update/delete MULTIPLE items, you MUST use the appropriate "Multiple" operation:
-  - createMultiple for tasks, contacts, lists
-  - updateMultiple for updating multiple items
-  - deleteMultiple for deleting multiple items
+- When user asks to create/update/delete MULTIPLE items, you MUST use the appropriate "Multiple" operation
 - Always parse ALL items from the user's message
 - Process all items in the array
 - Return the count of successfully processed items

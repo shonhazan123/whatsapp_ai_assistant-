@@ -1,9 +1,9 @@
 import { IFunction, IResponse } from '../../core/interfaces/IAgent';
-import { TaskService } from '../../services/database/TaskService';
+import { QueryResolver } from '../../core/orchestrator/QueryResolver';
 import { ContactService } from '../../services/database/ContactService';
 import { ListService } from '../../services/database/ListService';
+import { TaskService } from '../../services/database/TaskService';
 import { UserDataService } from '../../services/database/UserDataService';
-import { logger } from '../../utils/logger';
 
 // Task Functions
 export class TaskFunction implements IFunction {
@@ -93,6 +93,21 @@ export class TaskFunction implements IFunction {
     try {
       const { operation, ...params } = args;
 
+      // Helper: resolve a taskId from natural language text when missing
+      const resolveTaskId = async (): Promise<{ id: string | null; disambiguation?: string }> => {
+        if (params.taskId) return { id: params.taskId };
+        if (!params.text) return { id: null };
+        const resolver = new QueryResolver();
+        const result = await resolver.resolveOneOrAsk(params.text, userId, 'task');
+        if (result.disambiguation) {
+          return { 
+            id: null, 
+            disambiguation: resolver.formatDisambiguation('task', result.disambiguation.candidates) 
+          };
+        }
+        return { id: result.entity?.id || null };
+      };
+
       switch (operation) {
         case 'create':
           return await this.taskService.create({
@@ -110,13 +125,19 @@ export class TaskFunction implements IFunction {
           });
 
         case 'get':
-          if (!params.taskId) {
-            return { success: false, error: 'Task ID is required for get operation' };
+          {
+            const resolved = await resolveTaskId();
+            if (resolved.disambiguation) {
+              return { success: false, error: resolved.disambiguation };
+            }
+            if (!resolved.id) {
+              return { success: false, error: 'Task not found (provide taskId or recognizable text)' };
+            }
+            return await this.taskService.getById({
+              userPhone: userId,
+              id: resolved.id
+            });
           }
-          return await this.taskService.getById({
-            userPhone: userId,
-            id: params.taskId
-          });
 
         case 'getAll':
           return await this.taskService.getAll({
@@ -127,14 +148,20 @@ export class TaskFunction implements IFunction {
           });
 
         case 'update':
-          if (!params.taskId) {
-            return { success: false, error: 'Task ID is required for update operation' };
+          {
+            const resolved = await resolveTaskId();
+            if (resolved.disambiguation) {
+              return { success: false, error: resolved.disambiguation };
+            }
+            if (!resolved.id) {
+              return { success: false, error: 'Task not found (provide taskId or recognizable text)' };
+            }
+            return await this.taskService.update({
+              userPhone: userId,
+              id: resolved.id,
+              data: params
+            });
           }
-          return await this.taskService.update({
-            userPhone: userId,
-            id: params.taskId,
-            data: params
-          });
 
         case 'updateMultiple':
           if (!params.updates || !Array.isArray(params.updates) || params.updates.length === 0) {
@@ -144,15 +171,29 @@ export class TaskFunction implements IFunction {
           const updateErrors = [];
           for (const update of params.updates) {
             try {
+              // Natural language: resolve missing taskId from update.text if needed
+              let resolvedId = update.taskId;
+              if (!resolvedId && update.text) {
+                const r = await new QueryResolver().resolveOneOrAsk(update.text, userId, 'task');
+                if (r.disambiguation) {
+                  updateErrors.push({ taskText: update.text, error: r.disambiguation });
+                  continue;
+                }
+                resolvedId = r.entity?.id || null;
+              }
+              if (!resolvedId) {
+                updateErrors.push({ taskText: update.text, error: 'Task not found' });
+                continue;
+              }
               const result = await this.taskService.update({
                 userPhone: userId,
-                id: update.taskId,
+                id: resolvedId,
                 data: update
               });
               if (result.success) {
                 updateResults.push(result.data);
               } else {
-                updateErrors.push({ taskId: update.taskId, error: result.error });
+                updateErrors.push({ taskId: resolvedId, error: result.error });
               }
             } catch (error) {
               updateErrors.push({ taskId: update.taskId, error: error instanceof Error ? error.message : 'Unknown error' });
@@ -168,21 +209,41 @@ export class TaskFunction implements IFunction {
           };
 
         case 'delete':
-          if (!params.taskId) {
-            return { success: false, error: 'Task ID is required for delete operation' };
+          {
+            const resolved = await resolveTaskId();
+            if (resolved.disambiguation) {
+              return { success: false, error: resolved.disambiguation };
+            }
+            if (!resolved.id) {
+              return { success: false, error: 'Task not found (provide taskId or recognizable text)' };
+            }
+            return await this.taskService.delete({
+              userPhone: userId,
+              id: resolved.id
+            });
           }
-          return await this.taskService.delete({
-            userPhone: userId,
-            id: params.taskId
-          });
 
         case 'deleteMultiple':
-          if (!params.taskIds || !Array.isArray(params.taskIds) || params.taskIds.length === 0) {
-            return { success: false, error: 'Task IDs array is required for deleteMultiple operation' };
-          }
-          const deleteResults = [];
-          const deleteErrors = [];
-          for (const taskId of params.taskIds) {
+          {
+            const deleteResults = [];
+            const deleteErrors = [];
+            let ids: string[] = Array.isArray(params.taskIds) ? params.taskIds : [];
+            // Natural language: if no ids provided, try params.tasks (array of { text })
+            if ((!ids || ids.length === 0) && Array.isArray(params.tasks)) {
+              for (const t of params.tasks) {
+                if (!t?.text) continue;
+                const r = await new QueryResolver().resolveOneOrAsk(t.text, userId, 'task');
+                if (r.disambiguation) {
+                  deleteErrors.push({ taskText: t.text, error: r.disambiguation });
+                  continue;
+                }
+                if (r.entity?.id) ids.push(r.entity.id);
+              }
+            }
+            if (!ids || ids.length === 0) {
+              return { success: false, error: 'Provide taskIds or tasks with text to delete' };
+            }
+            for (const taskId of ids) {
             try {
               const result = await this.taskService.delete({
                 userPhone: userId,
@@ -196,25 +257,32 @@ export class TaskFunction implements IFunction {
             } catch (error) {
               deleteErrors.push({ taskId, error: error instanceof Error ? error.message : 'Unknown error' });
             }
-          }
-          return {
-            success: deleteErrors.length === 0,
-            data: {
-              deleted: deleteResults,
-              errors: deleteErrors.length > 0 ? deleteErrors : undefined,
-              count: deleteResults.length
             }
-          };
+            return {
+              success: deleteErrors.length === 0,
+              data: {
+                deleted: deleteResults,
+                errors: deleteErrors.length > 0 ? deleteErrors : undefined,
+                count: deleteResults.length
+              }
+            };
+          }
 
         case 'complete':
-          if (!params.taskId) {
-            return { success: false, error: 'Task ID is required for complete operation' };
+          {
+            const resolved = await resolveTaskId();
+            if (resolved.disambiguation) {
+              return { success: false, error: resolved.disambiguation };
+            }
+            if (!resolved.id) {
+              return { success: false, error: 'Task not found (provide taskId or recognizable text)' };
+            }
+            return await this.taskService.complete({
+              userPhone: userId,
+              id: resolved.id,
+              data: {}
+            });
           }
-          return await this.taskService.complete({
-            userPhone: userId,
-            id: params.taskId,
-            data: {}
-          });
 
         case 'addSubtask':
           if (!params.taskId || !params.subtaskText) {
@@ -325,6 +393,20 @@ export class ContactFunction implements IFunction {
   async execute(args: any, userId: string): Promise<IResponse> {
     try {
       const { operation, ...params } = args;
+      const resolver = new QueryResolver();
+      const resolveContactId = async (): Promise<{ id: string | null; disambiguation?: string }> => {
+        if (params.contactId) return { id: params.contactId };
+        const query = params.name || params.email || params.phone;
+        if (!query) return { id: null };
+        const one = await resolver.resolveOneOrAsk(query, userId, 'contact');
+        if (one.disambiguation) {
+          return { 
+            id: null, 
+            disambiguation: resolver.formatDisambiguation('contact', one.disambiguation.candidates) 
+          };
+        }
+        return { id: one.entity?.id || null };
+      };
 
       switch (operation) {
         case 'create':
@@ -343,13 +425,14 @@ export class ContactFunction implements IFunction {
           });
 
         case 'get':
-          if (!params.contactId) {
-            return { success: false, error: 'Contact ID is required for get operation' };
+          {
+            const resolved = await resolveContactId();
+            if (resolved.disambiguation) {
+              return { success: false, error: resolved.disambiguation };
+            }
+            if (!resolved.id) return { success: false, error: 'Contact not found (provide name/email/phone)' };
+            return await this.contactService.getById({ userPhone: userId, id: resolved.id });
           }
-          return await this.contactService.getById({
-            userPhone: userId,
-            id: params.contactId
-          });
 
         case 'getAll':
           return await this.contactService.getAll({
@@ -432,14 +515,14 @@ export class ContactFunction implements IFunction {
           };
 
         case 'update':
-          if (!params.contactId) {
-            return { success: false, error: 'Contact ID is required for update operation' };
+          {
+            const resolved = await resolveContactId();
+            if (resolved.disambiguation) {
+              return { success: false, error: resolved.disambiguation };
+            }
+            if (!resolved.id) return { success: false, error: 'Contact not found (provide name/email/phone)' };
+            return await this.contactService.update({ userPhone: userId, id: resolved.id, data: params });
           }
-          return await this.contactService.update({
-            userPhone: userId,
-            id: params.contactId,
-            data: params
-          });
 
         case 'updateMultiple':
           if (!params.updates || !Array.isArray(params.updates) || params.updates.length === 0) {
@@ -449,15 +532,31 @@ export class ContactFunction implements IFunction {
           const updateErrors = [];
           for (const update of params.updates) {
             try {
+              let resolvedId = update.contactId;
+              if (!resolvedId) {
+                const q = update.name || update.email || update.phone;
+                if (q) {
+                  const one = await resolver.resolveOneOrAsk(q, userId, 'contact');
+                  if (one.disambiguation) {
+                    updateErrors.push({ contactText: q, error: one.disambiguation });
+                    continue;
+                  }
+                  resolvedId = one.entity?.id || null;
+                }
+              }
+              if (!resolvedId) {
+                updateErrors.push({ contactText: update.name || update.email || update.phone, error: 'Contact not found' });
+                continue;
+              }
               const result = await this.contactService.update({
                 userPhone: userId,
-                id: update.contactId,
+                id: resolvedId,
                 data: update
               });
               if (result.success) {
                 updateResults.push(result.data);
               } else {
-                updateErrors.push({ contactId: update.contactId, error: result.error });
+                updateErrors.push({ contactId: resolvedId, error: result.error });
               }
             } catch (error) {
               updateErrors.push({ contactId: update.contactId, error: error instanceof Error ? error.message : 'Unknown error' });
@@ -473,21 +572,36 @@ export class ContactFunction implements IFunction {
           };
 
         case 'delete':
-          if (!params.contactId) {
-            return { success: false, error: 'Contact ID is required for delete operation' };
+          {
+            const resolved = await resolveContactId();
+            if (resolved.disambiguation) {
+              return { success: false, error: resolved.disambiguation };
+            }
+            if (!resolved.id) return { success: false, error: 'Contact not found (provide name/email/phone)' };
+            return await this.contactService.delete({ userPhone: userId, id: resolved.id });
           }
-          return await this.contactService.delete({
-            userPhone: userId,
-            id: params.contactId
-          });
 
         case 'deleteMultiple':
-          if (!params.contactIds || !Array.isArray(params.contactIds) || params.contactIds.length === 0) {
-            return { success: false, error: 'Contact IDs array is required for deleteMultiple operation' };
-          }
-          const deleteResults = [];
-          const deleteErrors = [];
-          for (const contactId of params.contactIds) {
+          {
+            const deleteResults = [];
+            const deleteErrors = [];
+            let ids: string[] = Array.isArray(params.contactIds) ? params.contactIds : [];
+            if ((!ids || ids.length === 0) && Array.isArray(params.contacts)) {
+              for (const c of params.contacts) {
+                const q = c?.name || c?.email || c?.phone;
+                if (!q) continue;
+                const one = await resolver.resolveOneOrAsk(q, userId, 'contact');
+                if (one.disambiguation) {
+                  deleteErrors.push({ contactText: q, error: one.disambiguation });
+                  continue;
+                }
+                if (one.entity?.id) ids.push(one.entity.id);
+              }
+            }
+            if (!ids || ids.length === 0) {
+              return { success: false, error: 'Provide contactIds or contacts with name/email/phone to delete' };
+            }
+            for (const contactId of ids) {
             try {
               const result = await this.contactService.delete({
                 userPhone: userId,
@@ -501,15 +615,16 @@ export class ContactFunction implements IFunction {
             } catch (error) {
               deleteErrors.push({ contactId, error: error instanceof Error ? error.message : 'Unknown error' });
             }
-          }
-          return {
-            success: deleteErrors.length === 0,
-            data: {
-              deleted: deleteResults,
-              errors: deleteErrors.length > 0 ? deleteErrors : undefined,
-              count: deleteResults.length
             }
-          };
+            return {
+              success: deleteErrors.length === 0,
+              data: {
+                deleted: deleteResults,
+                errors: deleteErrors.length > 0 ? deleteErrors : undefined,
+                count: deleteResults.length
+              }
+            };
+          }
 
         case 'search':
           return await this.contactService.search({
@@ -621,6 +736,20 @@ export class ListFunction implements IFunction {
   async execute(args: any, userId: string): Promise<IResponse> {
     try {
       const { operation, ...params } = args;
+      const resolver = new QueryResolver();
+      const resolveListId = async (): Promise<{ id: string | null; disambiguation?: string }> => {
+        if (params.listId) return { id: params.listId };
+        const query = params.title;
+        if (!query) return { id: null };
+        const one = await resolver.resolveOneOrAsk(query, userId, 'list');
+        if (one.disambiguation) {
+          return { 
+            id: null, 
+            disambiguation: resolver.formatDisambiguation('list', one.disambiguation.candidates) 
+          };
+        }
+        return { id: one.entity?.id || null };
+      };
 
       switch (operation) {
         case 'create':
@@ -639,13 +768,14 @@ export class ListFunction implements IFunction {
           });
 
         case 'get':
-          if (!params.listId) {
-            return { success: false, error: 'List ID is required for get operation' };
+          {
+            const resolved = await resolveListId();
+            if (resolved.disambiguation) {
+              return { success: false, error: resolved.disambiguation };
+            }
+            if (!resolved.id) return { success: false, error: 'List not found (provide title)' };
+            return await this.listService.getById({ userPhone: userId, id: resolved.id });
           }
-          return await this.listService.getById({
-            userPhone: userId,
-            id: params.listId
-          });
 
         case 'getAll':
           return await this.listService.getAll({
@@ -656,14 +786,14 @@ export class ListFunction implements IFunction {
           });
 
         case 'update':
-          if (!params.listId) {
-            return { success: false, error: 'List ID is required for update operation' };
+          {
+            const resolved = await resolveListId();
+            if (resolved.disambiguation) {
+              return { success: false, error: resolved.disambiguation };
+            }
+            if (!resolved.id) return { success: false, error: 'List not found (provide title)' };
+            return await this.listService.update({ userPhone: userId, id: resolved.id, data: params });
           }
-          return await this.listService.update({
-            userPhone: userId,
-            id: params.listId,
-            data: params
-          });
 
         case 'updateMultiple':
           if (!params.updates || !Array.isArray(params.updates) || params.updates.length === 0) {
@@ -697,13 +827,14 @@ export class ListFunction implements IFunction {
           };
 
         case 'delete':
-          if (!params.listId) {
-            return { success: false, error: 'List ID is required for delete operation' };
+          {
+            const resolved = await resolveListId();
+            if (resolved.disambiguation) {
+              return { success: false, error: resolved.disambiguation };
+            }
+            if (!resolved.id) return { success: false, error: 'List not found (provide title)' };
+            return await this.listService.delete({ userPhone: userId, id: resolved.id });
           }
-          return await this.listService.delete({
-            userPhone: userId,
-            id: params.listId
-          });
 
         case 'deleteMultiple':
           if (!params.listIds || !Array.isArray(params.listIds) || params.listIds.length === 0) {
@@ -736,43 +867,34 @@ export class ListFunction implements IFunction {
           };
 
         case 'addItem':
-          if (!params.listId || !params.itemText) {
-            return { success: false, error: 'List ID and item text are required for addItem operation' };
-          }
-          return await this.listService.addItem({
-            userPhone: userId,
-            id: params.listId,
-            data: {
-              listId: params.listId,
-              itemText: params.itemText
+          {
+            const resolved = await resolveListId();
+            if (resolved.disambiguation) {
+              return { success: false, error: resolved.disambiguation };
             }
-          });
+            if (!resolved.id || !params.itemText) return { success: false, error: 'Provide list title and item text' };
+            return await this.listService.addItem({ userPhone: userId, id: resolved.id, data: { listId: resolved.id, itemText: params.itemText } });
+          }
 
         case 'toggleItem':
-          if (!params.listId || params.itemIndex === undefined) {
-            return { success: false, error: 'List ID and item index are required for toggleItem operation' };
-          }
-          return await this.listService.toggleItem({
-            userPhone: userId,
-            id: params.listId,
-            data: {
-              listId: params.listId,
-              itemIndex: params.itemIndex
+          {
+            const resolved = await resolveListId();
+            if (resolved.disambiguation) {
+              return { success: false, error: resolved.disambiguation };
             }
-          });
+            if (!resolved.id || params.itemIndex === undefined) return { success: false, error: 'Provide list title and item index' };
+            return await this.listService.toggleItem({ userPhone: userId, id: resolved.id, data: { listId: resolved.id, itemIndex: params.itemIndex } });
+          }
 
         case 'deleteItem':
-          if (!params.listId || params.itemIndex === undefined) {
-            return { success: false, error: 'List ID and item index are required for deleteItem operation' };
-          }
-          return await this.listService.deleteItem({
-            userPhone: userId,
-            id: params.listId,
-            data: {
-              listId: params.listId,
-              itemIndex: params.itemIndex
+          {
+            const resolved = await resolveListId();
+            if (resolved.disambiguation) {
+              return { success: false, error: resolved.disambiguation };
             }
-          });
+            if (!resolved.id || params.itemIndex === undefined) return { success: false, error: 'Provide list title and item index' };
+            return await this.listService.deleteItem({ userPhone: userId, id: resolved.id, data: { listId: resolved.id, itemIndex: params.itemIndex } });
+          }
 
         default:
           return { success: false, error: `Unknown operation: ${operation}` };

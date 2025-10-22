@@ -1,6 +1,6 @@
-import { BaseService } from './BaseService';
+import { CreateMultipleRequest, CreateRequest, DeleteRequest, GetRequest, IResponse, UpdateRequest } from '../../core/types/AgentTypes';
 import { logger } from '../../utils/logger';
-import { IResponse, CreateRequest, UpdateRequest, DeleteRequest, GetRequest, BulkRequest } from '../../core/types/AgentTypes';
+import { BaseService } from './BaseService';
 
 export interface Contact {
   id: string;
@@ -63,7 +63,7 @@ export class ContactService extends BaseService {
     }
   }
 
-  async createMultiple(request: BulkRequest): Promise<IResponse> {
+  async createMultiple(request: CreateMultipleRequest): Promise<IResponse> {
     try {
       const userId = await this.ensureUserExists(request.userPhone);
       const results = [];

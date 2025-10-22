@@ -1,7 +1,7 @@
+import { MultiAgentCoordinator } from '../../orchestration/MultiAgentCoordinator';
 import { logger } from '../../utils/logger';
 import { ServiceContainer } from '../container/ServiceContainer';
 import { AgentFactory } from '../factory/AgentFactory';
-import { MultiAgentCoordinator } from '../../orchestration/MultiAgentCoordinator';
 // import { PlanningAgent } from '../../agents/v2/PlanningAgent'; // Removed - not needed
 import { IAgent } from '../interfaces/IAgent';
 

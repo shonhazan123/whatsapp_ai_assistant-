@@ -1,9 +1,9 @@
 // scripts/oauth-setup.ts
 // Run this script to get Google OAuth refresh token
-import { google } from 'googleapis';
-import express from 'express';
-import open from 'open';
 import dotenv from 'dotenv';
+import express from 'express';
+import { google } from 'googleapis';
+import open from 'open';
 
 dotenv.config();
 

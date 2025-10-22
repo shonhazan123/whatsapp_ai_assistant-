@@ -1,72 +1,64 @@
 import { BaseAgent } from '../../core/base/BaseAgent';
-import { FunctionDefinition } from '../../core/types/AgentTypes';
 import { IFunctionHandler } from '../../core/interfaces/IAgent';
+import { ConversationWindow } from '../../core/memory/ConversationWindow';
+import { FunctionDefinition } from '../../core/types/AgentTypes';
 import { OpenAIService } from '../../services/ai/OpenAIService';
 import { logger } from '../../utils/logger';
-import { ConversationMessage } from '../../types';
-import { getConversationHistory, saveMessage, estimateTokens } from '../../services/memory';
 
 // Token limits for different models
 const MAX_CONTEXT_TOKENS = 8000;
 const SYSTEM_PROMPT_TOKENS = 500;
 
 export class MainAgent extends BaseAgent {
+  private agentManager: any | null = null;
+  private conversationWindow: ConversationWindow;
+  
   constructor(
     openaiService: OpenAIService,
     functionHandler: IFunctionHandler,
     loggerInstance: any = logger
   ) {
     super(openaiService, functionHandler, logger);
+    this.conversationWindow = ConversationWindow.getInstance();
   }
 
   async processRequest(message: string, userPhone: string): Promise<string> {
     try {
-      // Step 1: Get conversation history with fallback
-      let history = await getConversationHistory(userPhone).catch((err) => {
-        this.logger.warn('Database unavailable, continuing without conversation history:', err.message);
-        return [];
-      });
-      
-      // Step 2: Token management - ensure we don't exceed limits
-      let historyTokens = estimateTokens(history);
-      const messageTokens = estimateTokens([{ role: 'user', content: message }]);
-      const availableTokens = MAX_CONTEXT_TOKENS - SYSTEM_PROMPT_TOKENS - messageTokens;
-
-      // If history is too long, trim it (keep most recent messages)
-      while (historyTokens > availableTokens && history.length > 0) {
-        history.shift(); // Remove oldest message
-        historyTokens = estimateTokens(history);
+      // Initialize and cache AgentManager once
+      if (!this.agentManager) {
+        const module = await import('../../core/manager/AgentManager');
+        this.agentManager = module.AgentManager.getInstance();
       }
 
-      this.logger.info(`Context: ${history.length} messages, ~${historyTokens + messageTokens} tokens`);
+      // Step 1: Add user message to conversation window
+      this.conversationWindow.addMessage(userPhone, 'user', message);
       
-      // Step 3: Save user message (async, non-blocking)
-      saveMessage(userPhone, 'user', message).catch(err => 
-        this.logger.warn('Could not save user message:', err.message)
-      );
-
-      // Step 4: Determine intent and route to appropriate agent
+      // Step 2: Get conversation context
+      const context = this.conversationWindow.getContext(userPhone);
+      
+      // Step 3: Determine intent
       const intent = await this.openaiService.detectIntent(message);
       this.logger.info(`Detected intent: ${intent}`);
+      this.logger.info(`Context: ${context.length} messages`);
       
       let response: string;
 
       // Route to specialized agents or general conversation
       if (intent === 'calendar') {
-        response = await this.routeToCalendarAgent(message, userPhone);
+        response = await this.routeToCalendarAgent(message, userPhone, context);
       } else if (intent === 'gmail') {
-        response = await this.routeToGmailAgent(message, userPhone);
+        response = await this.routeToGmailAgent(message, userPhone, context);
       } else if (intent === 'database') {
-        response = await this.routeToDatabaseAgent(message, userPhone);
+        response = await this.routeToDatabaseAgent(message, userPhone, context);
+      } else if (intent === 'multi-task') {
+        response = await this.routeToMultiAgentCoordinator(message, userPhone);
       } else {
         // General conversation with full context
-        response = await this.getGeneralResponse(history, message);
+        response = await this.getGeneralResponse(context, message);
       }
 
-      // Step 5: Save assistant response (async, non-blocking)
-      saveMessage(userPhone, 'assistant', response).catch(err =>
-        this.logger.warn('Could not save assistant response:', err.message)
-      );
+      // Step 4: Add assistant response to conversation window
+      this.conversationWindow.addMessage(userPhone, 'assistant', response);
 
       return response;
     } catch (error) {
@@ -134,31 +126,29 @@ In your response use a nice hard working assistant tone.`;
     return [];
   }
 
-  private async routeToCalendarAgent(message: string, userPhone: string): Promise<string> {
-    // This would be implemented with dependency injection in a real application
-    // For now, we'll return a placeholder
-    return `Calendar functionality will be handled by the Calendar Agent for: "${message}"`;
+  private async routeToCalendarAgent(message: string, userPhone: string, context: any[]): Promise<string> {
+    return this.agentManager.getCalendarAgent().processRequest(message, userPhone, context);
   }
 
-  private async routeToGmailAgent(message: string, userPhone: string): Promise<string> {
-    // This would be implemented with dependency injection in a real application
-    // For now, we'll return a placeholder
-    return `Email functionality will be handled by the Gmail Agent for: "${message}"`;
+  private async routeToGmailAgent(message: string, userPhone: string, context: any[]): Promise<string> {
+    return this.agentManager.getGmailAgent().processRequest(message, userPhone, context);
   }
 
-  private async routeToDatabaseAgent(message: string, userPhone: string): Promise<string> {
-    // This would be implemented with dependency injection in a real application
-    // For now, we'll return a placeholder
-    return `Database functionality will be handled by the Database Agent for: "${message}"`;
+  private async routeToDatabaseAgent(message: string, userPhone: string, context: any[]): Promise<string> {
+    return this.agentManager.getDatabaseAgent().processRequest(message, userPhone, context);
   }
 
-  private async getGeneralResponse(history: ConversationMessage[], message: string): Promise<string> {
-    const messages: ConversationMessage[] = [
+  private async routeToMultiAgentCoordinator(message: string, userPhone: string, context: any[] = []): Promise<string> {
+    return this.agentManager.getMultiAgentCoordinator().executeActions(message, userPhone, context);
+  }
+
+  private async getGeneralResponse(context: any[], message: string): Promise<string> {
+    const messages: any[] = [
       {
         role: 'system',
         content: this.getSystemPrompt()
       },
-      ...history,
+      ...context,
       {
         role: 'user',
         content: message
@@ -173,4 +163,5 @@ In your response use a nice hard working assistant tone.`;
 
     return completion.choices[0]?.message?.content || 'I could not generate a response.';
   }
+
 }

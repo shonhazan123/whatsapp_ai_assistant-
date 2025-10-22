@@ -1,4 +1,4 @@
-import { IResponse, FunctionDefinition } from '../types/AgentTypes';
+import { FunctionDefinition, IResponse } from '../types/AgentTypes';
 
 export { IResponse } from '../types/AgentTypes';
 

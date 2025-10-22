@@ -1,7 +1,7 @@
+import { ServiceContainer } from '../../core/container/ServiceContainer';
+import { logger } from '../../utils/logger';
 import { OpenAIService } from '../ai/OpenAIService';
 import { ContactLookupService } from '../contact/ContactLookupService';
-import { logger } from '../../utils/logger';
-import { ServiceContainer } from '../../core/container/ServiceContainer';
 
 export interface Task {
   type: string;
@@ -121,7 +121,7 @@ Return ONLY a JSON array of tasks in this format:
   /**
    * Execute multi-task workflow
    */
-  async executeMultiTask(messageText: string, userPhone: string): Promise<string> {
+  async executeMultiTask(messageText: string, userPhone: string, context: any[] = []): Promise<string> {
     try {
       // Parse tasks using LLM
       const parseResult = await this.parseMultiTaskRequest(messageText, userPhone);
@@ -179,7 +179,7 @@ Return ONLY a JSON array of tasks in this format:
           continue;
         }
 
-        const result = await agent.processRequest(taskMessage, userPhone);
+        const result = await agent.processRequest(taskMessage, userPhone, context);
         
         // Debug logging for calendar events
         if (task.type === 'calendar_event') {

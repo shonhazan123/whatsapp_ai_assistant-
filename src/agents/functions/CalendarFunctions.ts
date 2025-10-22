@@ -1,6 +1,7 @@
 import { IFunction, IResponse } from '../../core/interfaces/IAgent';
+import { QueryResolver } from '../../core/orchestrator/QueryResolver';
 import { CalendarService } from '../../services/calendar/CalendarService';
-import { logger } from '../../utils/logger';
+import { TimeParser } from '../../utils/time';
 
 export class CalendarFunction implements IFunction {
   name = 'calendarOperations';
@@ -110,6 +111,7 @@ export class CalendarFunction implements IFunction {
   async execute(args: any): Promise<IResponse> {
     try {
       const { operation, ...params } = args;
+      const resolver = new QueryResolver();
 
       switch (operation) {
         // ✅ Create a single event
@@ -189,9 +191,20 @@ Google Calendar has automatically sent email invitations to all attendees.`;
           return await this.calendarService.checkConflicts(params.timeMin, params.timeMax);
 
         // ✅ Get event by ID
-        case 'get':
-          if (!params.eventId) return { success: false, error: 'Event ID is required for get operation' };
+        case 'get': {
+          // Natural language: resolve by summary/time window if no eventId
+          if (!params.eventId) {
+            const phrase = params.summary || '';
+            const range = params.timeMin && params.timeMax ? { start: params.timeMin, end: params.timeMax } : TimeParser.parseDateRange(phrase) || { start: new Date().toISOString(), end: new Date(Date.now() + 24*60*60*1000).toISOString() };
+            const result = await resolver.resolveOneOrAsk(phrase, '', 'event');
+            if (result.disambiguation) {
+              return { success: false, error: resolver.formatDisambiguation('event', result.disambiguation.candidates) };
+            }
+            if (!result.entity?.id) return { success: false, error: 'Event not found (provide summary/time window)' };
+            return await this.calendarService.getEventById(result.entity.id);
+          }
           return await this.calendarService.getEventById(params.eventId);
+        }
 
         // ✅ Get events in range
         case 'getEvents':
@@ -201,14 +214,33 @@ Google Calendar has automatically sent email invitations to all attendees.`;
           return await this.calendarService.getEvents({ timeMin: params.timeMin, timeMax: params.timeMax });
 
         // ✅ Update event
-        case 'update':
-          if (!params.eventId) return { success: false, error: 'Event ID is required for update' };
+        case 'update': {
+          if (!params.eventId) {
+            const phrase = params.summary || '';
+            const range = params.timeMin && params.timeMax ? { start: params.timeMin, end: params.timeMax } : TimeParser.parseDateRange(phrase) || { start: new Date().toISOString(), end: new Date(Date.now() + 24*60*60*1000).toISOString() };
+            const result = await resolver.resolveOneOrAsk(phrase, '', 'event');
+            if (result.disambiguation) {
+              return { success: false, error: resolver.formatDisambiguation('event', result.disambiguation.candidates) };
+            }
+            if (!result.entity?.id) return { success: false, error: 'Event not found (provide summary/time window)' };
+            return await this.calendarService.updateEvent({ ...params, eventId: result.entity.id });
+          }
           return await this.calendarService.updateEvent(params);
+        }
 
         // ✅ Delete event (single or recurring series)
-        case 'delete':
-          if (!params.eventId) return { success: false, error: 'Event ID is required for delete' };
+        case 'delete': {
+          if (!params.eventId) {
+            const phrase = params.summary || '';
+            const result = await resolver.resolveOneOrAsk(phrase, '', 'event');
+            if (result.disambiguation) {
+              return { success: false, error: resolver.formatDisambiguation('event', result.disambiguation.candidates) };
+            }
+            if (!result.entity?.id) return { success: false, error: 'Event not found (provide summary/time window)' };
+            return await this.calendarService.deleteEvent(result.entity.id);
+          }
           return await this.calendarService.deleteEvent(params.eventId);
+        }
 
         // ✅ Delete by summary – optimized to target MASTER events
         case 'deleteBySummary': {

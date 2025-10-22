@@ -86,6 +86,49 @@ export async function saveMessage(
 }
 
 /**
+ * Store last resolution context (intent/entities) as a system message for quick recall
+ */
+export async function saveResolutionContext(userPhone: string, context: any): Promise<void> {
+  try {
+    const payload = { type: 'resolution_context', at: new Date().toISOString(), ...context };
+    await saveMessage(userPhone, 'system', JSON.stringify(payload));
+  } catch (error) {
+    logger.error('Error saving resolution context:', error);
+  }
+}
+
+/**
+ * Retrieve the most recent resolution context from conversation memory
+ */
+export async function getLastResolutionContext(userPhone: string): Promise<any | null> {
+  try {
+    const result = await query(
+      `SELECT cm.content
+       FROM conversation_memory cm
+       JOIN users u ON cm.user_id = u.id
+       WHERE u.phone = $1 
+       AND cm.role = 'system'
+       ORDER BY cm.created_at DESC 
+       LIMIT 20`,
+      [userPhone]
+    );
+
+    for (const row of result.rows) {
+      try {
+        const obj = JSON.parse(row.content);
+        if (obj && obj.type === 'resolution_context') {
+          return obj;
+        }
+      } catch {}
+    }
+    return null;
+  } catch (error) {
+    logger.error('Error getting last resolution context:', error);
+    return null;
+  }
+}
+
+/**
  * Clear conversation history for a user
  * Useful for "start fresh" or privacy requests
  */
