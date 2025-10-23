@@ -24,7 +24,7 @@ export class CalendarAgent extends BaseAgent {
   }
 
   async processRequest(message: string, userPhone: string, context: any[] = []): Promise<string> {
-    try {
+    try { 
       this.logger.info('📅 Calendar Agent activated');
       this.logger.info(`📝 Processing calendar request: "${message}"`);
       this.logger.info(`📚 Context: ${context.length} messages`);
