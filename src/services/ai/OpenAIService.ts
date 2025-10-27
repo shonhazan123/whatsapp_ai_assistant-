@@ -1,7 +1,6 @@
 import { openai } from '../../config/openai';
-import { logger } from '../../utils/logger';
-import { FunctionDefinition } from '../../core/types/AgentTypes';
 import { AgentName } from '../../core/interfaces/IAgent';
+import { FunctionDefinition } from '../../core/types/AgentTypes';
 
 export interface CompletionRequest {
   messages: Array<{
@@ -65,25 +64,48 @@ ANALYSIS APPROACH:
 
 INTENT CATEGORIES:
 
-CALENDAR - User is working with scheduling, time management, appointments, events
-- Context clues: discussing time, dates, meetings, appointments, scheduling conflicts
-- Even short responses like "yes" if the previous message was about calendar operations
+CALENDAR - User EXPLICITLY mentions calendar/יומן OR scheduling meetings with others
+- ONLY use this when user explicitly says: "calendar", "יומן", "schedule a meeting", "תזמן פגישה"
+- Context clues: "add to calendar", "what's on my calendar", "schedule meeting with [person]"
+- Even short responses like "yes" if the previous message asked about adding to calendar
+- IMPORTANT: "Remind me" or "תזכיר לי" with date/time should go to DATABASE, not CALENDAR
+- IMPORTANT: Tasks with due dates are DATABASE by default, not CALENDAR
 
 GMAIL - User is working with email communication
 - Context clues: discussing emails, sending messages, checking inbox, email management
 - Even short responses like "ok" if the previous message was about email operations
 
-DATABASE - User is working with personal data management (tasks, contacts, lists, notes)
-- Context clues: discussing data storage, retrieval, organization, personal information
-- Even short responses like "sure" if the previous message was about data operations
-- This includes confirmations to delete/update/create personal data items
+DATABASE - User is working with reminders, lists , tasks, personal data management
+- THIS IS THE DEFAULT for reminders/tasks with dates and times
+- Context clues: "remind me", "תזכיר לי", "task", "משימה", "create a reminder"
+- Time/date references for reminders/tasks ("tomorrow at 6pm", "next Monday") go here
+- This includes ALL reminders with specific times, even if they have dates
+- Personal data: contacts, lists, notes, task management
+- Even short responses like "sure" if the previous message was about tasks/reminders
 
 MULTI-TASK - User wants to accomplish multiple different things that require different agents
 - Context clues: mentioning multiple different types of operations in one request
 
 GENERAL - Everything else: greetings, questions, casual conversation, unclear requests
 
-CRITICAL: Base your decision on CONVERSATION FLOW, not individual words. A simple "yes" can be calendar, database, or gmail depending on what the conversation was about.
+CRITICAL RULES:
+1. REMINDERS WITH DATES/TIMES → DATABASE (this is the DEFAULT behavior)
+2. TASKS WITH DUE DATES → DATABASE (unless user explicitly says "calendar")
+3. EXPLICIT CALENDAR REQUESTS → CALENDAR (only when user says calendar/יומן)
+4. If assistant asked "Would you like to add to calendar?" and user says yes → CALENDAR
+5. Base your decision on CONVERSATION FLOW, not individual words
+
+Examples:
+- "Remind me tomorrow at 6pm to buy groceries" → DATABASE
+- "תזכיר לי מחר ב6 לקנות חלב" → DATABASE  
+- "תזכיר לי מחר ב-6:30 משחק פאדל" → DATABASE
+- "Add meeting with John tomorrow at 2pm to my calendar" → CALENDAR
+- "תוסיף ליומן פגישה עם ג'ון מחר ב2" → CALENDAR
+- "What's on my calendar this week?" → CALENDAR
+- "מה יש לי ביומן השבוע?" → CALENDAR
+- After asking "Would you like to add to calendar?":
+  "yes" → CALENDAR
+  "כן" → CALENDAR
 
 Respond with ONLY ONE WORD: calendar, gmail, database, multi-task, or general`
         }

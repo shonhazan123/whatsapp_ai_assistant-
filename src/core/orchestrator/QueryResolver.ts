@@ -52,7 +52,7 @@ export class QueryResolver {
       case 'contact':
         return `${entity?.name || ref?.canonical || 'Contact'}${entity?.email ? ` <${entity.email}>` : ''}`;
       case 'list':
-        return entity?.content?.title || ref?.canonical || 'List';
+        return entity?.list_name || ref?.canonical || 'List';
       case 'event':
         return `${entity?.summary || ref?.canonical || 'Event'}${entity?.start ? ` (${entity.start})` : ''}`;
       case 'email':
@@ -95,16 +95,16 @@ export class QueryResolver {
     const resp = await listService.getAll({ userPhone });
     const lists = (resp.success && resp.data?.lists ? resp.data.lists : []) as any[];
     
-    // First try exact match
+    // First try exact match on list_name
     const exactMatch = lists.find(list => 
-      list.content?.title?.toLowerCase() === query.toLowerCase()
+      list.list_name?.toLowerCase() === query.toLowerCase()
     );
     
     if (exactMatch) {
       return {
         candidates: [{
           entity: exactMatch,
-          reference: this.toRef('list', exactMatch.id, exactMatch.content?.title),
+          reference: this.toRef('list', exactMatch.id, exactMatch.list_name),
           score: 1.0,
           reason: 'exact title match'
         }],
@@ -112,11 +112,11 @@ export class QueryResolver {
       };
     }
     
-    // Then try fuzzy search
-    const matches = FuzzyMatcher.search<any>(query, lists, ['content.title'], 0.6);
+    // Then try fuzzy search on list_name
+    const matches = FuzzyMatcher.search<any>(query, lists, ['list_name'], 0.6);
     const candidates: ResolutionCandidate[] = matches.map(m => ({
       entity: m.item,
-      reference: this.toRef('list', m.item.id, m.item.content?.title || m.item.list_name),
+      reference: this.toRef('list', m.item.id, m.item.list_name),
       score: m.score,
       reason: 'list title match'
     }));

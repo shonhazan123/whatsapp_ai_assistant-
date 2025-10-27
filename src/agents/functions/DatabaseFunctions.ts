@@ -15,7 +15,7 @@ export class TaskFunction implements IFunction {
     properties: {
       operation: {
         type: 'string',
-        enum: ['create', 'createMultiple', 'get', 'getAll', 'update', 'updateMultiple', 'delete', 'deleteMultiple', 'complete', 'addSubtask'],
+        enum: ['create', 'createMultiple', 'get', 'getAll', 'update', 'updateMultiple', 'delete', 'deleteMultiple', 'deleteAll', 'updateAll', 'complete', 'completeAll', 'addSubtask'],
         description: 'The operation to perform on tasks'
       },
       taskId: {
@@ -283,6 +283,23 @@ export class TaskFunction implements IFunction {
               data: {}
             });
           }
+
+        case 'deleteAll':
+          // Note: deleteAll uses filters from TaskService.deleteAll
+          // Should use where filters and preview flag
+          const deleteAllFilter = params.where || params.filters || {};
+          return await this.taskService.deleteAll(userId, deleteAllFilter, params.preview === true);
+
+        case 'updateAll':
+          // Note: updateAll uses filters and patch from TaskService.updateAll
+          const updateAllFilter = params.where || params.filters || {};
+          const patch = params.patch || {};
+          return await this.taskService.updateAll(userId, updateAllFilter, patch, params.preview === true);
+
+        case 'completeAll':
+          // Note: completeAll is a wrapper for updateAll with completed=true
+          const completeAllFilter = params.where || params.filters || {};
+          return await this.taskService.completeAll(userId, completeAllFilter, params.preview === true);
 
         case 'addSubtask':
           if (!params.taskId || !params.subtaskText) {
@@ -661,14 +678,17 @@ export class ListFunction implements IFunction {
         type: 'string',
         description: 'List ID for get, update, delete operations'
       },
-      listType: {
+      listName: {
         type: 'string',
-        enum: ['note', 'checklist'],
-        description: 'Type of list for create operation'
+        description: 'List name/title for create operation'
       },
-      title: {
+      isChecklist: {
+        type: 'boolean',
+        description: 'true for checklist, false for note'
+      },
+      content: {
         type: 'string',
-        description: 'List title'
+        description: 'Plain text content for notes'
       },
       items: {
         type: 'array',
@@ -678,8 +698,9 @@ export class ListFunction implements IFunction {
       filters: {
         type: 'object',
         properties: {
-          listType: { type: 'string', enum: ['note', 'checklist'] },
-          title: { type: 'string' }
+          listName: { type: 'string' },
+          isChecklist: { type: 'boolean' },
+          content: { type: 'string' }
         }
       },
       itemText: {
@@ -696,11 +717,12 @@ export class ListFunction implements IFunction {
         items: {
           type: 'object',
           properties: {
-            listType: { type: 'string', enum: ['note', 'checklist'] },
-            title: { type: 'string' },
+            listName: { type: 'string' },
+            isChecklist: { type: 'boolean' },
+            content: { type: 'string' },
             items: { type: 'array', items: { type: 'string' } }
           },
-          required: ['listType']
+          required: ['listName']
         }
       },
       listIds: {
@@ -715,7 +737,8 @@ export class ListFunction implements IFunction {
           type: 'object',
           properties: {
             listId: { type: 'string' },
-            title: { type: 'string' },
+            listName: { type: 'string' },
+            content: { type: 'string' },
             items: { 
               type: 'array',
               items: { type: 'string' }

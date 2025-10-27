@@ -1,4 +1,6 @@
 import { CreateMultipleRequest, CreateRequest, DeleteRequest, GetRequest, IResponse, UpdateRequest } from '../../core/types/AgentTypes';
+import { BulkPatch, TaskFilter } from '../../core/types/Filters';
+import { SQLCompiler } from '../../utils/SQLCompiler';
 import { logger } from '../../utils/logger';
 import { BaseService } from './BaseService';
 
@@ -340,5 +342,116 @@ export class TaskService extends BaseService {
       this.logger.error('Error creating subtask:', error);
       return this.createErrorResponse('Failed to create subtask');
     }
+  }
+
+  /**
+   * Delete multiple tasks matching filter conditions
+   */
+  async deleteAll(userPhone: string, filter: TaskFilter, preview = false): Promise<IResponse> {
+    try {
+      const userId = await this.ensureUserExists(userPhone);
+
+      // Compile WHERE clause using SQLCompiler
+      const { whereSql, params } = SQLCompiler.compileWhere('tasks', userId, filter);
+
+      // Safety check: refuse empty where unless preview
+      if (!whereSql.trim() && !preview) {
+        return this.createErrorResponse(
+          'Bulk delete requires filter conditions. Set preview=true to review affected rows.'
+        );
+      }
+
+      let query: string;
+      
+      if (preview) {
+        // Preview mode: SELECT instead of DELETE
+        query = `SELECT t.id, t.text, t.category, t.due_date, t.completed, t.created_at 
+                 FROM tasks t 
+                 WHERE ${whereSql}`;
+      } else {
+        // Execute DELETE with RETURNING
+        query = `DELETE FROM tasks t 
+                 WHERE ${whereSql}
+                 RETURNING t.id, t.text, t.category, t.due_date, t.completed, t.created_at`;
+      }
+
+      const results = await this.executeQuery<Task>(query, params);
+
+      this.logger.info(`✅ ${preview ? 'Preview' : 'Deleted'} ${results.length} tasks for user: ${userId}`);
+
+      return this.createSuccessResponse({
+        tasks: results,
+        count: results.length,
+        preview
+      }, preview ? `Preview: ${results.length} tasks would be deleted` : `${results.length} tasks deleted`);
+    } catch (error) {
+      this.logger.error('Error in bulk delete tasks:', error);
+      return this.createErrorResponse('Failed to delete tasks');
+    }
+  }
+
+  /**
+   * Update multiple tasks matching filter conditions
+   */
+  async updateAll(userPhone: string, filter: TaskFilter, patch: BulkPatch, preview = false): Promise<IResponse> {
+    try {
+      const userId = await this.ensureUserExists(userPhone);
+      const allowedColumns = SQLCompiler.getAllowedColumns('tasks');
+
+      // Compile SET clause
+      const { setSql, setParams } = SQLCompiler.compileSet(patch, allowedColumns, 1);
+      
+      if (!setSql) {
+        return this.createErrorResponse('No valid fields to update');
+      }
+
+      // Compile WHERE clause
+      const { whereSql, params } = SQLCompiler.compileWhere('tasks', userId, filter);
+
+      // Safety check: refuse empty where unless preview
+      if (!whereSql.trim() && !preview) {
+        return this.createErrorResponse(
+          'Bulk update requires filter conditions. Set preview=true to review affected rows.'
+        );
+      }
+
+      // Combine params: setParams first, then where params
+      const allParams = [...setParams, ...params];
+
+      let query: string;
+      
+      if (preview) {
+        // Preview mode: SELECT matching rows
+        query = `SELECT t.id, t.text, t.category, t.due_date, t.completed, t.created_at 
+                 FROM tasks t 
+                 WHERE ${whereSql}`;
+      } else {
+        // Execute UPDATE with RETURNING
+        query = `UPDATE tasks t 
+                 SET ${setSql}
+                 WHERE ${whereSql}
+                 RETURNING t.id, t.text, t.category, t.due_date, t.completed, t.created_at`;
+      }
+
+      const results = await this.executeQuery<Task>(query, preview ? params : allParams);
+
+      this.logger.info(`✅ ${preview ? 'Preview' : 'Updated'} ${results.length} tasks for user: ${userId}`);
+
+      return this.createSuccessResponse({
+        tasks: results,
+        count: results.length,
+        preview
+      }, preview ? `Preview: ${results.length} tasks would be updated` : `${results.length} tasks updated`);
+    } catch (error) {
+      this.logger.error('Error in bulk update tasks:', error);
+      return this.createErrorResponse('Failed to update tasks');
+    }
+  }
+
+  /**
+   * Mark multiple tasks as completed matching filter conditions
+   */
+  async completeAll(userPhone: string, filter: TaskFilter, preview = false): Promise<IResponse> {
+    return this.updateAll(userPhone, filter, { completed: true }, preview);
   }
 }

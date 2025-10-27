@@ -5,28 +5,27 @@ import { BaseService } from './BaseService';
 export interface List {
   id: string;
   list_id: string;
-  list_name: 'note' | 'checklist';
-  content: {
-    title: string;
-    items?: Array<{
-      text: string;
-      checked: boolean;
-      addedAt: string;
-    }>;
-    createdAt: string;
-    updatedAt?: string;
-  };
+  list_name: string;
+  content?: string | null;
+  is_checklist: boolean;
+  items?: Array<{
+    text: string;
+    checked: boolean;
+    addedAt?: string;
+  }> | null;
   created_at: string;
 }
 
 export interface CreateListRequest {
-  listType: 'note' | 'checklist';
-  title?: string;
+  listName: string;
+  content?: string;
+  isChecklist?: boolean;
   items?: string[];
 }
 
 export interface UpdateListRequest {
-  title?: string;
+  listName?: string;
+  content?: string;
   items?: Array<{
     text: string;
     checked: boolean;
@@ -35,8 +34,9 @@ export interface UpdateListRequest {
 }
 
 export interface ListFilters {
-  listType?: 'note' | 'checklist';
-  title?: string;
+  listName?: string;
+  isChecklist?: boolean;
+  content?: string;
 }
 
 export class ListService extends BaseService {
@@ -49,39 +49,38 @@ export class ListService extends BaseService {
       const userId = await this.ensureUserExists(request.userPhone);
       const data = this.sanitizeInput(request.data);
 
-      const validation = this.validateRequiredFields(data, ['listType']);
+      const validation = this.validateRequiredFields(data, ['listName']);
       if (validation) {
         return this.createErrorResponse(validation);
       }
 
-      const items = Array.isArray(data.items) ? data.items : [];
-      const itemCount = items.length;
-      this.logger.info(`📝 Creating ${data.listType}: "${data.title}" with ${itemCount} items`);
+      const isChecklist = data.isChecklist || false;
+      // Convert items to array if it's an object
+      let items = [];
+      if (Array.isArray(data.items)) {
+        items = data.items;
+      } else if (data.items && typeof data.items === 'object') {
+        items = Object.values(data.items);
+      }
       
-      // Format content as structured JSON
-      const content = {
-        title: data.title || (data.listType === 'checklist' ? 'רשימת בדיקה' : 'הערה'),
-        items: items.map((item: string) => ({
-          text: item,
-          checked: false,
-          addedAt: new Date().toISOString()
-        })),
-        createdAt: new Date().toISOString()
-      };
+      const itemsArray = isChecklist ? items.map((item: string) => ({
+        text: item,
+        checked: false,
+        addedAt: new Date().toISOString()
+      })) : null;
+      
+      this.logger.info(`📝 Creating ${isChecklist ? 'checklist' : 'note'}: "${data.listName}"`);
       
       const result = await this.executeSingleQuery<List>(
-        `INSERT INTO lists (list_id, list_name, content) 
-         VALUES ($1, $2, $3) 
-         RETURNING id, list_name, content, created_at`,
-        [userId, data.listType, JSON.stringify(content)]
+        `INSERT INTO lists (list_id, list_name, content, is_checklist, items) 
+         VALUES ($1, $2, $3, $4, $5) 
+         RETURNING id, list_name, content, is_checklist, items, created_at`,
+        [userId, data.listName, data.content || null, isChecklist, itemsArray ? JSON.stringify(itemsArray) : null]
       );
 
-      this.logger.info(`✅ List created: "${content.title}" with ${itemCount} items`);
+      this.logger.info(`✅ List created: "${data.listName}" (${isChecklist ? 'checklist' : 'note'})`);
       
-      return this.createSuccessResponse({
-        ...result,
-        content: result ? (typeof result.content === 'string' ? JSON.parse(result.content) : result.content) : null
-      }, `List created with ${itemCount} items`);
+      return this.createSuccessResponse(result, `List created successfully`);
     } catch (error) {
       this.logger.error('Error creating list:', error);
       return this.createErrorResponse('Failed to create list');
@@ -97,35 +96,35 @@ export class ListService extends BaseService {
       for (const item of request.items) {
         try {
           const sanitizedItem = this.sanitizeInput(item);
-          const validation = this.validateRequiredFields(sanitizedItem, ['listType']);
+          const validation = this.validateRequiredFields(sanitizedItem, ['listName']);
           
           if (validation) {
             errors.push({ item, error: validation });
             continue;
           }
 
-          const itemCount = sanitizedItem.items?.length || 0;
-          const content = {
-            title: sanitizedItem.title || (sanitizedItem.listType === 'checklist' ? 'רשימת בדיקה' : 'הערה'),
-            items: (sanitizedItem.items || []).map((itemText: string) => ({
-              text: itemText,
-              checked: false,
-              addedAt: new Date().toISOString()
-            })),
-            createdAt: new Date().toISOString()
-          };
+          const isChecklist = sanitizedItem.isChecklist || false;
+          // Convert items to array if it's an object
+          let items = [];
+          if (Array.isArray(sanitizedItem.items)) {
+            items = sanitizedItem.items;
+          } else if (sanitizedItem.items && typeof sanitizedItem.items === 'object') {
+            items = Object.values(sanitizedItem.items);
+          }
+          const itemsArray = isChecklist ? items.map((itemText: string) => ({
+            text: itemText,
+            checked: false,
+            addedAt: new Date().toISOString()
+          })) : null;
 
           const result = await this.executeSingleQuery<List>(
-            `INSERT INTO lists (list_id, list_name, content) 
-             VALUES ($1, $2, $3) 
-             RETURNING id, list_name, content, created_at`,
-            [userId, sanitizedItem.listType, JSON.stringify(content)]
+            `INSERT INTO lists (list_id, list_name, content, is_checklist, items) 
+             VALUES ($1, $2, $3, $4, $5) 
+             RETURNING id, list_name, content, is_checklist, items, created_at`,
+            [userId, sanitizedItem.listName, sanitizedItem.content || null, isChecklist, itemsArray ? JSON.stringify(itemsArray) : null]
           );
 
-          results.push({
-            ...result,
-            content: result ? (typeof result.content === 'string' ? JSON.parse(result.content) : result.content) : null
-          });
+          results.push(result);
         } catch (error) {
           errors.push({ item, error: error instanceof Error ? error.message : 'Unknown error' });
         }
@@ -149,7 +148,7 @@ export class ListService extends BaseService {
       const userId = await this.ensureUserExists(request.userPhone);
       
       const list = await this.executeSingleQuery<List>(
-        `SELECT id, list_name, content, created_at
+        `SELECT id, list_name, content, is_checklist, items, created_at
          FROM lists 
          WHERE list_id = $1 AND id = $2`,
         [userId, request.id]
@@ -159,10 +158,7 @@ export class ListService extends BaseService {
         return this.createErrorResponse('List not found');
       }
 
-      return this.createSuccessResponse({
-        ...list,
-        content: list ? (typeof list.content === 'string' ? JSON.parse(list.content) : list.content) : null
-      });
+      return this.createSuccessResponse(list);
     } catch (error) {
       this.logger.error('Error getting list by ID:', error);
       return this.createErrorResponse('Failed to get list');
@@ -174,7 +170,7 @@ export class ListService extends BaseService {
       const userId = await this.ensureUserExists(request.userPhone);
       
       let query = `
-        SELECT id, list_name, content, created_at
+        SELECT id, list_name, content, is_checklist, items, created_at
         FROM lists 
         WHERE list_id = $1
       `;
@@ -182,18 +178,23 @@ export class ListService extends BaseService {
       const params: any[] = [userId];
       let paramCount = 1;
 
-      // Apply filters
       if (request.filters) {
-        if (request.filters.listType) {
+        if (request.filters.listName) {
           paramCount++;
-          query += ` AND list_name = $${paramCount}`;
-          params.push(request.filters.listType);
+          query += ` AND list_name ILIKE $${paramCount}`;
+          params.push(`%${request.filters.listName}%`);
         }
 
-        if (request.filters.title) {
+        if (request.filters.isChecklist !== undefined) {
           paramCount++;
-          query += ` AND content->>'title' ILIKE $${paramCount}`;
-          params.push(`%${request.filters.title}%`);
+          query += ` AND is_checklist = $${paramCount}`;
+          params.push(request.filters.isChecklist);
+        }
+
+        if (request.filters.content) {
+          paramCount++;
+          query += ` AND content ILIKE $${paramCount}`;
+          params.push(`%${request.filters.content}%`);
         }
       }
 
@@ -213,14 +214,9 @@ export class ListService extends BaseService {
 
       const lists = await this.executeQuery<List>(query, params);
 
-      const processedLists = lists.map(list => ({
-        ...list,
-        content: typeof list.content === 'string' ? JSON.parse(list.content) : list.content
-      }));
-
       return this.createSuccessResponse({
-        lists: processedLists,
-        count: processedLists.length
+        lists,
+        count: lists.length
       });
     } catch (error) {
       this.logger.error('Error getting lists:', error);
@@ -233,42 +229,47 @@ export class ListService extends BaseService {
       const userId = await this.ensureUserExists(request.userPhone);
       const data = this.sanitizeInput(request.data);
 
-      // Get current list to merge content
-      const currentList = await this.executeSingleQuery<List>(
-        'SELECT content FROM lists WHERE list_id = $1 AND id = $2',
-        [userId, request.id]
-      );
+      const updateFields: string[] = [];
+      const params: any[] = [userId, request.id];
+      let paramCount = 2;
 
-      if (!currentList) {
-        return this.createErrorResponse('List not found');
+      if (data.listName) {
+        paramCount++;
+        updateFields.push(`list_name = $${paramCount}`);
+        params.push(data.listName);
       }
 
-      const currentContent = typeof currentList.content === 'string' 
-        ? JSON.parse(currentList.content) 
-        : currentList.content;
+      if (data.content !== undefined) {
+        paramCount++;
+        updateFields.push(`content = $${paramCount}`);
+        params.push(data.content);
+      }
 
-      // Merge updates with current content
-      const updatedContent = {
-        ...currentContent,
-        ...(data.title && { title: data.title }),
-        ...(data.items && { items: data.items }),
-        updatedAt: new Date().toISOString()
-      };
+      if (data.items) {
+        paramCount++;
+        updateFields.push(`items = $${paramCount}`);
+        params.push(JSON.stringify(data.items));
+      }
+
+      if (updateFields.length === 0) {
+        return this.createErrorResponse('No fields to update');
+      }
 
       const result = await this.executeSingleQuery<List>(
         `UPDATE lists 
-         SET content = $3
+         SET ${updateFields.join(', ')}
          WHERE list_id = $1 AND id = $2
-         RETURNING id, list_name, content, created_at`,
-        [userId, request.id, JSON.stringify(updatedContent)]
+         RETURNING id, list_name, content, is_checklist, items, created_at`,
+        params
       );
+
+      if (!result) {
+        return this.createErrorResponse('List not found');
+      }
 
       this.logger.info(`✅ List updated: ${request.id} for user: ${userId}`);
       
-      return this.createSuccessResponse({
-        ...result,
-        content: result ? (typeof result.content === 'string' ? JSON.parse(result.content) : result.content) : null
-      }, 'List updated successfully');
+      return this.createSuccessResponse(result, 'List updated successfully');
     } catch (error) {
       this.logger.error('Error updating list:', error);
       return this.createErrorResponse('Failed to update list');
@@ -309,9 +310,8 @@ export class ListService extends BaseService {
         return this.createErrorResponse(validation);
       }
 
-      // Get current list
       const currentList = await this.executeSingleQuery<List>(
-        'SELECT content FROM lists WHERE list_id = $1 AND id = $2',
+        'SELECT items FROM lists WHERE list_id = $1 AND id = $2',
         [userId, data.listId]
       );
 
@@ -319,37 +319,26 @@ export class ListService extends BaseService {
         return this.createErrorResponse('List not found');
       }
 
-      const currentContent = typeof currentList.content === 'string' 
-        ? JSON.parse(currentList.content) 
-        : currentList.content;
-
-      // Add new item
+      const currentItems = currentList.items || [];
       const newItem = {
         text: data.itemText,
         checked: false,
         addedAt: new Date().toISOString()
       };
 
-      const updatedContent = {
-        ...currentContent,
-        items: [...(currentContent.items || []), newItem],
-        updatedAt: new Date().toISOString()
-      };
+      const updatedItems = [...currentItems, newItem];
 
       const result = await this.executeSingleQuery<List>(
         `UPDATE lists 
-         SET content = $3
+         SET items = $3
          WHERE list_id = $1 AND id = $2
-         RETURNING id, list_name, content, created_at`,
-        [userId, data.listId, JSON.stringify(updatedContent)]
+         RETURNING id, list_name, content, is_checklist, items, created_at`,
+        [userId, data.listId, JSON.stringify(updatedItems)]
       );
 
       this.logger.info(`✅ Item added to list: ${data.listId} for user: ${userId}`);
       
-      return this.createSuccessResponse({
-        ...result,
-        content: result ? (typeof result.content === 'string' ? JSON.parse(result.content) : result.content) : null
-      }, 'Item added successfully');
+      return this.createSuccessResponse(result, 'Item added successfully');
     } catch (error) {
       this.logger.error('Error adding item to list:', error);
       return this.createErrorResponse('Failed to add item');
@@ -366,48 +355,33 @@ export class ListService extends BaseService {
         return this.createErrorResponse(validation);
       }
 
-      // Get current list
       const currentList = await this.executeSingleQuery<List>(
-        'SELECT content FROM lists WHERE list_id = $1 AND id = $2',
+        'SELECT items FROM lists WHERE list_id = $1 AND id = $2',
         [userId, data.listId]
       );
 
-      if (!currentList) {
-        return this.createErrorResponse('List not found');
+      if (!currentList || !currentList.items) {
+        return this.createErrorResponse('List not found or not a checklist');
       }
 
-      const currentContent = typeof currentList.content === 'string' 
-        ? JSON.parse(currentList.content) 
-        : currentList.content;
-
-      if (!currentContent.items || data.itemIndex >= currentContent.items.length) {
+      if (data.itemIndex >= currentList.items.length) {
         return this.createErrorResponse('Item not found');
       }
 
-      // Toggle item
-      const updatedItems = [...currentContent.items];
+      const updatedItems = [...currentList.items];
       updatedItems[data.itemIndex].checked = !updatedItems[data.itemIndex].checked;
-
-      const updatedContent = {
-        ...currentContent,
-        items: updatedItems,
-        updatedAt: new Date().toISOString()
-      };
 
       const result = await this.executeSingleQuery<List>(
         `UPDATE lists 
-         SET content = $3
+         SET items = $3
          WHERE list_id = $1 AND id = $2
-         RETURNING id, list_name, content, created_at`,
-        [userId, data.listId, JSON.stringify(updatedContent)]
+         RETURNING id, list_name, content, is_checklist, items, created_at`,
+        [userId, data.listId, JSON.stringify(updatedItems)]
       );
 
       this.logger.info(`✅ Item toggled in list: ${data.listId} for user: ${userId}`);
       
-      return this.createSuccessResponse({
-        ...result,
-        content: result ? (typeof result.content === 'string' ? JSON.parse(result.content) : result.content) : null
-      }, 'Item toggled successfully');
+      return this.createSuccessResponse(result, 'Item toggled successfully');
     } catch (error) {
       this.logger.error('Error toggling item:', error);
       return this.createErrorResponse('Failed to toggle item');
@@ -424,48 +398,35 @@ export class ListService extends BaseService {
         return this.createErrorResponse(validation);
       }
 
-      // Get current list
       const currentList = await this.executeSingleQuery<List>(
-        'SELECT content FROM lists WHERE list_id = $1 AND id = $2',
+        'SELECT items FROM lists WHERE list_id = $1 AND id = $2',
         [userId, data.listId]
       );
 
-      if (!currentList) {
-        return this.createErrorResponse('List not found');
+      if (!currentList || !currentList.items) {
+        return this.createErrorResponse('List not found or not a checklist');
       }
 
-      const currentContent = typeof currentList.content === 'string' 
-        ? JSON.parse(currentList.content) 
-        : currentList.content;
-
-      if (!currentContent.items || data.itemIndex >= currentContent.items.length) {
+      if (data.itemIndex >= currentList.items.length) {
         return this.createErrorResponse('Item not found');
       }
 
-      // Delete item
-      const updatedItems = [...currentContent.items];
+      const updatedItems = [...currentList.items];
       const deletedItem = updatedItems[data.itemIndex];
       updatedItems.splice(data.itemIndex, 1);
 
-      const updatedContent = {
-        ...currentContent,
-        items: updatedItems,
-        updatedAt: new Date().toISOString()
-      };
-
       const result = await this.executeSingleQuery<List>(
         `UPDATE lists 
-         SET content = $3
+         SET items = $3
          WHERE list_id = $1 AND id = $2
-         RETURNING id, list_name, content, created_at`,
-        [userId, data.listId, JSON.stringify(updatedContent)]
+         RETURNING id, list_name, content, is_checklist, items, created_at`,
+        [userId, data.listId, JSON.stringify(updatedItems)]
       );
 
       this.logger.info(`✅ Item deleted from list: ${data.listId} for user: ${userId}, item: "${deletedItem.text}"`);
       
       return this.createSuccessResponse({
         ...result,
-        content: result ? (typeof result.content === 'string' ? JSON.parse(result.content) : result.content) : null,
         deletedItem: deletedItem.text
       }, `Item "${deletedItem.text}" deleted successfully`);
     } catch (error) {

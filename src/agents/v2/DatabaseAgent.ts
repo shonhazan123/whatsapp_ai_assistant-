@@ -1,3 +1,4 @@
+import { SystemPrompts } from '../../config/system-prompts';
 import { BaseAgent } from '../../core/base/BaseAgent';
 import { IFunctionHandler } from '../../core/interfaces/IAgent';
 import { FunctionDefinition } from '../../core/types/AgentTypes';
@@ -8,7 +9,6 @@ import { TaskService } from '../../services/database/TaskService';
 import { UserDataService } from '../../services/database/UserDataService';
 import { logger } from '../../utils/logger';
 import { ContactFunction, ListFunction, TaskFunction, UserDataFunction } from '../functions/DatabaseFunctions';
-import { SystemPrompts } from '../../config/system-prompts';
 
 export class DatabaseAgent extends BaseAgent {
   private taskService: TaskService;
