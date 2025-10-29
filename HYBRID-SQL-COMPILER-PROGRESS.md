@@ -46,6 +46,31 @@
 - ✅ **DatabaseToolset.ts updated** to match new parameters
 - ✅ **All files compile successfully**
 
+### ✅ Phase 6: COMPLETE (Disambiguation Support)
+
+- ✅ **ConversationWindow extended** with disambiguation context storage
+  - Added `metadata` field to `ConversationMessage` interface
+  - Added `storeDisambiguationContext()` method
+  - Added `getLastDisambiguationContext()` method
+  - Added `clearDisambiguationContext()` method (CLEARS stale context)
+  - Context expires after 5 minutes
+- ✅ **QueryResolver enhanced** with shared disambiguation handler
+  - Added `resolveWithDisambiguationHandling()` method
+  - Handles UUID extraction from stored candidates
+  - Automatically stores context when disambiguation is required
+  - Detects user selection (e.g., "2") and maps to UUID
+  - Automatically clears context after successful selection
+  - Enhanced list display to show item count or content preview
+- ✅ **DatabaseFunctions refactored** to use shared handler
+  - TaskFunction uses `resolveWithDisambiguationHandling()`
+  - ContactFunction uses `resolveWithDisambiguationHandling()`
+  - ListFunction uses `resolveWithDisambiguationHandling()`
+  - ~60 lines of duplicate code eliminated across functions
+- ✅ **Generic solution** that works for all entities (tasks, contacts, lists)
+- ✅ **Fixed issues**:
+  1. List disambiguation now shows item count/content preview (not just title)
+  2. Disambiguation context is cleared after use (no more stale context)
+
 ---
 
 ## �� What We've Accomplished

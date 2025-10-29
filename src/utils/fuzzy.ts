@@ -25,6 +25,9 @@ export class FuzzyMatcher {
     keys: string[],
     threshold: number = 0.6
   ): FuzzyMatch<T>[] {
+    console.log(`🔍 [FuzzyMatcher] Search - Query: "${query}", Keys: ${keys.join(', ')}, Threshold: ${threshold}`);
+    console.log(`🔍 [FuzzyMatcher] Items to search: ${items.length}`);
+    
     const fuse = new Fuse(items, {
       keys,
       threshold: 1 - threshold, // Fuse uses distance, we use similarity
@@ -35,15 +38,31 @@ export class FuzzyMatcher {
     });
 
     const results = fuse.search(query);
+    console.log(`🔍 [FuzzyMatcher] Raw results: ${results.length}`);
 
-    return results
+    const matches = results
       .map(result => ({
         item: result.item,
         score: 1 - (result.score || 0), // Convert distance to similarity
         matches: result.matches?.map(m => m.key).filter((k): k is string => k !== undefined) || []
       }))
-      .filter(match => match.score >= threshold)
+      .filter(match => {
+        const passed = match.score >= threshold;
+        if (!passed) {
+          console.log(`🔍 [FuzzyMatcher] Filtered out: score ${match.score.toFixed(3)} < threshold ${threshold}`);
+        }
+        return passed;
+      })
       .sort((a, b) => b.score - a.score);
+    
+    console.log(`🔍 [FuzzyMatcher] Final matches: ${matches.length}`);
+    matches.forEach(m => {
+      const itemKey = keys[0] || 'unknown';
+      const itemValue = (m.item as any)[itemKey];
+      console.log(`  - "${itemValue}" (score: ${m.score.toFixed(3)})`);
+    });
+    
+    return matches;
   }
 
   /**

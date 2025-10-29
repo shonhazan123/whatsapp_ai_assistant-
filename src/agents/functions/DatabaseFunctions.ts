@@ -47,6 +47,10 @@ export class TaskFunction implements IFunction {
         type: 'string',
         description: 'Subtask description for addSubtask operation'
       },
+      selectedIndex: {
+        type: 'number',
+        description: 'Selected index from disambiguation (when user responds with a number like "2")'
+      },
       tasks: {
         type: 'array',
         description: 'Array of tasks for createMultiple operation',
@@ -95,17 +99,8 @@ export class TaskFunction implements IFunction {
 
       // Helper: resolve a taskId from natural language text when missing
       const resolveTaskId = async (): Promise<{ id: string | null; disambiguation?: string }> => {
-        if (params.taskId) return { id: params.taskId };
-        if (!params.text) return { id: null };
         const resolver = new QueryResolver();
-        const result = await resolver.resolveOneOrAsk(params.text, userId, 'task');
-        if (result.disambiguation) {
-          return { 
-            id: null, 
-            disambiguation: resolver.formatDisambiguation('task', result.disambiguation.candidates) 
-          };
-        }
-        return { id: result.entity?.id || null };
+        return await resolver.resolveWithDisambiguationHandling(params, userId, 'task');
       };
 
       switch (operation) {
@@ -356,6 +351,10 @@ export class ContactFunction implements IFunction {
         type: 'string',
         description: 'Contact physical address'
       },
+      selectedIndex: {
+        type: 'number',
+        description: 'Selected index from disambiguation (when user responds with a number like "2")'
+      },
       filters: {
         type: 'object',
         properties: {
@@ -412,17 +411,7 @@ export class ContactFunction implements IFunction {
       const { operation, ...params } = args;
       const resolver = new QueryResolver();
       const resolveContactId = async (): Promise<{ id: string | null; disambiguation?: string }> => {
-        if (params.contactId) return { id: params.contactId };
-        const query = params.name || params.email || params.phone;
-        if (!query) return { id: null };
-        const one = await resolver.resolveOneOrAsk(query, userId, 'contact');
-        if (one.disambiguation) {
-          return { 
-            id: null, 
-            disambiguation: resolver.formatDisambiguation('contact', one.disambiguation.candidates) 
-          };
-        }
-        return { id: one.entity?.id || null };
+        return await resolver.resolveWithDisambiguationHandling(params, userId, 'contact');
       };
 
       switch (operation) {
@@ -711,6 +700,10 @@ export class ListFunction implements IFunction {
         type: 'number',
         description: 'Item index for toggleItem operation'
       },
+      selectedIndex: {
+        type: 'number',
+        description: 'Selected index from disambiguation (when user responds with a number like "2")'
+      },
       lists: {
         type: 'array',
         description: 'Array of lists for createMultiple operation',
@@ -761,17 +754,7 @@ export class ListFunction implements IFunction {
       const { operation, ...params } = args;
       const resolver = new QueryResolver();
       const resolveListId = async (): Promise<{ id: string | null; disambiguation?: string }> => {
-        if (params.listId) return { id: params.listId };
-        const query = params.title;
-        if (!query) return { id: null };
-        const one = await resolver.resolveOneOrAsk(query, userId, 'list');
-        if (one.disambiguation) {
-          return { 
-            id: null, 
-            disambiguation: resolver.formatDisambiguation('list', one.disambiguation.candidates) 
-          };
-        }
-        return { id: one.entity?.id || null };
+        return await resolver.resolveWithDisambiguationHandling(params, userId, 'list');
       };
 
       switch (operation) {

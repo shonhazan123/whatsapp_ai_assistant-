@@ -200,8 +200,33 @@ For ANY delete operation, you MUST:
 4. Only execute after user confirms: "yes", "כן", "delete", "מחק"
 5. If user says "no", "לא", "cancel" - do NOT delete
 
+IMPORTANT: If the user is responding with a confirmation ("yes", "כן", "delete", "מחק") to a disambiguation question you just asked, DO NOT ask for confirmation again. Execute the operation immediately.
+
+## LIST DELETION (IMPORTANT):
+When user asks to DELETE a list by name (e.g., "delete shopping list", "תמחק את רשימת הקניות"):
+1. Use delete operation with listName parameter
+2. DO NOT call getAll first
+3. System will automatically handle disambiguation if multiple lists match
+4. If disambiguation is needed, user will select by number
+
+Example - Multiple lists found:
+User: "תמחק את רשימת הקניות"
+System shows: "נמצאו שתי רשימות בשם 'רשימת קניות'. בבקשה בחר:"
+User: "1"
+→ CALL listOperations({
+    "operation": "delete",
+    "selectedIndex": 1
+})
+
+Example - Single list found (still ask confirmation):
+User: "תמחק את רשימת הקניות"
+→ First check: Only one list found
+→ YOU MUST ask: "האם אתה בטוח שברצונך למחוק את 'רשימת קניות'?"
+User: "כן"
+→ Then execute delete
+
 ## LIST ITEM DELETION:
-When user asks to delete an item from a list:
+When user asks to delete an item FROM WITHIN a list (not the list itself):
 1. First get the current list to find item index
 2. Use deleteItem operation with correct listId and itemIndex
 3. Verify success before confirming
@@ -283,6 +308,23 @@ User: "Remember: buy a new phone tomorrow"
     "isChecklist": false,
     "content": "buy a new phone tomorrow"
 })
+
+Example 9 - List Deletion:
+User: "תמחק את רשימת הקניות"
+→ CALL listOperations({
+    "operation": "delete",
+    "listName": "רשימת קניות"
+})
+
+Example 10 - Disambiguation Response:
+System shows: "1. רשימת קניות (15 פריטים)", "2. רשימת קניות (ללא פריטים)"
+User: "2"
+→ CALL listOperations({
+    "operation": "delete",
+    "selectedIndex": 2
+})
+
+CRITICAL: When user responds with a NUMBER to a disambiguation question, you MUST pass it as "selectedIndex" parameter, NOT as a name/text parameter.
 
 ## DATA INTEGRITY RULES
 - Never invent task categories, emails, or contact details not provided by the user or retrieved from context.

@@ -7,6 +7,13 @@ export interface ConversationMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: number;
+  metadata?: {
+    disambiguationContext?: {
+      candidates: Array<{ id: string; displayText: string; [key: string]: any }>;
+      entityType: string;
+      expiresAt: number;
+    };
+  };
 }
 
 /**
@@ -46,7 +53,7 @@ export class ConversationWindow {
   /**
    * Add a message to the conversation window
    */
-  public addMessage(userPhone: string, role: 'user' | 'assistant' | 'system', content: string): void {
+  public addMessage(userPhone: string, role: 'user' | 'assistant' | 'system', content: string, metadata?: ConversationMessage['metadata']): void {
     try {
       // Get or create conversation for user
       if (!this.memory.has(userPhone)) {
@@ -59,7 +66,8 @@ export class ConversationWindow {
       const message: ConversationMessage = {
         role,
         content,
-        timestamp: Date.now()
+        timestamp: Date.now(),
+        metadata
       };
       
       messages.push(message);
@@ -71,6 +79,74 @@ export class ConversationWindow {
     } catch (error) {
       logger.error('Error adding message to conversation window:', error);
     }
+  }
+
+  /**
+   * Store disambiguation context for future reference
+   */
+  public storeDisambiguationContext(
+    userPhone: string,
+    candidates: Array<{ id: string; displayText: string; [key: string]: any }>,
+    entityType: string
+  ): void {
+    const expiresAt = Date.now() + (5 * 60 * 1000); // 5 minutes expiry
+    
+    this.addMessage(userPhone, 'system', 'DISAMBIGUATION_CONTEXT', {
+      disambiguationContext: {
+        candidates,
+        entityType,
+        expiresAt
+      }
+    });
+    
+    logger.debug(`Stored disambiguation context for ${userPhone} with ${candidates.length} candidates`);
+  }
+
+  /**
+   * Get the most recent disambiguation context
+   */
+  public getLastDisambiguationContext(userPhone: string): ConversationMessage['metadata'] | null {
+    const messages = this.memory.get(userPhone);
+    if (!messages) return null;
+    
+    // Search backwards through messages in actual memory (not a copy)
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.metadata?.disambiguationContext) {
+        const context = msg.metadata.disambiguationContext;
+        
+        // Check if expired
+        if (Date.now() > context.expiresAt) {
+          logger.debug(`Disambiguation context expired for ${userPhone}`);
+          return null;
+        }
+        
+        return msg.metadata;
+      }
+    }
+    
+    return null;
+  }
+
+  /**
+   * Clear disambiguation context for a user (after it's been used)
+   */
+  public clearDisambiguationContext(userPhone: string): void {
+    const messages = this.memory.get(userPhone);
+    if (!messages) return;
+    
+    // Find and remove disambiguation context from the most recent system message
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.metadata?.disambiguationContext) {
+        // Remove the metadata
+        msg.metadata = undefined;
+        logger.debug(`Cleared disambiguation context for ${userPhone}`);
+        return;
+      }
+    }
+    
+    logger.debug(`No disambiguation context found to clear for ${userPhone}`);
   }
   
   /**
