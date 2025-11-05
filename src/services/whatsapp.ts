@@ -1,6 +1,6 @@
 // src/services/whatsapp.ts
 import axios from 'axios';
-import FormData from 'form-data';
+import { ConversationWindow } from '../core/memory/ConversationWindow';
 import { logger } from '../utils/logger';
 
 const WHATSAPP_API_URL = 'https://graph.facebook.com/v22.0';
@@ -24,6 +24,15 @@ export async function sendWhatsAppMessage(to: string, message: string): Promise<
       }
     );
     logger.info(`Message sent to ${to}`);
+    
+    // Add message to conversation memory (non-blocking)
+    try {
+      const conversationWindow = ConversationWindow.getInstance();
+      conversationWindow.addMessage(to, 'assistant', message);
+    } catch (memoryError) {
+      // Don't fail message sending if memory save fails
+      logger.warn('Failed to save message to conversation memory:', memoryError);
+    }
   } catch (error) {
     logger.error('Error sending WhatsApp message:', error);
     throw error;

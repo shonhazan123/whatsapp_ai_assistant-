@@ -1,8 +1,9 @@
-import express from 'express';
 import dotenv from 'dotenv';
-import { whatsappWebhook } from './routes/webhook';
-import { logger } from './utils/logger';
+import express from 'express';
 import { testConnection } from './config/database';
+import { whatsappWebhook } from './routes/webhook';
+import { SchedulerService } from './services/scheduler/SchedulerService';
+import { logger } from './utils/logger';
 
 dotenv.config();
 
@@ -37,6 +38,10 @@ async function startServer() {
     } else {
       logger.warn('⚠️  Database connection failed - running without conversation memory');
     }
+
+    // Initialize and start reminder scheduler
+    const schedulerService = new SchedulerService();
+    schedulerService.start();
 
     // Start HTTP server
     app.listen(PORT, () => {

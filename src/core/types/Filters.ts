@@ -10,6 +10,8 @@ export interface TaskFilter {
 	dueDateFrom?: string;
 	dueDateTo?: string;
 	window?: "today" | "tomorrow" | "this_week" | "next_week" | "overdue";
+	reminderRecurrence?: "none" | "any" | "daily" | "weekly" | "monthly";
+	reminder?: boolean;
 	ids?: string[];
 	limit?: number;
 	offset?: number;

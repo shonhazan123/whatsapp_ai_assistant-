@@ -34,6 +34,43 @@ export class TaskFunction implements IFunction {
         type: 'string',
         description: 'Due date in ISO format'
       },
+      reminder: {
+        type: 'string',
+        description: 'Reminder interval before due date (e.g., "30 minutes", "1 hour", "2 days"). Defaults to 30 minutes if dueDate is set. Cannot be used with reminderRecurrence.'
+      },
+      reminderRecurrence: {
+        type: 'object',
+        description: 'Recurrence pattern for recurring reminders. Cannot be used with dueDate+reminder.',
+        properties: {
+          type: {
+            type: 'string',
+            enum: ['daily', 'weekly', 'monthly'],
+            description: 'Recurrence type'
+          },
+          time: {
+            type: 'string',
+            description: 'Time of day in HH:mm format (e.g., "08:00", "14:30")'
+          },
+          days: {
+            type: 'array',
+            items: { type: 'number' },
+            description: 'For weekly: array of day numbers [0-6] where 0=Sunday, 6=Saturday'
+          },
+          dayOfMonth: {
+            type: 'number',
+            description: 'For monthly: day of month (1-31)'
+          },
+          until: {
+            type: 'string',
+            description: 'Optional end date in ISO format'
+          },
+          timezone: {
+            type: 'string',
+            description: 'Optional timezone override (defaults to user timezone)'
+          }
+        },
+        required: ['type', 'time']
+      },
       filters: {
         type: 'object',
         properties: {
@@ -59,7 +96,20 @@ export class TaskFunction implements IFunction {
           properties: {
             text: { type: 'string' },
             category: { type: 'string' },
-            dueDate: { type: 'string' }
+            dueDate: { type: 'string' },
+            reminder: { type: 'string' },
+            reminderRecurrence: {
+              type: 'object',
+              properties: {
+                type: { type: 'string', enum: ['daily', 'weekly', 'monthly'] },
+                time: { type: 'string' },
+                days: { type: 'array', items: { type: 'number' } },
+                dayOfMonth: { type: 'number' },
+                until: { type: 'string' },
+                timezone: { type: 'string' }
+              },
+              required: ['type', 'time']
+            }
           },
           required: ['text']
         }
@@ -79,6 +129,19 @@ export class TaskFunction implements IFunction {
             text: { type: 'string' },
             category: { type: 'string' },
             dueDate: { type: 'string' },
+            reminder: { type: 'string' },
+            reminderRecurrence: {
+              type: 'object',
+              properties: {
+                type: { type: 'string', enum: ['daily', 'weekly', 'monthly'] },
+                time: { type: 'string' },
+                days: { type: 'array', items: { type: 'number' } },
+                dayOfMonth: { type: 'number' },
+                until: { type: 'string' },
+                timezone: { type: 'string' }
+              },
+              required: ['type', 'time']
+            },
             completed: { type: 'boolean' }
           },
           required: ['taskId']

@@ -23,7 +23,7 @@ export interface CompileSetResult {
 export class SQLCompiler {
 	// Entity-specific allowed columns registry
 	private static readonly ALLOWED_COLUMNS = {
-		tasks: ['text', 'category', 'due_date', 'completed'],
+		tasks: ['text', 'category', 'due_date', 'completed', 'reminder', 'reminder_recurrence', 'next_reminder_at'],
 		contacts: ['name', 'phone_number', 'email', 'address'],
 		lists: ['list_name', 'content', 'is_checklist', 'items']
 	};
@@ -52,49 +52,10 @@ export class SQLCompiler {
 		for (const [key, value] of Object.entries(filter)) {
 			if (value === undefined || value === null) continue;
 
-			paramIndex++;
-
 			// Handle special filter types
 			switch (key) {
-				case 'q':
-					// Text search - ILIKE on searchable columns
-					const searchColumns = this.getSearchColumns(entity);
-					const searchConditions = searchColumns.map(col => 
-						`${tableAlias}.${col} ILIKE $${paramIndex}`
-					);
-					conditions.push(`(${searchConditions.join(' OR ')})`);
-					params.push(`%${value}%`);
-					break;
-
-				case 'category':
-					// Category filter - handle array or single value
-					if (Array.isArray(value)) {
-						conditions.push(`${tableAlias}.category = ANY($${paramIndex})`);
-						params.push(value);
-					} else {
-						conditions.push(`${tableAlias}.category = $${paramIndex}`);
-						params.push(value);
-					}
-					break;
-
-				case 'completed':
-					// Boolean filter
-					conditions.push(`${tableAlias}.completed = $${paramIndex}`);
-					params.push(value);
-					break;
-
-				case 'dueDateFrom':
-					conditions.push(`${tableAlias}.due_date >= $${paramIndex}`);
-					params.push(value);
-					break;
-
-				case 'dueDateTo':
-					conditions.push(`${tableAlias}.due_date <= $${paramIndex}`);
-					params.push(value);
-					break;
-
 				case 'window':
-					// Resolve window to date range
+					// Resolve window to date range (handles its own paramIndex increments)
 					const dateRange = this.resolveWindow(value as string);
 					if (dateRange) {
 						if (dateRange.from) {
@@ -108,19 +69,90 @@ export class SQLCompiler {
 							params.push(dateRange.to);
 						}
 					}
+					// Note: paramIndex is only incremented when we actually add a condition and param
+					break;
+
+				case 'q':
+					// Text search - ILIKE on searchable columns
+					paramIndex++;
+					const searchColumns = this.getSearchColumns(entity);
+					const searchConditions = searchColumns.map(col => 
+						`${tableAlias}.${col} ILIKE $${paramIndex}`
+					);
+					conditions.push(`(${searchConditions.join(' OR ')})`);
+					params.push(`%${value}%`);
+					break;
+
+				case 'category':
+					// Category filter - handle array or single value
+					paramIndex++;
+					if (Array.isArray(value)) {
+						conditions.push(`${tableAlias}.category = ANY($${paramIndex})`);
+						params.push(value);
+					} else {
+						conditions.push(`${tableAlias}.category = $${paramIndex}`);
+						params.push(value);
+					}
+					break;
+
+				case 'completed':
+					// Boolean filter
+					paramIndex++;
+					conditions.push(`${tableAlias}.completed = $${paramIndex}`);
+					params.push(value);
+					break;
+
+				case 'dueDateFrom':
+					paramIndex++;
+					conditions.push(`${tableAlias}.due_date >= $${paramIndex}`);
+					params.push(value);
+					break;
+
+				case 'dueDateTo':
+					paramIndex++;
+					conditions.push(`${tableAlias}.due_date <= $${paramIndex}`);
+					params.push(value);
 					break;
 
 				case 'ids':
 					// ID array - IN clause
 					if (Array.isArray(value) && value.length > 0) {
+						paramIndex++;
 						conditions.push(`${tableAlias}.id = ANY($${paramIndex})`);
 						params.push(value);
+					}
+					break;
+
+				case 'reminderRecurrence':
+					// Reminder recurrence filter (tasks only)
+					if (entity === 'tasks') {
+						if (value === 'none') {
+							conditions.push(`${tableAlias}.reminder_recurrence IS NULL`);
+						} else if (value === 'any') {
+							conditions.push(`${tableAlias}.reminder_recurrence IS NOT NULL`);
+						} else if (['daily', 'weekly', 'monthly'].includes(value as string)) {
+							paramIndex++;
+							conditions.push(`${tableAlias}.reminder_recurrence->>'type' = $${paramIndex}`);
+							params.push(value);
+						}
+					}
+					break;
+
+				case 'reminder':
+					// Reminder presence filter (tasks only)
+					if (entity === 'tasks' && typeof value === 'boolean') {
+						if (value === true) {
+							conditions.push(`${tableAlias}.reminder IS NOT NULL`);
+						} else {
+							conditions.push(`${tableAlias}.reminder IS NULL`);
+						}
 					}
 					break;
 
 				case 'name':
 					// Contact name filter
 					if (entity === 'contacts') {
+						paramIndex++;
 						conditions.push(`${tableAlias}.name ILIKE $${paramIndex}`);
 						params.push(`%${value}%`);
 					}
@@ -129,6 +161,7 @@ export class SQLCompiler {
 				case 'phone':
 					// Contact phone filter
 					if (entity === 'contacts') {
+						paramIndex++;
 						conditions.push(`${tableAlias}.phone_number ILIKE $${paramIndex}`);
 						params.push(`%${value}%`);
 					}
@@ -137,6 +170,7 @@ export class SQLCompiler {
 				case 'email':
 					// Contact email filter
 					if (entity === 'contacts') {
+						paramIndex++;
 						conditions.push(`${tableAlias}.email ILIKE $${paramIndex}`);
 						params.push(`%${value}%`);
 					}
@@ -145,6 +179,7 @@ export class SQLCompiler {
 				case 'list_name':
 					// List name/title filter
 					if (entity === 'lists') {
+						paramIndex++;
 						conditions.push(`${tableAlias}.list_name ILIKE $${paramIndex}`);
 						params.push(`%${value}%`);
 					}
@@ -153,6 +188,7 @@ export class SQLCompiler {
 				case 'is_checklist':
 					// List type filter (checklist vs note)
 					if (entity === 'lists') {
+						paramIndex++;
 						conditions.push(`${tableAlias}.is_checklist = $${paramIndex}`);
 						params.push(value);
 					}
@@ -161,6 +197,7 @@ export class SQLCompiler {
 				case 'content':
 					// Content text filter (for notes)
 					if (entity === 'lists') {
+						paramIndex++;
 						conditions.push(`${tableAlias}.content ILIKE $${paramIndex}`);
 						params.push(`%${value}%`);
 					}
@@ -226,11 +263,8 @@ export class SQLCompiler {
 	 * @param startIndex - Starting parameter index (usually 3, after userId and id)
 	 * @returns Object with SET SQL and parameters
 	 */
-	static compileSet(
-		patch: Record<string, any>,
-		allowedColumns: string[],
-		startIndex: number
-	): CompileSetResult {
+	static compileSet( patch: Record<string, any>, allowedColumns: string[] , startIndex: number): CompileSetResult {
+		
 		const setClauses: string[] = [];
 		const setParams: any[] = [];
 		let currentIndex = startIndex;
@@ -243,8 +277,21 @@ export class SQLCompiler {
 			}
 
 			if (value !== undefined && value !== null) {
+				// Handle JSONB columns (reminder_recurrence)
+				if (key === 'reminder_recurrence') {
+					setClauses.push(`${key} = $${currentIndex}::jsonb`);
+					// If already a string, use it; otherwise stringify the object
+					setParams.push(typeof value === 'string' ? value : JSON.stringify(value));
+				} else {
+					setClauses.push(`${key} = $${currentIndex}`);
+					setParams.push(value);
+				}
+				currentIndex++;
+			} else if (value === null && key !== undefined) {
+				// Allow explicitly setting columns to NULL (useful for clearing fields in bulk updates)
+				// Only if key is explicitly provided (not undefined)
 				setClauses.push(`${key} = $${currentIndex}`);
-				setParams.push(value);
+				setParams.push(null);
 				currentIndex++;
 			}
 		}

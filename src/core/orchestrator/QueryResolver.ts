@@ -215,7 +215,13 @@ export class QueryResolver {
     // Check if params already has an ID
     const idField = this.getIdFieldForDomain(domain);
     if (params[idField]) {
-      return { id: params[idField] };
+      // Validate it's actually a UUID, not a name
+      // If it's a valid UUID, return it directly (e.g., from disambiguation or correct ID)
+      if (this.isValidUUID(params[idField])) {
+        return { id: params[idField] };
+      }
+      // If it's not a UUID, treat it as a name and continue to resolution below
+      this.logger.info(`Received ${idField} that is not a UUID format, treating as name: "${params[idField]}"`);
     }
     
     // Get the query text for this domain
@@ -304,6 +310,14 @@ export class QueryResolver {
    */
   private detectLanguage(text: string): 'he' | 'en' {
     return /[\u0590-\u05FF]/.test(text) ? 'he' : 'en';
+  }
+
+  /**
+   * Check if a string is a valid UUID format
+   */
+  private isValidUUID(value: string): boolean {
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    return uuidRegex.test(value);
   }
 }
 
