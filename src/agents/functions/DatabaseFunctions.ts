@@ -15,7 +15,7 @@ export class TaskFunction implements IFunction {
     properties: {
       operation: {
         type: 'string',
-        enum: ['create', 'createMultiple', 'get', 'getAll', 'update', 'updateMultiple', 'delete', 'deleteMultiple', 'complete', 'addSubtask'],
+        enum: ['create', 'createMultiple', 'get', 'getAll', 'update', 'updateMultiple', 'delete', 'deleteMultiple', 'deleteAll', 'updateAll', 'complete', 'completeAll', 'addSubtask'],
         description: 'The operation to perform on tasks'
       },
       taskId: {
@@ -34,6 +34,43 @@ export class TaskFunction implements IFunction {
         type: 'string',
         description: 'Due date in ISO format'
       },
+      reminder: {
+        type: 'string',
+        description: 'Reminder interval before due date (e.g., "30 minutes", "1 hour", "2 days"). Defaults to 30 minutes if dueDate is set. Cannot be used with reminderRecurrence.'
+      },
+      reminderRecurrence: {
+        type: 'object',
+        description: 'Recurrence pattern for recurring reminders. Cannot be used with dueDate+reminder.',
+        properties: {
+          type: {
+            type: 'string',
+            enum: ['daily', 'weekly', 'monthly'],
+            description: 'Recurrence type'
+          },
+          time: {
+            type: 'string',
+            description: 'Time of day in HH:mm format (e.g., "08:00", "14:30")'
+          },
+          days: {
+            type: 'array',
+            items: { type: 'number' },
+            description: 'For weekly: array of day numbers [0-6] where 0=Sunday, 6=Saturday'
+          },
+          dayOfMonth: {
+            type: 'number',
+            description: 'For monthly: day of month (1-31)'
+          },
+          until: {
+            type: 'string',
+            description: 'Optional end date in ISO format'
+          },
+          timezone: {
+            type: 'string',
+            description: 'Optional timezone override (defaults to user timezone)'
+          }
+        },
+        required: ['type', 'time']
+      },
       filters: {
         type: 'object',
         properties: {
@@ -47,6 +84,10 @@ export class TaskFunction implements IFunction {
         type: 'string',
         description: 'Subtask description for addSubtask operation'
       },
+      selectedIndex: {
+        type: 'number',
+        description: 'Selected index from disambiguation (when user responds with a number like "2")'
+      },
       tasks: {
         type: 'array',
         description: 'Array of tasks for createMultiple operation',
@@ -55,7 +96,20 @@ export class TaskFunction implements IFunction {
           properties: {
             text: { type: 'string' },
             category: { type: 'string' },
-            dueDate: { type: 'string' }
+            dueDate: { type: 'string' },
+            reminder: { type: 'string' },
+            reminderRecurrence: {
+              type: 'object',
+              properties: {
+                type: { type: 'string', enum: ['daily', 'weekly', 'monthly'] },
+                time: { type: 'string' },
+                days: { type: 'array', items: { type: 'number' } },
+                dayOfMonth: { type: 'number' },
+                until: { type: 'string' },
+                timezone: { type: 'string' }
+              },
+              required: ['type', 'time']
+            }
           },
           required: ['text']
         }
@@ -75,6 +129,19 @@ export class TaskFunction implements IFunction {
             text: { type: 'string' },
             category: { type: 'string' },
             dueDate: { type: 'string' },
+            reminder: { type: 'string' },
+            reminderRecurrence: {
+              type: 'object',
+              properties: {
+                type: { type: 'string', enum: ['daily', 'weekly', 'monthly'] },
+                time: { type: 'string' },
+                days: { type: 'array', items: { type: 'number' } },
+                dayOfMonth: { type: 'number' },
+                until: { type: 'string' },
+                timezone: { type: 'string' }
+              },
+              required: ['type', 'time']
+            },
             completed: { type: 'boolean' }
           },
           required: ['taskId']
@@ -95,17 +162,8 @@ export class TaskFunction implements IFunction {
 
       // Helper: resolve a taskId from natural language text when missing
       const resolveTaskId = async (): Promise<{ id: string | null; disambiguation?: string }> => {
-        if (params.taskId) return { id: params.taskId };
-        if (!params.text) return { id: null };
         const resolver = new QueryResolver();
-        const result = await resolver.resolveOneOrAsk(params.text, userId, 'task');
-        if (result.disambiguation) {
-          return { 
-            id: null, 
-            disambiguation: resolver.formatDisambiguation('task', result.disambiguation.candidates) 
-          };
-        }
-        return { id: result.entity?.id || null };
+        return await resolver.resolveWithDisambiguationHandling(params, userId, 'task');
       };
 
       switch (operation) {
@@ -284,6 +342,23 @@ export class TaskFunction implements IFunction {
             });
           }
 
+        case 'deleteAll':
+          // Note: deleteAll uses filters from TaskService.deleteAll
+          // Should use where filters and preview flag
+          const deleteAllFilter = params.where || params.filters || {};
+          return await this.taskService.deleteAll(userId, deleteAllFilter, params.preview === true);
+
+        case 'updateAll':
+          // Note: updateAll uses filters and patch from TaskService.updateAll
+          const updateAllFilter = params.where || params.filters || {};
+          const patch = params.patch || {};
+          return await this.taskService.updateAll(userId, updateAllFilter, patch, params.preview === true);
+
+        case 'completeAll':
+          // Note: completeAll is a wrapper for updateAll with completed=true
+          const completeAllFilter = params.where || params.filters || {};
+          return await this.taskService.completeAll(userId, completeAllFilter, params.preview === true);
+
         case 'addSubtask':
           if (!params.taskId || !params.subtaskText) {
             return { success: false, error: 'Task ID and subtask text are required for addSubtask operation' };
@@ -338,6 +413,10 @@ export class ContactFunction implements IFunction {
       address: {
         type: 'string',
         description: 'Contact physical address'
+      },
+      selectedIndex: {
+        type: 'number',
+        description: 'Selected index from disambiguation (when user responds with a number like "2")'
       },
       filters: {
         type: 'object',
@@ -395,17 +474,7 @@ export class ContactFunction implements IFunction {
       const { operation, ...params } = args;
       const resolver = new QueryResolver();
       const resolveContactId = async (): Promise<{ id: string | null; disambiguation?: string }> => {
-        if (params.contactId) return { id: params.contactId };
-        const query = params.name || params.email || params.phone;
-        if (!query) return { id: null };
-        const one = await resolver.resolveOneOrAsk(query, userId, 'contact');
-        if (one.disambiguation) {
-          return { 
-            id: null, 
-            disambiguation: resolver.formatDisambiguation('contact', one.disambiguation.candidates) 
-          };
-        }
-        return { id: one.entity?.id || null };
+        return await resolver.resolveWithDisambiguationHandling(params, userId, 'contact');
       };
 
       switch (operation) {
@@ -661,14 +730,17 @@ export class ListFunction implements IFunction {
         type: 'string',
         description: 'List ID for get, update, delete operations'
       },
-      listType: {
+      listName: {
         type: 'string',
-        enum: ['note', 'checklist'],
-        description: 'Type of list for create operation'
+        description: 'List name/title for create operation'
       },
-      title: {
+      isChecklist: {
+        type: 'boolean',
+        description: 'true for checklist, false for note'
+      },
+      content: {
         type: 'string',
-        description: 'List title'
+        description: 'Plain text content for notes'
       },
       items: {
         type: 'array',
@@ -678,8 +750,9 @@ export class ListFunction implements IFunction {
       filters: {
         type: 'object',
         properties: {
-          listType: { type: 'string', enum: ['note', 'checklist'] },
-          title: { type: 'string' }
+          listName: { type: 'string' },
+          isChecklist: { type: 'boolean' },
+          content: { type: 'string' }
         }
       },
       itemText: {
@@ -690,17 +763,22 @@ export class ListFunction implements IFunction {
         type: 'number',
         description: 'Item index for toggleItem operation'
       },
+      selectedIndex: {
+        type: 'number',
+        description: 'Selected index from disambiguation (when user responds with a number like "2")'
+      },
       lists: {
         type: 'array',
         description: 'Array of lists for createMultiple operation',
         items: {
           type: 'object',
           properties: {
-            listType: { type: 'string', enum: ['note', 'checklist'] },
-            title: { type: 'string' },
+            listName: { type: 'string' },
+            isChecklist: { type: 'boolean' },
+            content: { type: 'string' },
             items: { type: 'array', items: { type: 'string' } }
           },
-          required: ['listType']
+          required: ['listName']
         }
       },
       listIds: {
@@ -715,7 +793,8 @@ export class ListFunction implements IFunction {
           type: 'object',
           properties: {
             listId: { type: 'string' },
-            title: { type: 'string' },
+            listName: { type: 'string' },
+            content: { type: 'string' },
             items: { 
               type: 'array',
               items: { type: 'string' }
@@ -738,17 +817,7 @@ export class ListFunction implements IFunction {
       const { operation, ...params } = args;
       const resolver = new QueryResolver();
       const resolveListId = async (): Promise<{ id: string | null; disambiguation?: string }> => {
-        if (params.listId) return { id: params.listId };
-        const query = params.title;
-        if (!query) return { id: null };
-        const one = await resolver.resolveOneOrAsk(query, userId, 'list');
-        if (one.disambiguation) {
-          return { 
-            id: null, 
-            disambiguation: resolver.formatDisambiguation('list', one.disambiguation.candidates) 
-          };
-        }
-        return { id: one.entity?.id || null };
+        return await resolver.resolveWithDisambiguationHandling(params, userId, 'list');
       };
 
       switch (operation) {

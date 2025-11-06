@@ -72,10 +72,7 @@ async function handleIncomingMessage(message: WhatsAppMessage): Promise<void> {
     logger.info(`📋 Message ID: ${message.id}`);
     logger.info(`📝 Type: ${message.type}`);
 
-    // Step 1: Mark message as read and show typing indicator
-    logger.debug('Step 1: Sending typing indicator...');
     await sendTypingIndicator(userPhone, message.id);
-    logger.debug('✅ Typing indicator sent');
 
     // Step 2: Handle different message types
     logger.debug('Step 2: Processing message content...');
@@ -98,8 +95,7 @@ async function handleIncomingMessage(message: WhatsAppMessage): Promise<void> {
       return;
     }
 
-    // Step 3: Process the message through the AI agent
-    logger.debug('Step 3: Processing through AI agent...');
+
     logger.info(`🤖 AI Processing: "${messageText}"`);
     const response = await processMessageV2(userPhone, messageText);
     logger.info(`💡 AI Response: "${response}"`);

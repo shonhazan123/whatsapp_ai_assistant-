@@ -1,6 +1,16 @@
 import { query } from '../../config/database';
 import { IResponse } from '../../core/types/AgentTypes';
 
+export class DuplicateEntryError extends Error {
+  constructor(
+    public readonly constraint?: string,
+    public readonly detail?: string
+  ) {
+    super('Duplicate entry');
+    this.name = 'DuplicateEntryError';
+  }
+}
+
 export abstract class BaseService {
   constructor(protected logger: any = logger) {}
 
@@ -8,7 +18,11 @@ export abstract class BaseService {
     try {
       const result = await query(sql, params);
       return result.rows;
-    } catch (error) {
+    } catch (error: any) {
+      if (error?.code === '23505') {
+        this.logger.warn?.('Duplicate key violation', { constraint: error.constraint, detail: error.detail });
+        throw new DuplicateEntryError(error.constraint, error.detail);
+      }
       this.logger.error(`Database query error: ${sql}`, error);
       throw new Error(`Database error: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }

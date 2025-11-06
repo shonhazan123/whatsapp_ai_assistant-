@@ -52,10 +52,7 @@ export class MultiAgentCoordinator {
   /**
    * Execute actions in parallel where possible
    */
-  async executeActionsBatch(
-    actions: AgentAction[],
-    userPhone: string
-  ): Promise<AgentActionResult[]> {
+  async executeActionsBatch( actions: AgentAction[], userPhone: string): Promise<AgentActionResult[]> {
     const results: AgentActionResult[] = [];
     const completedActions = new Set<string>();
 

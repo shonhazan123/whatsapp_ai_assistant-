@@ -23,15 +23,18 @@
     "author": "",
     "license": "ISC",
     "dependencies": {
+        "@types/node-cron": "^3.0.11",
         "@types/open": "^6.1.0",
         "axios": "^1.6.2",
         "chrono-node": "^2.9.0",
+        "date-fns": "^4.1.0",
         "dotenv": "^16.3.1",
         "express": "^4.18.2",
         "form-data": "^4.0.0",
         "fuse.js": "^7.1.0",
         "googleapis": "^128.0.0",
         "multer": "^1.4.5-lts.1",
+        "node-cron": "^4.2.1",
         "open": "^10.2.0",
         "openai": "^4.20.1",
         "pg": "^8.11.3"

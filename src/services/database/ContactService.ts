@@ -1,4 +1,6 @@
 import { CreateMultipleRequest, CreateRequest, DeleteRequest, GetRequest, IResponse, UpdateRequest } from '../../core/types/AgentTypes';
+import { BulkPatch, ContactFilter } from '../../core/types/Filters';
+import { SQLCompiler } from '../../utils/SQLCompiler';
 import { logger } from '../../utils/logger';
 import { BaseService } from './BaseService';
 
@@ -326,6 +328,101 @@ export class ContactService extends BaseService {
     } catch (error) {
       this.logger.error('Error searching contacts:', error);
       return this.createErrorResponse('Failed to search contacts');
+    }
+  }
+
+  // Bulk operations
+  async deleteAll(userPhone: string, filter: ContactFilter, preview = false): Promise<IResponse> {
+    try {
+      const userId = await this.ensureUserExists(userPhone);
+
+      // Compile WHERE clause using SQLCompiler
+      const { whereSql, params } = SQLCompiler.compileWhere('contacts', userId, filter);
+
+      // Safety check: refuse empty where unless preview
+      if (!whereSql.trim() && !preview) {
+        return this.createErrorResponse(
+          'Bulk delete requires filter conditions. Set preview=true to review affected rows.'
+        );
+      }
+
+      let query: string;
+      
+      if (preview) {
+        query = `SELECT c.id, c.name, c.phone_number, c.email, c.address, c.created_at 
+                 FROM contact_list c 
+                 WHERE ${whereSql}`;
+      } else {
+        query = `DELETE FROM contact_list c 
+                 WHERE ${whereSql}
+                 RETURNING c.id, c.name, c.phone_number, c.email, c.address, c.created_at`;
+      }
+
+      const results = await this.executeQuery<Contact>(query, params);
+
+      this.logger.info(`✅ ${preview ? 'Preview' : 'Deleted'} ${results.length} contacts for user: ${userId}`);
+
+      return this.createSuccessResponse({
+        contacts: results,
+        count: results.length,
+        preview
+      }, preview ? `Preview: ${results.length} contacts would be deleted` : `${results.length} contacts deleted`);
+    } catch (error) {
+      this.logger.error('Error in bulk delete contacts:', error);
+      return this.createErrorResponse('Failed to delete contacts');
+    }
+  }
+
+  async updateAll(userPhone: string, filter: ContactFilter, patch: BulkPatch, preview = false): Promise<IResponse> {
+    try {
+      const userId = await this.ensureUserExists(userPhone);
+      const allowedColumns = SQLCompiler.getAllowedColumns('contacts');
+
+      // Compile SET clause
+      const { setSql, setParams } = SQLCompiler.compileSet(patch, allowedColumns, 1);
+      
+      if (!setSql) {
+        return this.createErrorResponse('No valid fields to update');
+      }
+
+      // Compile WHERE clause
+      const { whereSql, params } = SQLCompiler.compileWhere('contacts', userId, filter);
+
+      // Safety check: refuse empty where unless preview
+      if (!whereSql.trim() && !preview) {
+        return this.createErrorResponse(
+          'Bulk update requires filter conditions. Set preview=true to review affected rows.'
+        );
+      }
+
+      // Combine params: setParams first, then where params
+      const allParams = [...setParams, ...params];
+
+      let query: string;
+      
+      if (preview) {
+        query = `SELECT c.id, c.name, c.phone_number, c.email, c.address, c.created_at 
+                 FROM contact_list c 
+                 WHERE ${whereSql}`;
+      } else {
+        query = `UPDATE contact_list c 
+                 SET ${setSql}
+                 WHERE ${whereSql}
+                 RETURNING c.id, c.name, c.phone_number, c.email, c.address, c.created_at`;
+      }
+
+      const results = await this.executeQuery<Contact>(query, preview ? params : allParams);
+
+      this.logger.info(`✅ ${preview ? 'Preview' : 'Updated'} ${results.length} contacts for user: ${userId}`);
+
+      return this.createSuccessResponse({
+        contacts: results,
+        count: results.length,
+        preview
+      }, preview ? `Preview: ${results.length} contacts would be updated` : `${results.length} contacts updated`);
+    } catch (error) {
+      this.logger.error('Error in bulk update contacts:', error);
+      return this.createErrorResponse('Failed to update contacts');
     }
   }
 }

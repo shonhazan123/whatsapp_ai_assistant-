@@ -51,7 +51,7 @@ export class MainAgent extends BaseAgent {
         response = await this.routeToGmailAgent(message, userPhone, context);
       } else if (intent === AgentName.DATABASE) {
         response = await this.routeToDatabaseAgent(message, userPhone, context);
-      } else if (intent === 'multi-task') {
+      } else if (intent === AgentName.MULTI_TASK) {
         response = await this.routeToMultiAgentCoordinator(message, userPhone);
       } else {
         // General conversation with full context
@@ -59,7 +59,6 @@ export class MainAgent extends BaseAgent {
       }
 
       // Step 4: Add assistant response to conversation window
-      this.conversationWindow.addMessage(userPhone, 'assistant', response);
 
       return response;
     } catch (error) {

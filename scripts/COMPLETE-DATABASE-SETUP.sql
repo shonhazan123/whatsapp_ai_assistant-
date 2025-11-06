@@ -24,6 +24,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     text TEXT NOT NULL,
     category VARCHAR(50),
     due_date TIMESTAMP WITH TIME ZONE,
+    reminder INTERVAL,
+    reminder_recurrence JSONB,
+    next_reminder_at TIMESTAMP WITH TIME ZONE,
     completed BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -85,6 +88,10 @@ CREATE TABLE conversation_memory (
 -- Tasks indexes
 CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tasks_completed ON tasks(completed);
+CREATE INDEX IF NOT EXISTS idx_tasks_reminder ON tasks(due_date, reminder, completed)
+WHERE due_date IS NOT NULL AND reminder IS NOT NULL AND reminder_recurrence IS NULL AND completed = FALSE;
+CREATE INDEX IF NOT EXISTS idx_tasks_recurring_reminder ON tasks(next_reminder_at, completed)
+WHERE reminder_recurrence IS NOT NULL AND next_reminder_at IS NOT NULL AND completed = FALSE;
 
 -- Subtasks indexes
 CREATE INDEX IF NOT EXISTS idx_subtasks_task ON subtasks(task_id);

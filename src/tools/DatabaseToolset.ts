@@ -293,10 +293,11 @@ export class DatabaseToolset implements IToolset {
 
   private async createList(params: any): Promise<ToolResult> {
     // Restructure params: LLM sends flat structure, service expects { data: {...} }
-    // ListService expects: listType, title, items (it builds content internally)
+    // ListService expects: listName, isChecklist, content, items
     const data = {
-      listType: params.listType,
-      title: params.title,
+      listName: params.listName,
+      isChecklist: params.isChecklist || false,
+      content: params.content,
       items: params.items || []
     };
     // Skip Zod validation - ListService does its own validation
