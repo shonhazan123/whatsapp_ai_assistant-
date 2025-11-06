@@ -2,7 +2,7 @@ import { CreateMultipleRequest, CreateRequest, DeleteRequest, GetRequest, IRespo
 import { BulkPatch, TaskFilter } from '../../core/types/Filters';
 import { SQLCompiler } from '../../utils/SQLCompiler';
 import { logger } from '../../utils/logger';
-import { BaseService } from './BaseService';
+import { BaseService, DuplicateEntryError } from './BaseService';
 
 export interface ReminderRecurrence {
   type: 'daily' | 'weekly' | 'monthly';
@@ -263,9 +263,11 @@ export class TaskService extends BaseService {
   }
 
   async create(request: CreateRequest): Promise<IResponse> {
+    let userId: string | undefined;
+    let data: any;
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
-      const data = this.sanitizeInput(request.data);
+      userId = await this.ensureUserExists(request.userPhone);
+      data = this.sanitizeInput(request.data);
 
       const validation = this.validateRequiredFields(data, ['text']);
       if (validation) {
@@ -335,14 +337,19 @@ export class TaskService extends BaseService {
       
       return this.createSuccessResponse(result, 'Task created successfully');
     } catch (error) {
+      if (error instanceof DuplicateEntryError) {
+        this.logger.info(`Duplicate task name detected for user ${userId ?? 'unknown'}: ${data?.text}`);
+        return this.createErrorResponse('Task name already exists. Please choose a different name.');
+      }
       this.logger.error('Error creating task:', error);
       return this.createErrorResponse('Failed to create task');
     }
   }
 
   async createMultiple(request: CreateMultipleRequest): Promise<IResponse> {
+    let userId: string | undefined;
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
+      userId = await this.ensureUserExists(request.userPhone);
       const results = [];
       const errors = [];
 
@@ -421,6 +428,10 @@ export class TaskService extends BaseService {
 
           results.push(result);
         } catch (error) {
+          if (error instanceof DuplicateEntryError) {
+            errors.push({ item, error: 'Task name already exists. Please choose a different name.' });
+            continue;
+          }
           errors.push({ item, error: error instanceof Error ? error.message : 'Unknown error' });
         }
       }
@@ -433,6 +444,10 @@ export class TaskService extends BaseService {
         count: results.length
       }, `Created ${results.length} tasks`);
     } catch (error) {
+      if (error instanceof DuplicateEntryError) {
+        this.logger.info(`Duplicate task name detected during bulk create for user ${request.userPhone}`);
+        return this.createErrorResponse('Task name already exists. Please choose a different name.');
+      }
       this.logger.error('Error creating multiple tasks:', error);
       return this.createErrorResponse('Failed to create tasks');
     }

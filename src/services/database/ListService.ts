@@ -1,6 +1,6 @@
 import { CreateMultipleRequest, CreateRequest, DeleteRequest, GetRequest, IResponse, UpdateRequest } from '../../core/types/AgentTypes';
 import { logger } from '../../utils/logger';
-import { BaseService } from './BaseService';
+import { BaseService, DuplicateEntryError } from './BaseService';
 
 export interface List {
   id: string;
@@ -45,9 +45,11 @@ export class ListService extends BaseService {
   }
 
   async create(request: CreateRequest): Promise<IResponse> {
+    let userId: string | undefined;
+    let data: any;
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
-      const data = this.sanitizeInput(request.data);
+      userId = await this.ensureUserExists(request.userPhone);
+      data = this.sanitizeInput(request.data);
 
       const validation = this.validateRequiredFields(data, ['listName']);
       if (validation) {
@@ -82,14 +84,19 @@ export class ListService extends BaseService {
       
       return this.createSuccessResponse(result, `List created successfully`);
     } catch (error) {
+      if (error instanceof DuplicateEntryError) {
+        this.logger.info(`Duplicate list name detected for user ${userId ?? 'unknown'}: ${data?.listName}`);
+        return this.createErrorResponse('List name already exists. Please choose a different name.');
+      }
       this.logger.error('Error creating list:', error);
       return this.createErrorResponse('Failed to create list');
     }
   }
 
   async createMultiple(request: CreateMultipleRequest): Promise<IResponse> {
+    let userId: string | undefined;
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
+      userId = await this.ensureUserExists(request.userPhone);
       const results = [];
       const errors = [];
 
@@ -126,6 +133,10 @@ export class ListService extends BaseService {
 
           results.push(result);
         } catch (error) {
+          if (error instanceof DuplicateEntryError) {
+            errors.push({ item, error: 'List name already exists. Please choose a different name.' });
+            continue;
+          }
           errors.push({ item, error: error instanceof Error ? error.message : 'Unknown error' });
         }
       }
@@ -138,6 +149,10 @@ export class ListService extends BaseService {
         count: results.length
       }, `Created ${results.length} lists`);
     } catch (error) {
+      if (error instanceof DuplicateEntryError) {
+        this.logger.info(`Duplicate list name detected during bulk create for user ${request.userPhone}`);
+        return this.createErrorResponse('List name already exists. Please choose a different name.');
+      }
       this.logger.error('Error creating multiple lists:', error);
       return this.createErrorResponse('Failed to create lists');
     }

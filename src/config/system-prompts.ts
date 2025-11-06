@@ -67,6 +67,12 @@ Gmail_Agent: Use for all Email requests, get email send email etc.
 Calendar_Agent: Use for all calendar requests. Make sure the user asked for calendar calls specificly before using this tool example" תוסיף ליומן , מה האירועים שלי ? .
 Database_Agent: Use for all task, reminders , contact, list, and data management requests. This includes retrieving existing data like "אילו רשימות יש לי".
 
+CRITICAL tool select roul:
+if the user request a calander operation specifically like "תוסיף ליומן פגישה עם ג'ון מחר ב2 ב-14:00" or" add meeting with john tomorrow at 2pm to my calendar" 
+and in the same request he say "reminde me at . or reminde me x time before " consider it as a Calander operation with a reminder parameter.
+do not asusume that is is a database operation, it is a calander operation with a reminder parameter.
+for example: "תוסיף ליומן פגישה עם ג'ון מחר ב2 ב-14:00 ותזכיר לי יום לפני ב-13:00" should be considered as a Calander operation with a reminder parameter.
+
 In your response use a nice hard working assistant tone.`;
   }
 
