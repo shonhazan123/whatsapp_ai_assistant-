@@ -62,7 +62,9 @@ export class CalendarFunction implements IFunction {
       until: {
         type: 'string',
         description: 'Optional ISO date to stop recurrence (e.g., "2025-12-31T23:59:00Z")'
-      }
+      },
+      language: { type: 'string', description: 'Language hint ("he" or "en")' },
+      timezone: { type: 'string', description: 'Optional timezone override (e.g., "Asia/New_York")' }
     },
     required: ['operation']
   };
@@ -71,6 +73,134 @@ export class CalendarFunction implements IFunction {
     private calendarService: CalendarService,
     private logger: any = logger
   ) {}
+
+  private detectLanguage(text: string): 'he' | 'en' {
+    if (!text) {
+      return 'en';
+    }
+    return /[\u0590-\u05FF]/.test(text) ? 'he' : 'en';
+  }
+
+  private normalizeTimezone(payload: any): void {
+    if (!payload || typeof payload !== 'object') return;
+    if (payload.timezone && !payload.timeZone) {
+      payload.timeZone = payload.timezone;
+    }
+    delete payload.timezone;
+  }
+
+  private buildEventLink(eventId?: string): string | undefined {
+    if (!eventId) return undefined;
+    const encoded = encodeURIComponent(eventId);
+    return `https://calendar.google.com/calendar/event?eid=${encoded}`;
+  }
+
+  private deriveWindow(params: any, phrase?: string): { timeMin: string; timeMax: string } | null {
+    if (params.timeMin && params.timeMax) {
+      return { timeMin: params.timeMin, timeMax: params.timeMax };
+    }
+
+    const isoSource = [params.start, params.end].find(
+      (value: any) => typeof value === 'string' && value.includes('T')
+    );
+    if (isoSource) {
+      const date = new Date(isoSource);
+      if (!Number.isNaN(date.getTime())) {
+        const start = new Date(date);
+        start.setHours(0, 0, 0, 0);
+        const end = new Date(date);
+        end.setHours(23, 59, 59, 999);
+        return { timeMin: start.toISOString(), timeMax: end.toISOString() };
+      }
+    }
+
+    const range = TimeParser.parseDateRange(phrase || params.summary || '');
+    if (range) {
+      return { timeMin: range.start, timeMax: range.end };
+    }
+
+    return null;
+  }
+
+  private buildDisambiguationMessage(events: any[], language: 'he' | 'en'): string {
+    const lines = events.slice(0, 5).map((event, index) => {
+      const start = event.start ? new Date(event.start).toLocaleString('he-IL') : '—';
+      return `${index + 1}. ${event.summary || 'Event'} (${start})`;
+    });
+
+    if (language === 'he') {
+      return `מצאתי מספר אירועים תואמים:
+${lines.join('\n')}
+נא לציין כותרת מלאה או פרטים נוספים כדי שאוכל לעדכן את האירוע הנכון.`;
+    }
+
+    return `I found multiple matching events:
+${lines.join('\n')}
+Please specify the exact title or provide more details so I can update the correct one.`;
+  }
+
+  private async resolveEventFromWindow(
+    window: { timeMin: string; timeMax: string },
+    summary: string | undefined,
+    language: 'he' | 'en'
+  ): Promise<{ eventId?: string; error?: string }> {
+    const eventsResp = await this.calendarService.getEvents(window);
+    if (!eventsResp.success || !eventsResp.data?.events?.length) {
+      return {};
+    }
+
+    let events = eventsResp.data.events as any[];
+    if (summary) {
+      const lowered = summary.toLowerCase();
+      events = events.filter(event => event.summary?.toLowerCase().includes(lowered));
+    }
+
+    if (events.length === 0) {
+      return {};
+    }
+
+    if (events.length === 1) {
+      return { eventId: events[0].id };
+    }
+
+    return { error: this.buildDisambiguationMessage(events, language) };
+  }
+
+  private async deleteByWindow(summary: string | undefined, timeMin: string, timeMax: string): Promise<IResponse> {
+    const eventsResp = await this.calendarService.getEvents({ timeMin, timeMax });
+    if (!eventsResp.success || !eventsResp.data) {
+      return { success: false, error: 'Failed to fetch events for deletion window' };
+    }
+
+    let events = (eventsResp.data.events || []) as any[];
+    if (summary) {
+      const lowered = summary.toLowerCase();
+      events = events.filter(event => event.summary?.toLowerCase().includes(lowered));
+    }
+
+    if (events.length === 0) {
+      return { success: false, error: 'No matching events found in the requested window' };
+    }
+
+    const uniqueIds = Array.from(new Set(events.map(event => event.recurringEventId || event.id).filter(Boolean)));
+    const results: any[] = [];
+    const errors: any[] = [];
+
+    for (const id of uniqueIds) {
+      const deletion = await this.calendarService.deleteEvent(id as string);
+      if (deletion.success) {
+        results.push(id);
+      } else {
+        errors.push({ id, error: deletion.error });
+      }
+    }
+
+    return {
+      success: errors.length === 0,
+      message: `Deleted ${results.length} events${errors.length ? ` (${errors.length} failed)` : ''}`,
+      data: { deletedIds: results, errors: errors.length ? errors : undefined }
+    };
+  }
 
   /**
    * Extract attendees from message text
@@ -108,59 +238,59 @@ export class CalendarFunction implements IFunction {
     return emailRegex.test(email);
   }
 
-  async execute(args: any): Promise<IResponse> {
+  async execute(args: any, userId: string): Promise<IResponse> {
     try {
       const { operation, ...params } = args;
       const resolver = new QueryResolver();
 
       switch (operation) {
         // ✅ Create a single event
-        case 'create':
+        case 'create': {
           if (!params.summary || !params.start || !params.end) {
             return { success: false, error: 'Summary, start, and end are required for create operation' };
           }
-          
+
+          const { language: _ignoredLanguage, ...restCreate } = params;
+          const createPayload: any = { ...restCreate };
+          this.normalizeTimezone(createPayload);
+
           // Extract attendees from message if provided
-          const attendees = this.extractAttendeesFromMessage(params.summary, params.description);
-          if (attendees.length > 0) {
-            params.attendees = attendees;
-            this.logger.info(`📧 Extracted attendees: ${attendees.join(', ')}`);
+          const extractedAttendees = this.extractAttendeesFromMessage(createPayload.summary, createPayload.description);
+          if (extractedAttendees.length > 0) {
+            if (Array.isArray(createPayload.attendees) && createPayload.attendees.length > 0) {
+              createPayload.attendees = Array.from(new Set([
+                ...createPayload.attendees,
+                ...extractedAttendees
+              ]));
+            } else {
+              createPayload.attendees = extractedAttendees;
+            }
+            this.logger.info(`📧 Extracted attendees: ${createPayload.attendees.join(', ')}`);
           }
-          
-          // Create the event
-          const result = await this.calendarService.createEvent(params);
-          
-          // If event created successfully and has attendees, add meeting link
-          if (result.success && result.data && attendees.length > 0) {
-            const eventId = result.data.id;
-            const meetingLink = `https://calendar.google.com/calendar/event?eid=${eventId}`;
-            
-            // Store meeting link in result for email invitation
-            (result as any).meetingLink = meetingLink;
-            this.logger.info(`🔗 Generated meeting link: ${meetingLink}`);
-            
-            // Update result message to include meeting link
-            result.message = `✅ Event created successfully!
 
-📅 Event Details:
-- Title: ${params.summary}
-- Start: ${params.start}
-- End: ${params.end}
-- Attendees: ${attendees.join(', ')}
-
-🔗 Meeting link: ${meetingLink}
-
-Google Calendar has automatically sent email invitations to all attendees.`;
+          const result = await this.calendarService.createEvent(createPayload);
+          const link = this.buildEventLink(result.data?.id);
+          if (link) {
+            result.data = {
+              ...result.data,
+              link
+            };
           }
-          
+
           return result;
+        }
 
         // ✅ Create multiple events
         case 'createMultiple':
           if (!params.events?.length) {
             return { success: false, error: 'Events array is required for createMultiple operation' };
           }
-          return await this.calendarService.createMultipleEvents({ events: params.events });
+          const normalizedEvents = params.events.map((event: any) => {
+            const payload: any = { ...event };
+            this.normalizeTimezone(payload);
+            return payload;
+          });
+          return await this.calendarService.createMultipleEvents({ events: normalizedEvents });
 
         // ✅ Create recurring event (with optional UNTIL)
         case 'createRecurring':
@@ -195,10 +325,13 @@ Google Calendar has automatically sent email invitations to all attendees.`;
           // Natural language: resolve by summary/time window if no eventId
           if (!params.eventId) {
             const phrase = params.summary || '';
-            const range = params.timeMin && params.timeMax ? { start: params.timeMin, end: params.timeMax } : TimeParser.parseDateRange(phrase) || { start: new Date().toISOString(), end: new Date(Date.now() + 24*60*60*1000).toISOString() };
-            const result = await resolver.resolveOneOrAsk(phrase, '', 'event');
+            const result = await resolver.resolveOneOrAsk(phrase, userId, 'event');
             if (result.disambiguation) {
-              return { success: false, error: resolver.formatDisambiguation('event', result.disambiguation.candidates) };
+              const language = params.language || this.detectLanguage(phrase);
+              return {
+                success: false,
+                error: resolver.formatDisambiguation('event', result.disambiguation.candidates, language)
+              };
             }
             if (!result.entity?.id) return { success: false, error: 'Event not found (provide summary/time window)' };
             return await this.calendarService.getEventById(result.entity.id);
@@ -217,24 +350,106 @@ Google Calendar has automatically sent email invitations to all attendees.`;
         case 'update': {
           if (!params.eventId) {
             const phrase = params.summary || '';
-            const range = params.timeMin && params.timeMax ? { start: params.timeMin, end: params.timeMax } : TimeParser.parseDateRange(phrase) || { start: new Date().toISOString(), end: new Date(Date.now() + 24*60*60*1000).toISOString() };
-            const result = await resolver.resolveOneOrAsk(phrase, '', 'event');
-            if (result.disambiguation) {
-              return { success: false, error: resolver.formatDisambiguation('event', result.disambiguation.candidates) };
+            const language = params.language || this.detectLanguage(phrase);
+
+            const inferredWindow = this.deriveWindow(params, phrase);
+            if (inferredWindow) {
+              const windowResolution = await this.resolveEventFromWindow(
+                inferredWindow,
+                phrase || params.summary,
+                language
+              );
+              if (windowResolution?.error) {
+                return { success: false, error: windowResolution.error };
+              }
+              if (windowResolution?.eventId) {
+                const { language: _ignoredLanguage, ...rest } = params;
+                const updatePayload: any = {
+                  ...rest,
+                  eventId: windowResolution.eventId
+                };
+                this.normalizeTimezone(updatePayload);
+                delete updatePayload.timeMin;
+                delete updatePayload.timeMax;
+                const updateResult = await this.calendarService.updateEvent(updatePayload);
+                const link = this.buildEventLink(updateResult.data?.id || updatePayload.eventId);
+                if (link) {
+                  updateResult.data = {
+                    ...updateResult.data,
+                    link
+                  };
+                }
+                return updateResult;
+              }
             }
-            if (!result.entity?.id) return { success: false, error: 'Event not found (provide summary/time window)' };
-            return await this.calendarService.updateEvent({ ...params, eventId: result.entity.id });
+
+            const result = await resolver.resolveOneOrAsk(phrase, userId, 'event');
+            if (result.disambiguation) {
+              return {
+                success: false,
+                error: resolver.formatDisambiguation('event', result.disambiguation.candidates, language)
+              };
+            }
+            if (!result.entity?.id) {
+              return { success: false, error: 'Event not found (provide summary/time window)' };
+            }
+
+            const { language: _ignoredLanguage, ...rest } = params;
+            const updatePayload: any = {
+              ...rest,
+              eventId: result.entity.id
+            };
+            this.normalizeTimezone(updatePayload);
+            delete updatePayload.timeMin;
+            delete updatePayload.timeMax;
+            const updateResult = await this.calendarService.updateEvent(updatePayload);
+            const link = this.buildEventLink(updateResult.data?.id || updatePayload.eventId);
+            if (link) {
+              updateResult.data = {
+                ...updateResult.data,
+                link
+              };
+            }
+            return updateResult;
           }
-          return await this.calendarService.updateEvent(params);
+
+          const { language: _ignoredLanguage2, ...rest } = params;
+          const directUpdate: any = { ...rest };
+          this.normalizeTimezone(directUpdate);
+          delete directUpdate.timeMin;
+          delete directUpdate.timeMax;
+          const updateResult = await this.calendarService.updateEvent(directUpdate);
+          const link = this.buildEventLink(updateResult.data?.id || directUpdate.eventId);
+          if (link) {
+            updateResult.data = {
+              ...updateResult.data,
+              link
+            };
+          }
+          return updateResult;
         }
 
         // ✅ Delete event (single or recurring series)
         case 'delete': {
           if (!params.eventId) {
             const phrase = params.summary || '';
-            const result = await resolver.resolveOneOrAsk(phrase, '', 'event');
+
+            if (params.timeMin && params.timeMax) {
+              return await this.deleteByWindow(phrase || undefined, params.timeMin, params.timeMax);
+            }
+
+            const inferredWindow = this.deriveWindow(params, phrase);
+            if (inferredWindow) {
+              return await this.deleteByWindow(phrase || undefined, inferredWindow.timeMin, inferredWindow.timeMax);
+            }
+
+            const result = await resolver.resolveOneOrAsk(phrase, userId, 'event');
             if (result.disambiguation) {
-              return { success: false, error: resolver.formatDisambiguation('event', result.disambiguation.candidates) };
+              const language = params.language || this.detectLanguage(phrase);
+              return {
+                success: false,
+                error: resolver.formatDisambiguation('event', result.disambiguation.candidates, language)
+              };
             }
             if (!result.entity?.id) return { success: false, error: 'Event not found (provide summary/time window)' };
             return await this.calendarService.deleteEvent(result.entity.id);

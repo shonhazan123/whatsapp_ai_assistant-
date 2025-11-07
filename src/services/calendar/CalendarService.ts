@@ -1,5 +1,4 @@
 import { calendar } from '../../config/google';
-import { logger } from '../../utils/logger';
 import { IResponse } from '../../core/types/AgentTypes';
 
 export interface CalendarEvent {
@@ -19,6 +18,7 @@ export interface CreateEventRequest {
   attendees?: string[];
   description?: string;
   location?: string;
+  timeZone?: string;
 }
 
 export interface UpdateEventRequest {
@@ -29,6 +29,7 @@ export interface UpdateEventRequest {
   attendees?: string[];
   description?: string;
   location?: string;
+  timeZone?: string;
 }
 
 export interface GetEventsRequest {
@@ -65,16 +66,17 @@ export class CalendarService {
   async createEvent(request: CreateEventRequest): Promise<IResponse> {
     try {
       this.logger.info(`📅 Creating calendar event: "${request.summary}"`);
+      const timeZone = request.timeZone || process.env.DEFAULT_TIMEZONE || 'Asia/Jerusalem';
       
       const event = {
         summary: request.summary,
         start: {
           dateTime: request.start,
-          timeZone: process.env.DEFAULT_TIMEZONE || 'Asia/Jerusalem'
+          timeZone
         },
         end: {
           dateTime: request.end,
-          timeZone: process.env.DEFAULT_TIMEZONE || 'Asia/Jerusalem'
+          timeZone
         },
         attendees: request.attendees?.map((email: string) => ({ email })),
         description: request.description,
@@ -209,6 +211,7 @@ export class CalendarService {
       this.logger.info(`📅 Updating calendar event: ${request.eventId}`);
       
       const updates: any = {};
+      const timeZone = request.timeZone || process.env.DEFAULT_TIMEZONE || 'Asia/Jerusalem';
       
       if (request.summary) updates.summary = request.summary;
       if (request.description) updates.description = request.description;
@@ -217,14 +220,14 @@ export class CalendarService {
       if (request.start) {
         updates.start = {
           dateTime: request.start,
-          timeZone: process.env.DEFAULT_TIMEZONE || 'Asia/Jerusalem'
+          timeZone
         };
       }
       
       if (request.end) {
         updates.end = {
           dateTime: request.end,
-          timeZone: process.env.DEFAULT_TIMEZONE || 'Asia/Jerusalem'
+          timeZone
         };
       }
       
