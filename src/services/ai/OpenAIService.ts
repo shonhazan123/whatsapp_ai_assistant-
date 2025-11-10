@@ -64,22 +64,20 @@ ANALYSIS APPROACH:
 
 INTENT CATEGORIES:
 
-CALENDAR - User EXPLICITLY mentions calendar/יומן OR scheduling meetings with others
-- ONLY use this when user explicitly says: "calendar", "יומן", "schedule a meeting", "תזמן פגישה"
-- Context clues: "add to calendar", "what's on my calendar", "schedule meeting with [person]"
-- Even short responses like "yes" if the previous message asked about adding to calendar
-- IMPORTANT: "Remind me" or "תזכיר לי" with date/time should go to DATABASE, not CALENDAR
-- IMPORTANT: Tasks with due dates are DATABASE by default, not CALENDAR
+CALENDAR - User EXPLICITLY mentions calendar/יומן OR scheduling meetings with others, or asks to add/update events (including event-specific reminders).
+- ONLY use this when user explicitly says: "calendar", "יומן", "schedule a meeting", "תזמן פגישה", or phrases like “add this to my calendar”, “put [event] on the calendar”, “what’s on my calendar”.
+- If the user combines an event request with a reminder (e.g., “add to the calendar and remind me a day before”), treat it as CALENDAR.
+- Context clues: "add to calendar", "what's on my calendar", "schedule meeting with [person]".
+- Even short responses like "yes" if the previous message asked about adding to calendar.
 
 GMAIL - User is working with email communication
 - Context clues: discussing emails, sending messages, checking inbox, email management
 - Even short responses like "ok" if the previous message was about email operations
 
 DATABASE - User is working with reminders, lists , tasks, personal data management
-- THIS IS THE DEFAULT for reminders/tasks with dates and times
-- Context clues: "remind me", "תזכיר לי", "task", "משימה", "create a reminder"
-- Time/date references for reminders/tasks ("tomorrow at 6pm", "next Monday") go here
-- This includes ALL reminders with specific times, even if they have dates
+- THIS IS THE DEFAULT for reminders/tasks with dates and times that are NOT explicitly tied to the calendar.
+- Context clues: "remind me", "תזכיר לי", "task", "משימה", "create a reminder" when no calendar is mentioned.
+- Time/date references for reminders/tasks ("tomorrow at 6pm", "next Monday") go here when not tied to calendar events.
 - Personal data: contacts, lists, notes, task management
 - Even short responses like "sure" if the previous message was about tasks/reminders
 
@@ -89,18 +87,18 @@ MULTI-TASK - User wants to accomplish multiple different things that require dif
 GENERAL - Everything else: greetings, questions, casual conversation, unclear requests
 
 CRITICAL RULES:
-1. REMINDERS WITH DATES/TIMES → DATABASE (this is the DEFAULT behavior)
-2. TASKS WITH DUE DATES → DATABASE (unless user explicitly says "calendar")
-3. EXPLICIT CALENDAR REQUESTS → CALENDAR (only when user says calendar/יומן)
-4. If assistant asked "Would you like to add to calendar?" and user says yes → CALENDAR
-5. Base your decision on CONVERSATION FLOW, not individual words
+1. REMINDERS WITH DATES/TIMES → DATABASE (DEFAULT) UNLESS the user explicitly frames them as part of a calendar event.
+2. TASKS WITH DUE DATES → DATABASE (unless user explicitly says "calendar").
+3. EXPLICIT CALENDAR REQUESTS (including reminders attached to calendar events) → CALENDAR.
+4. If assistant asked "Would you like to add to calendar?" and user says yes → CALENDAR.
+5. Base your decision on CONVERSATION FLOW, not individual words.
 
 Examples:
 - "Remind me tomorrow at 6pm to buy groceries" → DATABASE
 - "תזכיר לי מחר ב6 לקנות חלב" → DATABASE  
 - "תזכיר לי מחר ב-6:30 משחק פאדל" → DATABASE
-- "Add meeting with John tomorrow at 2pm to my calendar" → CALENDAR
-- "תוסיף ליומן פגישה עם ג'ון מחר ב2" → CALENDAR
+- "Add meeting with John tomorrow at 2pm to my calendar and remind me an hour before" → CALENDAR
+- "תוסיף ליומן פגישה עם ג'ון מחר ב2 ותזכיר לי יום לפני" → CALENDAR
 - "What's on my calendar this week?" → CALENDAR
 - "מה יש לי ביומן השבוע?" → CALENDAR
 - After asking "Would you like to add to calendar?":

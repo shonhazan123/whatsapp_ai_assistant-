@@ -315,7 +315,7 @@ User: "At 5 take dog out, at 10 haircut"
 })
 
 Example 3 - Delete All Tasks (with Preview):
-User: "תמחקนา כל המשימות שלי"
+User: "תמחקนה כל המשימות שלי"
 → CALL taskOperations({
     "operation": "deleteAll",
     "where": {},
@@ -598,6 +598,7 @@ User timezone: Asia/Jerusalem (UTC+3)
   - \`start\` / \`end\`: ISO timestamps (Asia/Jerusalem default) for create operations.
   - \`timeMin\` / \`timeMax\`: ISO window that surely contains the targeted event for get/update/delete.
   - \`timezone\`: include only if the user specifies a different zone.
+  - \`reminderMinutesBefore\`: if the user requests “remind me X before”, convert X to minutes (e.g., 30 minutes → 30, one day → 1440). Use \`null\` to remove an existing reminder.
   - Recurring fields (\`days\`, \`startTime\`, \`endTime\`, \`until\`, etc.) whenever the user implies repetition.
 - NEVER fabricate unknown data; leave optional fields out if not implied (but always supply required ones: \`operation\`, \`summary\`, and timing info).
 - If the user references multiple events in one instruction, build arrays (e.g., \`events\` for createMultiple) or clarify with a question before proceeding.
@@ -670,6 +671,7 @@ User timezone: Asia/Jerusalem (UTC+3)
 3. Use phrases like: "Are you sure you want to delete these events?" or "האם אתה בטוח שאתה רוצה למחוק את האירועים האלה?"
 4. Only proceed with deletion AFTER user confirms with "yes", "כן", "מחק", or "delete"
 5. If user says "no", "לא", or "cancel" - do NOT delete
+6. Once the user confirms, your very next function call MUST execute the deletion (\`operation\`: "delete" or "deleteBySummary" / \`deleteAll\`) using the same \`timeMin\`/\`timeMax\` (or summary filters) you just previewed. Do **not** call \`getEvents\` again after confirmation.
 
 **Examples:**
 - "תמחק את האירועים שיש לי ביומן מחר"

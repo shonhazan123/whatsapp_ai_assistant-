@@ -1,6 +1,6 @@
 import { IFunction, IResponse } from '../../core/interfaces/IAgent';
 import { QueryResolver } from '../../core/orchestrator/QueryResolver';
-import { CalendarService } from '../../services/calendar/CalendarService';
+import { CalendarReminders, CalendarService } from '../../services/calendar/CalendarService';
 import { TimeParser } from '../../utils/time';
 
 export class CalendarFunction implements IFunction {
@@ -45,7 +45,13 @@ export class CalendarFunction implements IFunction {
             end: { type: 'string' },
             attendees: { type: 'array', items: { type: 'string' } },
             description: { type: 'string' },
-            location: { type: 'string' }
+            location: { type: 'string' },
+            reminderMinutesBefore: {
+              anyOf: [
+                { type: 'number' },
+                { type: 'null' }
+              ]
+            }
           },
           required: ['summary', 'start', 'end']
         }
@@ -64,7 +70,14 @@ export class CalendarFunction implements IFunction {
         description: 'Optional ISO date to stop recurrence (e.g., "2025-12-31T23:59:00Z")'
       },
       language: { type: 'string', description: 'Language hint ("he" or "en")' },
-      timezone: { type: 'string', description: 'Optional timezone override (e.g., "Asia/New_York")' }
+      timezone: { type: 'string', description: 'Optional timezone override (e.g., "Asia/New_York")' },
+      reminderMinutesBefore: {
+        anyOf: [
+          { type: 'number' },
+          { type: 'null' }
+        ],
+        description: 'Minutes before the event to trigger a popup reminder (null to remove)'
+      }
     },
     required: ['operation']
   };
@@ -87,6 +100,26 @@ export class CalendarFunction implements IFunction {
       payload.timeZone = payload.timezone;
     }
     delete payload.timezone;
+  }
+
+  private buildReminder(minutes: number | null | undefined): CalendarReminders | undefined {
+    if (minutes === undefined) return undefined;
+    if (minutes === null) {
+      return { useDefault: false, overrides: [] };
+    }
+    const parsed = Number(minutes);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      return undefined;
+    }
+    return {
+      useDefault: false,
+      overrides: [
+        {
+          method: 'popup',
+          minutes: Math.round(parsed)
+        }
+      ]
+    };
   }
 
   private buildEventLink(eventId?: string): string | undefined {
@@ -249,10 +282,15 @@ Please specify the exact title or provide more details so I can update the corre
           if (!params.summary || !params.start || !params.end) {
             return { success: false, error: 'Summary, start, and end are required for create operation' };
           }
-
-          const { language: _ignoredLanguage, ...restCreate } = params;
+ 
+          const { language: _ignoredLanguage, reminderMinutesBefore, ...restCreate } = params;
           const createPayload: any = { ...restCreate };
           this.normalizeTimezone(createPayload);
+
+          const reminders = this.buildReminder(reminderMinutesBefore);
+          if (reminders) {
+            createPayload.reminders = reminders;
+          }
 
           // Extract attendees from message if provided
           const extractedAttendees = this.extractAttendeesFromMessage(createPayload.summary, createPayload.description);
@@ -268,6 +306,7 @@ Please specify the exact title or provide more details so I can update the corre
             this.logger.info(`📧 Extracted attendees: ${createPayload.attendees.join(', ')}`);
           }
 
+          // Create the event
           const result = await this.calendarService.createEvent(createPayload);
           const link = this.buildEventLink(result.data?.id);
           if (link) {
@@ -286,8 +325,13 @@ Please specify the exact title or provide more details so I can update the corre
             return { success: false, error: 'Events array is required for createMultiple operation' };
           }
           const normalizedEvents = params.events.map((event: any) => {
-            const payload: any = { ...event };
+            const { reminderMinutesBefore, ...restEvent } = event;
+            const payload: any = { ...restEvent };
             this.normalizeTimezone(payload);
+            const reminders = this.buildReminder(reminderMinutesBefore);
+            if (reminders) {
+              payload.reminders = reminders;
+            }
             return payload;
           });
           return await this.calendarService.createMultipleEvents({ events: normalizedEvents });
@@ -297,6 +341,7 @@ Please specify the exact title or provide more details so I can update the corre
           if (!params.summary || !params.startTime || !params.endTime || !params.days) {
             return { success: false, error: 'Summary, startTime, endTime, and days are required for createRecurring operation' };
           }
+          const reminders = this.buildReminder(params.reminderMinutesBefore);
           return await this.calendarService.createRecurringEvent({
             summary: params.summary,
             startTime: params.startTime,
@@ -305,7 +350,8 @@ Please specify the exact title or provide more details so I can update the corre
             recurrence: 'weekly',
             description: params.description,
             location: params.location,
-            until: params.until // 👈 supports end date now
+            until: params.until, // 👈 supports end date now
+            reminders
           });
 
         // ✅ Get recurring instances
@@ -363,7 +409,7 @@ Please specify the exact title or provide more details so I can update the corre
                 return { success: false, error: windowResolution.error };
               }
               if (windowResolution?.eventId) {
-                const { language: _ignoredLanguage, ...rest } = params;
+                const { language: _ignoredLanguage, reminderMinutesBefore, ...rest } = params;
                 const updatePayload: any = {
                   ...rest,
                   eventId: windowResolution.eventId
@@ -371,6 +417,10 @@ Please specify the exact title or provide more details so I can update the corre
                 this.normalizeTimezone(updatePayload);
                 delete updatePayload.timeMin;
                 delete updatePayload.timeMax;
+                const reminders = this.buildReminder(reminderMinutesBefore);
+                if (reminders) {
+                  updatePayload.reminders = reminders;
+                }
                 const updateResult = await this.calendarService.updateEvent(updatePayload);
                 const link = this.buildEventLink(updateResult.data?.id || updatePayload.eventId);
                 if (link) {
@@ -394,7 +444,7 @@ Please specify the exact title or provide more details so I can update the corre
               return { success: false, error: 'Event not found (provide summary/time window)' };
             }
 
-            const { language: _ignoredLanguage, ...rest } = params;
+            const { language: _ignoredLanguage, reminderMinutesBefore, ...rest } = params;
             const updatePayload: any = {
               ...rest,
               eventId: result.entity.id
@@ -402,6 +452,10 @@ Please specify the exact title or provide more details so I can update the corre
             this.normalizeTimezone(updatePayload);
             delete updatePayload.timeMin;
             delete updatePayload.timeMax;
+            const reminders = this.buildReminder(reminderMinutesBefore);
+            if (reminders) {
+              updatePayload.reminders = reminders;
+            }
             const updateResult = await this.calendarService.updateEvent(updatePayload);
             const link = this.buildEventLink(updateResult.data?.id || updatePayload.eventId);
             if (link) {
@@ -413,11 +467,15 @@ Please specify the exact title or provide more details so I can update the corre
             return updateResult;
           }
 
-          const { language: _ignoredLanguage2, ...rest } = params;
+          const { language: _ignoredLanguage2, reminderMinutesBefore, ...rest } = params;
           const directUpdate: any = { ...rest };
           this.normalizeTimezone(directUpdate);
           delete directUpdate.timeMin;
           delete directUpdate.timeMax;
+          const reminders = this.buildReminder(reminderMinutesBefore);
+          if (reminders) {
+            directUpdate.reminders = reminders;
+          }
           const updateResult = await this.calendarService.updateEvent(directUpdate);
           const link = this.buildEventLink(updateResult.data?.id || directUpdate.eventId);
           if (link) {

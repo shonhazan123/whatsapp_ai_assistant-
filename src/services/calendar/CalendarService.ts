@@ -1,6 +1,16 @@
 import { calendar } from '../../config/google';
 import { IResponse } from '../../core/types/AgentTypes';
 
+export interface CalendarReminderOverride {
+  method: 'popup' | 'email';
+  minutes: number;
+}
+
+export interface CalendarReminders {
+  useDefault: boolean;
+  overrides?: CalendarReminderOverride[];
+}
+
 export interface CalendarEvent {
   id?: string;
   summary: string;
@@ -9,6 +19,7 @@ export interface CalendarEvent {
   attendees?: string[];
   description?: string;
   location?: string;
+  reminders?: CalendarReminders;
 }
 
 export interface CreateEventRequest {
@@ -19,6 +30,7 @@ export interface CreateEventRequest {
   description?: string;
   location?: string;
   timeZone?: string;
+  reminders?: CalendarReminders;
 }
 
 export interface UpdateEventRequest {
@@ -30,6 +42,7 @@ export interface UpdateEventRequest {
   description?: string;
   location?: string;
   timeZone?: string;
+  reminders?: CalendarReminders;
 }
 
 export interface GetEventsRequest {
@@ -51,6 +64,7 @@ export interface RecurringEventRequest {
   description?: string;
   location?: string;
   until?: string; // Optional ISO date to stop recurrence
+  reminders?: CalendarReminders;
 }
 
 export class CalendarService {
@@ -68,7 +82,7 @@ export class CalendarService {
       this.logger.info(`📅 Creating calendar event: "${request.summary}"`);
       const timeZone = request.timeZone || process.env.DEFAULT_TIMEZONE || 'Asia/Jerusalem';
       
-      const event = {
+      const event: any = {
         summary: request.summary,
         start: {
           dateTime: request.start,
@@ -82,6 +96,10 @@ export class CalendarService {
         description: request.description,
         location: request.location
       };
+
+      if (request.reminders) {
+        event.reminders = request.reminders;
+      }
 
       // Log attendees if provided
       if (request.attendees && request.attendees.length > 0) {
@@ -235,6 +253,10 @@ export class CalendarService {
         updates.attendees = request.attendees.map((email: string) => ({ email }));
       }
 
+      if (request.reminders) {
+        updates.reminders = request.reminders;
+      }
+
       const response = await calendar.events.patch({
         calendarId: this.calendarId,
         eventId: request.eventId,
@@ -352,7 +374,7 @@ export class CalendarService {
       }
 
       // Create the recurring event
-      const event = {
+      const event: any = {
         summary: request.summary,
         start: {
           dateTime: startDate.toISOString(),
@@ -366,6 +388,10 @@ export class CalendarService {
         location: request.location,
         recurrence: [rrule]
       };
+
+      if (request.reminders) {
+        event.reminders = request.reminders;
+      }
 
       this.logger.info(`Creating recurring event with RRULE: ${rrule}`);
 
