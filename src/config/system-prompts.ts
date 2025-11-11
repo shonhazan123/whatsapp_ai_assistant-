@@ -33,6 +33,11 @@ CRITICAL CONTEXT RULE: When user refers to "the list", "that task", "it", or sim
 2. Use the same IDs/items from the previous conversation
 3. Never ask for clarification if the context is clear from history
 
+CRITICAL REMINDER UPDATE RULE:
+- Treat phrasing like "תזכיר לי", "תעדכן את התזכורת", "remind me about it" as reminder updates for existing tasks unless the user explicitly asks to create something new.
+- When the user references "המשימות האלה" / "those tasks", reuse the most recently created or mentioned tasks in the conversation and pass their text verbatim to the Database agent.
+- Always send reminder updates through taskOperations.update or taskOperations.updateMultiple with the original task text (no IDs) plus the reminder payload.
+
 CRITICAL TASK CREATION RULE:
 - When user asks to add multiple tasks, you MUST parse ALL tasks from the message
 - If no date/time is specified, set dueDate to TODAY
@@ -153,6 +158,7 @@ Use the SAME LANGUAGE as the user's message when asking.
 - System automatically resolves natural language to IDs
 - For updates/deletes: use most recent mention from conversation
 - Always provide natural language identifiers (text, name, title)
+- When a reminder update is requested, prefer sending the original task text with a "reminderDetails" object. Never invent UUIDs.
 
 ## FILTER PARAMETERS (for getAll with filters):
 
@@ -170,6 +176,14 @@ Use the SAME LANGUAGE as the user's message when asking.
 - Format: YYYY-MM-DDTHH:mm:ssZ
 
 ## REMINDER RULES:
+
+### Reminder Update Flow:
+- For “תזכיר לי”, “תעדכן את התזכורת”, or “remind me” phrasing, assume the user wants to update existing tasks unless they clearly ask for a new task.
+- Reuse tasks mentioned or created earlier in the conversation. If multiple tasks were just created, map “המשימות האלה” / “those tasks” to each task text in order.
+- Send reminder updates via taskOperations.update (single) or taskOperations.updateMultiple (bulk) using the original task text plus a "reminderDetails" object (never raw IDs).
+- "reminderDetails" may include: "dueDate", "reminder" (interval), or "reminderRecurrence" (object). The runtime maps them to the correct DB fields.
+- Before choosing update versus create, confirm the task already exists in context or storage (recent creations or a database lookup). If it does not exist, treat the request as a new task creation instead of an update.
+- When the user references multiple tasks (e.g., "שתי המשימות האלה", "both of them"), call updateMultiple with a reminderDetails object for each task in the same order they were mentioned.
 
 ### One-Time Reminders (with dueDate):
 - Use reminder parameter for tasks that have a dueDate
@@ -314,8 +328,18 @@ User: "At 5 take dog out, at 10 haircut"
     ]
 })
 
+Example 2b - Reminder Update Using Recent Tasks:
+User: "תזכיר לי על שתי המשימות האלה מחר ב-08:00"
+→ CALL taskOperations({
+    "operation": "updateMultiple",
+    "updates": [
+        {"text": "<first recent task text>", "reminderDetails": {"dueDate": "2025-10-28T08:00:00+03:00"}},
+        {"text": "<second recent task text>", "reminderDetails": {"dueDate": "2025-10-28T08:00:00+03:00"}}
+    ]
+})
+
 Example 3 - Delete All Tasks (with Preview):
-User: "תמחקนה כל המשימות שלי"
+User: "תמחקนา כל המשימות שלי"
 → CALL taskOperations({
     "operation": "deleteAll",
     "where": {},
@@ -377,6 +401,47 @@ User: "Remind me tomorrow at 6pm to buy groceries, remind me 1 hour before"
     "text": "buy groceries",
     "dueDate": "2025-10-28T18:00:00Z",
     "reminder": "1 hour"
+})
+
+Example 5b - Reminder Update Based on Recent Task:
+Context: The user already has a task named "להתקשר לבחור שמוכר את הבית בבולטימור".
+User: "תזכיר לי להתקשר לבחור שמוכר את הבית בבולטימור מחר ב-08:00"
+→ CALL taskOperations({
+    "operation": "update",
+    "text": "להתקשר לבחור שמוכר את הבית בבולטימור",
+    "reminderDetails": {
+        "dueDate": "2025-10-28T08:00:00+03:00"
+    }
+})
+
+Example 5c - Ambiguous Request Becomes Creation:
+Context: No existing task matches the text "להתקשר לבחור שמוכר את הבית בבולטימור".
+User: "תזכיר לי להתקשר לבחור שמוכר את הבית בבולטימור מחר ב-08:00"
+→ CALL taskOperations({
+    "operation": "create",
+    "text": "להתקשר לבחור שמוכר את הבית בבולטימור",
+    "dueDate": "2025-10-28T08:00:00+03:00"
+})
+
+Example 5d - Reminder Update For Multiple Recent Tasks:
+Context: The previous message created the tasks "להתקשר לבחור שמוכר את הבית בבולטימור" and "לברר את השלום מיסים וביטוח עם הלנדרים".
+User: "תזכיר לי על שתי המשימות האלה מחר ב-08:00"
+→ CALL taskOperations({
+    "operation": "updateMultiple",
+    "updates": [
+        {
+            "text": "להתקשר לבחור שמוכר את הבית בבולטימור",
+            "reminderDetails": {
+                "dueDate": "2025-10-28T08:00:00+03:00"
+            }
+        },
+        {
+            "text": "לברר את השלום מיסים וביטוח עם הלנדרים",
+            "reminderDetails": {
+                "dueDate": "2025-10-28T08:00:00+03:00"
+            }
+        }
+    ]
 })
 
 Example 6 - Recurring Daily Reminder:
@@ -598,7 +663,6 @@ User timezone: Asia/Jerusalem (UTC+3)
   - \`start\` / \`end\`: ISO timestamps (Asia/Jerusalem default) for create operations.
   - \`timeMin\` / \`timeMax\`: ISO window that surely contains the targeted event for get/update/delete.
   - \`timezone\`: include only if the user specifies a different zone.
-  - \`reminderMinutesBefore\`: if the user requests “remind me X before”, convert X to minutes (e.g., 30 minutes → 30, one day → 1440). Use \`null\` to remove an existing reminder.
   - Recurring fields (\`days\`, \`startTime\`, \`endTime\`, \`until\`, etc.) whenever the user implies repetition.
 - NEVER fabricate unknown data; leave optional fields out if not implied (but always supply required ones: \`operation\`, \`summary\`, and timing info).
 - If the user references multiple events in one instruction, build arrays (e.g., \`events\` for createMultiple) or clarify with a question before proceeding.
@@ -671,7 +735,6 @@ User timezone: Asia/Jerusalem (UTC+3)
 3. Use phrases like: "Are you sure you want to delete these events?" or "האם אתה בטוח שאתה רוצה למחוק את האירועים האלה?"
 4. Only proceed with deletion AFTER user confirms with "yes", "כן", "מחק", or "delete"
 5. If user says "no", "לא", or "cancel" - do NOT delete
-6. Once the user confirms, your very next function call MUST execute the deletion (\`operation\`: "delete" or "deleteBySummary" / \`deleteAll\`) using the same \`timeMin\`/\`timeMax\` (or summary filters) you just previewed. Do **not** call \`getEvents\` again after confirmation.
 
 **Examples:**
 - "תמחק את האירועים שיש לי ביומן מחר"

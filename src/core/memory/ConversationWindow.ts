@@ -7,13 +7,27 @@ export interface ConversationMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: number;
-  metadata?: { // metadata for disambiguation context
+  metadata?: {
+    // metadata for disambiguation context or recent tasks
     disambiguationContext?: {
       candidates: Array<{ id: string; displayText: string; [key: string]: any }>; // candidates are the entities that match the user's query
       entityType: string; // entity type is the type of the entity that the user is querying
       expiresAt: number;
     };
+    recentTasks?: {
+      tasks: RecentTaskSnapshot[];
+      updatedAt: number;
+    };
   };
+}
+
+export interface RecentTaskSnapshot {
+  id?: string | null;
+  text: string;
+  dueDate?: string | null;
+  reminder?: string | null;
+  reminderRecurrence?: any;
+  createdAt?: string | number | null;
 }
 
 /**
@@ -30,9 +44,11 @@ export class ConversationWindow {
   
   // In-memory storage: userPhone -> array of messages
   private memory = new Map<string, ConversationMessage[]>();
+  private recentTaskContext = new Map<string, RecentTaskSnapshot[]>();
   
   // Configuration
   private readonly MAX_USER_MESSAGES = 10;
+  private readonly MAX_RECENT_TASKS = 6;
   
   private constructor() {
     logger.info('🧠 ConversationWindow singleton created');
@@ -165,6 +181,76 @@ export class ConversationWindow {
     logger.debug(`Retrieved ${messages.length} messages for ${userPhone}`);
     return [...messages]; // Return copy to prevent external modification
   }
+
+  /**
+   * Store or refresh recent task context for a user
+   */
+  public pushRecentTasks(userPhone: string, tasks: RecentTaskSnapshot[], options: { replace?: boolean } = {}): void {
+    if (!tasks || tasks.length === 0) {
+      return;
+    }
+
+    const normalized: RecentTaskSnapshot[] = tasks
+      .filter(task => !!task && typeof task.text === 'string' && task.text.trim().length > 0)
+      .map(task => ({
+        id: task.id ?? (task as any).taskId ?? null,
+        text: task.text.trim(),
+        dueDate: (task as any).dueDate ?? (task as any).due_date ?? null,
+        reminder: (task as any).reminder ?? null,
+        reminderRecurrence: (task as any).reminderRecurrence ?? (task as any).reminder_recurrence ?? null,
+        createdAt: task.createdAt ?? (task as any).created_at ?? null
+      }));
+
+    if (normalized.length === 0) {
+      return;
+    }
+
+    const existing = options.replace ? [] : (this.recentTaskContext.get(userPhone) || []);
+
+    // Merge and deduplicate by id when available, otherwise by text
+    const merged = [...existing, ...normalized];
+    const dedupMap = new Map<string, RecentTaskSnapshot>();
+
+    for (const task of merged) {
+      const key = task.id && typeof task.id === 'string' && task.id.length > 0
+        ? `id:${task.id}`
+        : `text:${task.text.toLowerCase()}`;
+      dedupMap.set(key, task);
+    }
+
+    const deduped = Array.from(dedupMap.values());
+    const trimmed = deduped.slice(-this.MAX_RECENT_TASKS);
+
+    this.recentTaskContext.set(userPhone, trimmed);
+
+    const summaryLines = trimmed.map((task, idx) => `${idx + 1}. ${task.text}`);
+    this.addMessage(
+      userPhone,
+      'system',
+      `RECENT_TASKS_CONTEXT\n${summaryLines.join('\n')}`,
+      {
+        recentTasks: {
+          tasks: trimmed,
+          updatedAt: Date.now()
+        }
+      }
+    );
+  }
+
+  /**
+   * Retrieve recent task context for a user
+   */
+  public getRecentTasks(userPhone: string): RecentTaskSnapshot[] {
+    const tasks = this.recentTaskContext.get(userPhone) || [];
+    return [...tasks];
+  }
+
+  /**
+   * Remove stored recent tasks for a user
+   */
+  public clearRecentTasks(userPhone: string): void {
+    this.recentTaskContext.delete(userPhone);
+  }
   
   
   /**
@@ -172,6 +258,7 @@ export class ConversationWindow {
    */
   public clear(userPhone: string): void {
     this.memory.delete(userPhone);
+    this.recentTaskContext.delete(userPhone);
     logger.info(`Cleared conversation for ${userPhone}`);
   }
   
@@ -204,6 +291,7 @@ export class ConversationWindow {
     for (const [userPhone, messages] of this.memory.entries()) {
       if (messages.length === 0) {
         this.memory.delete(userPhone);
+        this.recentTaskContext.delete(userPhone);
         continue;
       }
       
@@ -211,6 +299,7 @@ export class ConversationWindow {
       const lastMessage = messages[messages.length - 1];
       if (now - lastMessage.timestamp > maxAge) {
         this.memory.delete(userPhone);
+        this.recentTaskContext.delete(userPhone);
         logger.debug(`Cleaned up old conversation for ${userPhone}`);
       }
     }
