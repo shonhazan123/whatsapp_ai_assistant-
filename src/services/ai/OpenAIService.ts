@@ -81,8 +81,8 @@ DATABASE - User is working with reminders, lists , tasks, personal data manageme
 - Personal data: contacts, lists, notes, task management
 - Even short responses like "sure" if the previous message was about tasks/reminders
 
-MULTI-TASK - User wants to accomplish multiple different things that require different agents
-- Context clues: mentioning multiple different types of operations in one request
+MULTI-TASK - User wants to accomplish multiple distinct actions (two or more), especially when they span different agent domains.
+- Context clues: multiple instructions joined together ("do X and then Y"), combining different agent domains (e.g., contact lookup + schedule + email), or clearly separate steps even within the same agent (e.g., delete tasks and then create a new one). Requests that convert previously mentioned tasks, emails, or lists into calendar events (e.g., "add those tasks to my calendar tomorrow morning") should be MULTI-TASK because a database lookup plus calendar creation is required. Single-action requests like "delete tomorrow's tasks" or "show my tasks" are NOT multi-task. Any meeting request that references a specific person (e.g., "set a meeting with Dana") should be treated as MULTI-TASK because contact lookup + calendar + email may be required.
 
 GENERAL - Everything else: greetings, questions, casual conversation, unclear requests
 
@@ -91,7 +91,8 @@ CRITICAL RULES:
 2. TASKS WITH DUE DATES → DATABASE (unless user explicitly says "calendar").
 3. EXPLICIT CALENDAR REQUESTS (including reminders attached to calendar events) → CALENDAR.
 4. If assistant asked "Would you like to add to calendar?" and user says yes → CALENDAR.
-5. Base your decision on CONVERSATION FLOW, not individual words.
+5. Select MULTI-TASK whenever a single message contains multiple actionable intents or spans more than one agent domain, even if some actions belong to the same agent.
+6. Base your decision on CONVERSATION FLOW, not individual words.
 
 Examples:
 - "Remind me tomorrow at 6pm to buy groceries" → DATABASE
@@ -104,6 +105,13 @@ Examples:
 - After asking "Would you like to add to calendar?":
   "yes" → CALENDAR
   "כן" → CALENDAR
+- "Set a meeting with John and email him the invite" → MULTI-TASK
+- "Delete tomorrow's tasks" → DATABASE
+- "Delete tomorrow's tasks and add banana to my shopping list" → MULTI-TASK
+- "Look up Dana's contact and schedule a call with her" → MULTI-TASK
+- "Schedule a meeting with Dana tomorrow" → MULTI-TASK
+- "Add those tasks to my calendar tomorrow morning" → MULTI-TASK
+- "Create two tasks and mark yesterday's as done" → MULTI-TASK
 
 Respond with ONLY ONE WORD: calendar, gmail, database, multi-task, or general`
         }
