@@ -1,14 +1,10 @@
+import { SystemPrompts } from '../../config/system-prompts';
 import { BaseAgent } from '../../core/base/BaseAgent';
-import { AgentName, IFunctionHandler } from '../../core/interfaces/IAgent';
+import { IFunctionHandler } from '../../core/interfaces/IAgent';
 import { ConversationWindow } from '../../core/memory/ConversationWindow';
 import { FunctionDefinition } from '../../core/types/AgentTypes';
 import { OpenAIService } from '../../services/ai/OpenAIService';
 import { logger } from '../../utils/logger';
-import { SystemPrompts } from '../../config/system-prompts';
-
-// Token limits for different models
-const MAX_CONTEXT_TOKENS = 8000;
-const SYSTEM_PROMPT_TOKENS = 500;
 
 export class MainAgent extends BaseAgent {
   private agentManager: any | null = null;
@@ -23,7 +19,16 @@ export class MainAgent extends BaseAgent {
     this.conversationWindow = ConversationWindow.getInstance();
   }
 
-  async processRequest(message: string, userPhone: string): Promise<string> {
+  async processRequest(
+    message: string, 
+    userPhone: string,
+    optionsOrContext?: {
+      whatsappMessageId?: string;
+      replyToMessageId?: string;
+    } | any[]
+  ): Promise<string> {
+    // Extract options if it's an object (not an array)
+    const options = !Array.isArray(optionsOrContext) ? optionsOrContext : undefined;
     try {
       // Initialize and cache AgentManager once
       if (!this.agentManager) {
@@ -31,34 +36,54 @@ export class MainAgent extends BaseAgent {
         this.agentManager = module.AgentManager.getInstance();
       }
 
-      // Step 1: Add user message to conversation window
-      this.conversationWindow.addMessage(userPhone, 'user', message);
-      
-      // Step 2: Get conversation context
-      const context = this.conversationWindow.getContext(userPhone);
-      
-      // Step 3: Determine intent with context
-      const intent = await this.openaiService.detectIntent(message, context);
-      this.logger.info(`Detected intent: ${intent}`);
-      this.logger.info(`Context: ${context.length} messages`);
-      
-      let response: string;
-
-      // Route to specialized agents or general conversation
-      if (intent === AgentName.CALENDAR) {
-        response = await this.routeToCalendarAgent(message, userPhone, context);
-      } else if (intent === AgentName.GMAIL) {
-        response = await this.routeToGmailAgent(message, userPhone, context);
-      } else if (intent === AgentName.DATABASE) {
-        response = await this.routeToDatabaseAgent(message, userPhone, context);
-      } else if (intent === AgentName.MULTI_TASK) {
-        response = await this.routeToMultiAgentCoordinator(message, userPhone);
-      } else {
-        // General conversation with full context
-        response = await this.getGeneralResponse(context, message);
+      // Step 1: Handle reply context if this is a reply to a previous message
+      let enhancedMessage = message;
+      if (options?.replyToMessageId) {
+        const repliedToMessage = this.conversationWindow.getRepliedToMessage(userPhone, options.replyToMessageId);
+        if (repliedToMessage) {
+          // Enhance the message with context about what it's replying to
+          // Include more context for list messages to help identify items by number
+          const repliedToContent = repliedToMessage.content;
+          
+          // Check if the replied-to message contains a numbered list (like "1. Event 1\n2. Event 2")
+          // This helps the AI understand references like "ב1" (item #1) or "האירוע הראשון" (the first event)
+          const hasNumberedList = /^\d+\.|^\s*\d+\./.test(repliedToContent) || /\n\d+\./.test(repliedToContent);
+          
+          if (hasNumberedList) {
+            // Include full list context (up to 1000 chars) so AI can match numbered references
+            const listContent = repliedToContent.substring(0, 1000);
+            enhancedMessage = `[The user is replying to a message that listed items:\n"${listContent}"\n\nIMPORTANT: When the user refers to an item by number (like "ב1", "#1", "הראשון", "the first one"), they mean the corresponding numbered item from the list above. Extract the details (name, time, etc.) from that numbered item and use them as searchCriteria (OLD values) when updating.]\n\nUser's message: ${message}`;
+            this.logger.debug(`User is replying to a numbered list message`);
+          } else {
+            // Regular reply context
+            const shortContent = repliedToContent.substring(0, 500);
+            enhancedMessage = `[Replying to: "${shortContent}"]\n\n${message}`;
+            this.logger.debug(`User is replying to message: "${shortContent.substring(0, 100)}..."`);
+          }
+        }
       }
 
-      // Step 4: Add assistant response to conversation window
+      // Step 2: Add user message to conversation window with WhatsApp message ID and reply context
+      this.conversationWindow.addMessage(
+        userPhone, 
+        'user', 
+        message, // Store original message, not enhanced
+        undefined,
+        options?.whatsappMessageId,
+        options?.replyToMessageId
+      );
+      
+      // Step 3: Get conversation context
+      const context = this.conversationWindow.getContext(userPhone);
+
+      // Step 4: Delegate to multi-agent coordinator (use enhanced message for better context)
+      const response = await this.agentManager
+        .getMultiAgentCoordinator()
+        .handleRequest(enhancedMessage, userPhone, context);
+
+      // Step 5: Add assistant response to conversation window
+      // Note: WhatsApp message ID will be added when the message is actually sent
+      this.conversationWindow.addMessage(userPhone, 'assistant', response);
 
       return response;
     } catch (error) {
@@ -74,43 +99,4 @@ export class MainAgent extends BaseAgent {
   getFunctions(): FunctionDefinition[] {
     return [];
   }
-
-  private async routeToCalendarAgent(message: string, userPhone: string, context: any[]): Promise<string> {
-    return this.agentManager.getCalendarAgent().processRequest(message, userPhone, context);
-  }
-
-  private async routeToGmailAgent(message: string, userPhone: string, context: any[]): Promise<string> {
-    return this.agentManager.getGmailAgent().processRequest(message, userPhone, context);
-  }
-
-  private async routeToDatabaseAgent(message: string, userPhone: string, context: any[]): Promise<string> {
-    return this.agentManager.getDatabaseAgent().processRequest(message, userPhone, context);
-  }
-
-  private async routeToMultiAgentCoordinator(message: string, userPhone: string, context: any[] = []): Promise<string> {
-    return this.agentManager.getMultiAgentCoordinator().executeActions(message, userPhone, context);
-  }
-
-  private async getGeneralResponse(context: any[], message: string): Promise<string> {
-    const messages: any[] = [
-      {
-        role: 'system',
-        content: this.getSystemPrompt()
-      },
-      ...context,
-      {
-        role: 'user',
-        content: message
-      }
-    ];
-
-    const completion = await this.openaiService.createCompletion({
-      messages: messages as any,
-      temperature: 0.7,
-      maxTokens: 500
-    });
-
-    return completion.choices[0]?.message?.content || 'I could not generate a response.';
-  }
-
 }

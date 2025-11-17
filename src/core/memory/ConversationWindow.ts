@@ -7,6 +7,8 @@ export interface ConversationMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: number;
+  whatsappMessageId?: string; // Store WhatsApp message ID for reply context
+  replyToMessageId?: string; // If this message is a reply, store the message ID it's replying to
   metadata?: {
     // metadata for disambiguation context or recent tasks
     disambiguationContext?: {
@@ -35,7 +37,9 @@ export interface RecentTaskSnapshot {
  * 
  * Features:
  * - In-memory storage only (no database)
- * - Maximum 10 user messages per conversation (oldest removed when exceeded)
+ * - Maximum 10 user-assistant pairs (20 messages total) per conversation
+ * - Maintains conversation pairs together (user message + its response)
+ * - Supports WhatsApp reply context detection
  * - Singleton pattern for global access
  * - Simple API for adding/getting messages
  */
@@ -47,7 +51,7 @@ export class ConversationWindow {
   private recentTaskContext = new Map<string, RecentTaskSnapshot[]>();
   
   // Configuration
-  private readonly MAX_USER_MESSAGES = 10;
+  private readonly MAX_USER_MESSAGES = 10; // Maximum 10 user messages (each with its assistant response = 20 messages total)
   private readonly MAX_RECENT_TASKS = 6;
   
   private constructor() {
@@ -66,8 +70,21 @@ export class ConversationWindow {
   
   /**
    * Add a message to the conversation window
+   * @param userPhone - User's phone number
+   * @param role - Message role (user, assistant, system)
+   * @param content - Message content
+   * @param metadata - Optional metadata (disambiguation, tasks, etc.)
+   * @param whatsappMessageId - Optional WhatsApp message ID for reply context
+   * @param replyToMessageId - Optional ID of the message this is replying to
    */
-  public addMessage(userPhone: string, role: 'user' | 'assistant' | 'system', content: string, metadata?: ConversationMessage['metadata']): void {
+  public addMessage(
+    userPhone: string, 
+    role: 'user' | 'assistant' | 'system', 
+    content: string, 
+    metadata?: ConversationMessage['metadata'],
+    whatsappMessageId?: string,
+    replyToMessageId?: string
+  ): void {
     try {
       // Get or create conversation for user
       if (!this.memory.has(userPhone)) {
@@ -76,16 +93,38 @@ export class ConversationWindow {
       
       const messages = this.memory.get(userPhone)!;
       
-      // If adding a user message, check if we need to remove oldest user message
+      // For user messages: enforce limit of MAX_USER_MESSAGES user messages
+      // Each user message should have its corresponding assistant response
+      // System messages are allowed but don't count toward the user message limit
       if (role === 'user') {
         const userMessageCount = messages.filter(m => m.role === 'user').length;
+        
+        // If we're at the limit, remove the oldest user message AND its assistant response (if exists)
         if (userMessageCount >= this.MAX_USER_MESSAGES) {
-          // Find and remove the oldest user message
+          // Find the oldest user message
           const oldestUserIndex = messages.findIndex(m => m.role === 'user');
           if (oldestUserIndex !== -1) {
+            // Remove the user message
             messages.splice(oldestUserIndex, 1);
-            logger.debug(`Removed oldest user message for ${userPhone} (limit: ${this.MAX_USER_MESSAGES})`);
+            
+            // If there's an assistant message right after it, remove that too (maintain pairs)
+            // Also check if there's a system message between them (shouldn't happen, but be safe)
+            if (oldestUserIndex < messages.length && messages[oldestUserIndex].role === 'assistant') {
+              messages.splice(oldestUserIndex, 1);
+              logger.debug(`Removed oldest user-assistant pair for ${userPhone} (limit: ${this.MAX_USER_MESSAGES} user messages)`);
+            } else {
+              logger.debug(`Removed oldest user message for ${userPhone} (limit: ${this.MAX_USER_MESSAGES} user messages)`);
+            }
           }
+        }
+      }
+      
+      // For assistant messages: if there's no preceding user message, log a warning
+      // (This shouldn't happen in normal flow, but helps with debugging)
+      if (role === 'assistant' && messages.length > 0) {
+        const lastMessage = messages[messages.length - 1];
+        if (lastMessage.role !== 'user' && lastMessage.role !== 'system') {
+          logger.warn(`Assistant message added without preceding user message for ${userPhone}`);
         }
       }
       
@@ -94,15 +133,33 @@ export class ConversationWindow {
         role,
         content,
         timestamp: Date.now(),
+        whatsappMessageId,
+        replyToMessageId,
         metadata
       };
       
       messages.push(message);
       
-      logger.debug(`Added ${role} message for ${userPhone} (${messages.length} total messages)`);
+      const userMsgCount = messages.filter(m => m.role === 'user').length;
+      logger.debug(`Added ${role} message for ${userPhone} (${messages.length} total messages, ${userMsgCount} user messages)`);
     } catch (error) {
       logger.error('Error adding message to conversation window:', error);
     }
+  }
+  
+  /**
+   * Get the message that a user is replying to (if any)
+   * @param userPhone - User's phone number
+   * @param replyToMessageId - WhatsApp message ID being replied to
+   * @returns The message being replied to, or null if not found
+   */
+  public getRepliedToMessage(userPhone: string, replyToMessageId: string): ConversationMessage | null {
+    const messages = this.memory.get(userPhone);
+    if (!messages) return null;
+    
+    // Find message by WhatsApp message ID
+    const repliedTo = messages.find(m => m.whatsappMessageId === replyToMessageId);
+    return repliedTo || null;
   }
 
   /**
@@ -265,12 +322,16 @@ export class ConversationWindow {
   /**
    * Get conversation statistics
    */
-  public getStats(userPhone: string): { messageCount: number; userMessageCount: number } {
+  public getStats(userPhone: string): { messageCount: number; userMessageCount: number; assistantMessageCount: number; systemMessageCount: number } {
     const messages = this.memory.get(userPhone) || [];
     const userMessageCount = messages.filter(m => m.role === 'user').length;
+    const assistantMessageCount = messages.filter(m => m.role === 'assistant').length;
+    const systemMessageCount = messages.filter(m => m.role === 'system').length;
     return {
       messageCount: messages.length,
-      userMessageCount
+      userMessageCount,
+      assistantMessageCount,
+      systemMessageCount
     };
   }
   

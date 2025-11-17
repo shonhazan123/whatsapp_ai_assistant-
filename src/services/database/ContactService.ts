@@ -6,7 +6,7 @@ import { BaseService } from './BaseService';
 
 export interface Contact {
   id: string;
-  contact_list_id: string;
+  user_id: string;
   name: string;
   phone_number?: string;
   email?: string;
@@ -41,7 +41,7 @@ export class ContactService extends BaseService {
 
   async create(request: CreateRequest): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
+      const userId = await this.resolveUserId(request.userId, request.userPhone);
       const data = this.sanitizeInput(request.data);
 
       const validation = this.validateRequiredFields(data, ['name']);
@@ -50,9 +50,9 @@ export class ContactService extends BaseService {
       }
 
       const result = await this.executeSingleQuery<Contact>(
-        `INSERT INTO contact_list (contact_list_id, name, phone_number, email, address) 
+        `INSERT INTO contact_list (user_id, name, phone_number, email, address) 
          VALUES ($1, $2, $3, $4, $5) 
-         RETURNING id, name, phone_number, email, address, created_at`,
+         RETURNING id, user_id, name, phone_number, email, address, created_at`,
         [userId, data.name, data.phone || null, data.email || null, data.address || null]
       );
 
@@ -67,7 +67,7 @@ export class ContactService extends BaseService {
 
   async createMultiple(request: CreateMultipleRequest): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
+      const userId = await this.resolveUserId(request.userId, request.userPhone);
       const results = [];
       const errors = [];
 
@@ -82,9 +82,9 @@ export class ContactService extends BaseService {
           }
 
           const result = await this.executeSingleQuery<Contact>(
-            `INSERT INTO contact_list (contact_list_id, name, phone_number, email, address) 
+            `INSERT INTO contact_list (user_id, name, phone_number, email, address) 
              VALUES ($1, $2, $3, $4, $5) 
-             RETURNING id, name, phone_number, email, address, created_at`,
+             RETURNING id, user_id, name, phone_number, email, address, created_at`,
             [userId, sanitizedItem.name, sanitizedItem.phone || null, sanitizedItem.email || null, sanitizedItem.address || null]
           );
 
@@ -109,12 +109,12 @@ export class ContactService extends BaseService {
 
   async getById(request: GetRequest): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
+      const userId = await this.resolveUserId(request.userId, request.userPhone);
       
       const contact = await this.executeSingleQuery<Contact>(
-        `SELECT id, name, phone_number, email, address, created_at
+        `SELECT id, user_id, name, phone_number, email, address, created_at
          FROM contact_list 
-         WHERE contact_list_id = $1 AND id = $2`,
+         WHERE user_id = $1 AND id = $2`,
         [userId, request.id]
       );
 
@@ -131,12 +131,12 @@ export class ContactService extends BaseService {
 
   async getAll(request: GetRequest): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
+      const userId = await this.resolveUserId(request.userId, request.userPhone);
       
       let query = `
-        SELECT id, name, phone_number, email, address, created_at
-        FROM contact_list 
-        WHERE contact_list_id = $1
+        SELECT id, user_id, name, phone_number, email, address, created_at
+        FROM contact_list
+        WHERE user_id = $1
       `;
 
       const params: any[] = [userId];
@@ -195,7 +195,7 @@ export class ContactService extends BaseService {
 
   async update(request: UpdateRequest): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
+      const userId = await this.resolveUserId(request.userId, request.userPhone);
       const data = this.sanitizeInput(request.data);
 
       const updateFields = [];
@@ -233,8 +233,8 @@ export class ContactService extends BaseService {
       const result = await this.executeSingleQuery<Contact>(
         `UPDATE contact_list 
          SET ${updateFields.join(', ')}
-         WHERE contact_list_id = $1 AND id = $2
-         RETURNING id, name, phone_number, email, address, created_at`,
+         WHERE user_id = $1 AND id = $2
+         RETURNING id, user_id, name, phone_number, email, address, created_at`,
         params
       );
 
@@ -253,11 +253,11 @@ export class ContactService extends BaseService {
 
   async delete(request: DeleteRequest): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
+      const userId = await this.resolveUserId(request.userId, request.userPhone);
 
       const result = await this.executeSingleQuery<Contact>(
         `DELETE FROM contact_list 
-         WHERE contact_list_id = $1 AND id = $2
+         WHERE user_id = $1 AND id = $2
          RETURNING id, name`,
         [userId, request.id]
       );
@@ -277,16 +277,16 @@ export class ContactService extends BaseService {
 
   async search(request: GetRequest): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
+      const userId = await this.resolveUserId(request.userId, request.userPhone);
       
       if (!request.filters?.name && !request.filters?.phone && !request.filters?.email) {
         return this.createErrorResponse('Search query is required');
       }
 
       let query = `
-        SELECT id, name, phone_number, email, address, created_at
+        SELECT id, user_id, name, phone_number, email, address, created_at
         FROM contact_list 
-        WHERE contact_list_id = $1 AND (
+        WHERE user_id = $1 AND (
       `;
 
       const params: any[] = [userId];

@@ -67,6 +67,16 @@ export abstract class BaseService {
     };
   }
 
+  protected async resolveUserId(userId: string | undefined, userPhone: string): Promise<string> {
+    if (userId) {
+      return userId;
+    }
+    if (!userPhone) {
+      throw new Error('User identifier is required');
+    }
+    return this.ensureUserExists(userPhone);
+  }
+
   protected validateRequiredFields(data: any, requiredFields: string[]): string | null {
     for (const field of requiredFields) {
       if (!data[field] || (typeof data[field] === 'string' && data[field].trim() === '')) {

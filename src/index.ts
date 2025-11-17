@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
 import express from 'express';
 import { testConnection } from './config/database';
+import { authRouter } from './routes/auth';
 import { whatsappWebhook } from './routes/webhook';
 import { SchedulerService } from './services/scheduler/SchedulerService';
 import { logger } from './utils/logger';
@@ -18,6 +19,9 @@ app.use(express.urlencoded({ extended: true }));
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
+
+// Auth routes
+app.use('/auth', authRouter);
 
 // WhatsApp webhook routes
 app.use('/webhook', whatsappWebhook);

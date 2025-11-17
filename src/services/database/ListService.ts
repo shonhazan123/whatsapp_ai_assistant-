@@ -4,7 +4,7 @@ import { BaseService, DuplicateEntryError } from './BaseService';
 
 export interface List {
   id: string;
-  list_id: string;
+  user_id: string;
   list_name: string;
   content?: string | null;
   is_checklist: boolean;
@@ -48,7 +48,7 @@ export class ListService extends BaseService {
     let userId: string | undefined;
     let data: any;
     try {
-      userId = await this.ensureUserExists(request.userPhone);
+      userId = await this.resolveUserId(request.userId, request.userPhone);
       data = this.sanitizeInput(request.data);
 
       const validation = this.validateRequiredFields(data, ['listName']);
@@ -74,9 +74,9 @@ export class ListService extends BaseService {
       this.logger.info(`📝 Creating ${isChecklist ? 'checklist' : 'note'}: "${data.listName}"`);
       
       const result = await this.executeSingleQuery<List>(
-        `INSERT INTO lists (list_id, list_name, content, is_checklist, items) 
+        `INSERT INTO lists (user_id, list_name, content, is_checklist, items) 
          VALUES ($1, $2, $3, $4, $5) 
-         RETURNING id, list_name, content, is_checklist, items, created_at`,
+         RETURNING id, user_id, list_name, content, is_checklist, items, created_at`,
         [userId, data.listName, data.content || null, isChecklist, itemsArray ? JSON.stringify(itemsArray) : null]
       );
 
@@ -96,7 +96,7 @@ export class ListService extends BaseService {
   async createMultiple(request: CreateMultipleRequest): Promise<IResponse> {
     let userId: string | undefined;
     try {
-      userId = await this.ensureUserExists(request.userPhone);
+      userId = await this.resolveUserId(request.userId, request.userPhone);
       const results = [];
       const errors = [];
 
@@ -125,9 +125,9 @@ export class ListService extends BaseService {
           })) : null;
 
           const result = await this.executeSingleQuery<List>(
-            `INSERT INTO lists (list_id, list_name, content, is_checklist, items) 
+            `INSERT INTO lists (user_id, list_name, content, is_checklist, items) 
              VALUES ($1, $2, $3, $4, $5) 
-             RETURNING id, list_name, content, is_checklist, items, created_at`,
+             RETURNING id, user_id, list_name, content, is_checklist, items, created_at`,
             [userId, sanitizedItem.listName, sanitizedItem.content || null, isChecklist, itemsArray ? JSON.stringify(itemsArray) : null]
           );
 
@@ -160,12 +160,12 @@ export class ListService extends BaseService {
 
   async getById(request: GetRequest): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
+      const userId = await this.resolveUserId(request.userId, request.userPhone);
       
       const list = await this.executeSingleQuery<List>(
-        `SELECT id, list_name, content, is_checklist, items, created_at
+        `SELECT id, user_id, list_name, content, is_checklist, items, created_at
          FROM lists 
-         WHERE list_id = $1 AND id = $2`,
+         WHERE user_id = $1 AND id = $2`,
         [userId, request.id]
       );
 
@@ -182,12 +182,12 @@ export class ListService extends BaseService {
 
   async getAll(request: GetRequest): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
+      const userId = await this.resolveUserId(request.userId, request.userPhone);
       
       let query = `
-        SELECT id, list_name, content, is_checklist, items, created_at
+        SELECT id, user_id, list_name, content, is_checklist, items, created_at
         FROM lists 
-        WHERE list_id = $1
+        WHERE user_id = $1
       `;
 
       const params: any[] = [userId];
@@ -241,7 +241,7 @@ export class ListService extends BaseService {
 
   async update(request: UpdateRequest): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
+      const userId = await this.resolveUserId(request.userId, request.userPhone);
       const data = this.sanitizeInput(request.data);
 
       const updateFields: string[] = [];
@@ -273,8 +273,8 @@ export class ListService extends BaseService {
       const result = await this.executeSingleQuery<List>(
         `UPDATE lists 
          SET ${updateFields.join(', ')}
-         WHERE list_id = $1 AND id = $2
-         RETURNING id, list_name, content, is_checklist, items, created_at`,
+         WHERE user_id = $1 AND id = $2
+         RETURNING id, user_id, list_name, content, is_checklist, items, created_at`,
         params
       );
 
@@ -293,11 +293,11 @@ export class ListService extends BaseService {
 
   async delete(request: DeleteRequest): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
+      const userId = await this.resolveUserId(request.userId, request.userPhone);
 
       const result = await this.executeSingleQuery<List>(
         `DELETE FROM lists 
-         WHERE list_id = $1 AND id = $2
+         WHERE user_id = $1 AND id = $2
          RETURNING id, list_name, content`,
         [userId, request.id]
       );
@@ -317,7 +317,7 @@ export class ListService extends BaseService {
 
   async addItem(request: UpdateRequest): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
+      const userId = await this.resolveUserId(request.userId, request.userPhone);
       const data = this.sanitizeInput(request.data);
 
       const validation = this.validateRequiredFields(data, ['listId', 'itemText']);
@@ -326,7 +326,7 @@ export class ListService extends BaseService {
       }
 
       const currentList = await this.executeSingleQuery<List>(
-        'SELECT items FROM lists WHERE list_id = $1 AND id = $2',
+        'SELECT items FROM lists WHERE user_id = $1 AND id = $2',
         [userId, data.listId]
       );
 
@@ -346,8 +346,8 @@ export class ListService extends BaseService {
       const result = await this.executeSingleQuery<List>(
         `UPDATE lists 
          SET items = $3
-         WHERE list_id = $1 AND id = $2
-         RETURNING id, list_name, content, is_checklist, items, created_at`,
+         WHERE user_id = $1 AND id = $2
+         RETURNING id, user_id, list_name, content, is_checklist, items, created_at`,
         [userId, data.listId, JSON.stringify(updatedItems)]
       );
 
@@ -362,7 +362,7 @@ export class ListService extends BaseService {
 
   async toggleItem(request: UpdateRequest): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
+      const userId = await this.resolveUserId(request.userId, request.userPhone);
       const data = this.sanitizeInput(request.data);
 
       const validation = this.validateRequiredFields(data, ['listId', 'itemIndex']);
@@ -371,7 +371,7 @@ export class ListService extends BaseService {
       }
 
       const currentList = await this.executeSingleQuery<List>(
-        'SELECT items FROM lists WHERE list_id = $1 AND id = $2',
+        'SELECT items FROM lists WHERE user_id = $1 AND id = $2',
         [userId, data.listId]
       );
 
@@ -389,8 +389,8 @@ export class ListService extends BaseService {
       const result = await this.executeSingleQuery<List>(
         `UPDATE lists 
          SET items = $3
-         WHERE list_id = $1 AND id = $2
-         RETURNING id, list_name, content, is_checklist, items, created_at`,
+         WHERE user_id = $1 AND id = $2
+         RETURNING id, user_id, list_name, content, is_checklist, items, created_at`,
         [userId, data.listId, JSON.stringify(updatedItems)]
       );
 
@@ -405,7 +405,7 @@ export class ListService extends BaseService {
 
   async deleteItem(request: UpdateRequest): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
+      const userId = await this.resolveUserId(request.userId, request.userPhone);
       const data = this.sanitizeInput(request.data);
 
       const validation = this.validateRequiredFields(data, ['listId', 'itemIndex']);
@@ -414,7 +414,7 @@ export class ListService extends BaseService {
       }
 
       const currentList = await this.executeSingleQuery<List>(
-        'SELECT items FROM lists WHERE list_id = $1 AND id = $2',
+        'SELECT items FROM lists WHERE user_id = $1 AND id = $2',
         [userId, data.listId]
       );
 
@@ -433,8 +433,8 @@ export class ListService extends BaseService {
       const result = await this.executeSingleQuery<List>(
         `UPDATE lists 
          SET items = $3
-         WHERE list_id = $1 AND id = $2
-         RETURNING id, list_name, content, is_checklist, items, created_at`,
+         WHERE user_id = $1 AND id = $2
+         RETURNING id, user_id, list_name, content, is_checklist, items, created_at`,
         [userId, data.listId, JSON.stringify(updatedItems)]
       );
 

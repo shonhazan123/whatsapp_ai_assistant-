@@ -1,6 +1,8 @@
-import { gmail_v1 } from 'googleapis';
-import { gmail } from '../../config/google';
+import { gmail_v1, google } from 'googleapis';
+import { RequestContext } from '../../core/context/RequestContext';
 import { IResponse } from '../../core/types/AgentTypes';
+import { RequestUserContext } from '../../types/UserContext';
+import { UpsertGoogleTokenPayload, UserService } from '../database/UserService';
 
 export interface EmailAttachment {
   filename: string;
@@ -105,8 +107,93 @@ export interface ThreadMessagesOptions {
   includeHeaders?: boolean;
 }
 
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
+const GOOGLE_REDIRECT_URI =
+  process.env.GOOGLE_REDIRECT_URI ||
+  (process.env.APP_PUBLIC_URL ? `${process.env.APP_PUBLIC_URL.replace(/\/$/, '')}/auth/google/callback` : undefined);
+
 export class GmailService {
-  constructor(private logger: any = logger) {}
+  private userService: UserService;
+
+  constructor(private logger: any = logger) {
+    this.userService = new UserService(logger);
+  }
+
+  private getRequestContext(): RequestUserContext {
+    const context = RequestContext.get();
+    if (!context) {
+      throw new Error('Request context is not available for Gmail operation.');
+    }
+    return context;
+  }
+
+  private buildOAuthClient(context: RequestUserContext) {
+    if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+      throw new Error('Google OAuth client is not configured properly.');
+    }
+    if (!context.googleTokens) {
+      throw new Error('Google account is not connected for this user.');
+    }
+
+    const oauthClient = new google.auth.OAuth2(
+      GOOGLE_CLIENT_ID,
+      GOOGLE_CLIENT_SECRET,
+      GOOGLE_REDIRECT_URI
+    );
+
+    const credentials: {
+      access_token?: string;
+      refresh_token?: string;
+      expiry_date?: number;
+      token_type?: string;
+    } = {};
+
+    if (context.googleTokens.access_token) {
+      credentials.access_token = context.googleTokens.access_token;
+    }
+    if (context.googleTokens.refresh_token) {
+      credentials.refresh_token = context.googleTokens.refresh_token;
+    }
+    if (context.googleTokens.expires_at) {
+      credentials.expiry_date = new Date(context.googleTokens.expires_at).getTime();
+    }
+    if (context.googleTokens.token_type) {
+      credentials.token_type = context.googleTokens.token_type;
+    }
+
+    oauthClient.setCredentials(credentials);
+    oauthClient.on('tokens', tokens => {
+      this.persistTokens(tokens, context).catch(error =>
+        this.logger.error('Failed to persist Gmail tokens after refresh', error)
+      );
+    });
+
+    return oauthClient;
+  }
+
+  private buildGmail(): gmail_v1.Gmail {
+    const context = this.getRequestContext();
+    const oauthClient = this.buildOAuthClient(context);
+    return google.gmail({ version: 'v1', auth: oauthClient });
+  }
+
+  private async persistTokens(tokens: any, context: RequestUserContext): Promise<void> {
+    const payload: UpsertGoogleTokenPayload = {
+      accessToken: tokens.access_token ?? context.googleTokens?.access_token ?? null,
+      refreshToken: tokens.refresh_token ?? context.googleTokens?.refresh_token ?? null,
+      expiresAt: tokens.expiry_date ?? context.googleTokens?.expires_at ?? null,
+      scope: tokens.scope
+        ? Array.isArray(tokens.scope)
+          ? tokens.scope
+          : tokens.scope.split(' ')
+        : context.googleTokens?.scope ?? null,
+      tokenType: tokens.token_type ?? context.googleTokens?.token_type ?? null
+    };
+
+    const updatedTokens = await this.userService.upsertGoogleTokens(context.user.id, payload);
+    context.googleTokens = updatedTokens;
+  }
 
   async listEmails(options: EmailListOptions = {}): Promise<IResponse> {
     try {
@@ -115,7 +202,9 @@ export class GmailService {
 
       this.logger.info(`📧 Listing emails with query: ${query || 'all'} | maxResults=${maxResults}`);
 
-      const response = await gmail.users.messages.list({
+      const gmailClient = this.buildGmail();
+
+      const response = await gmailClient.users.messages.list({
         userId: 'me',
         q: query,
         maxResults,
@@ -138,7 +227,7 @@ export class GmailService {
       const parsed = await Promise.all(
         messages.map(async (message) => {
           if (!message.id) return null;
-          return this.fetchAndParseMessage(message.id, {
+          return this.fetchAndParseMessage(gmailClient, message.id, {
             includeBody,
             includeHeaders
           });
@@ -233,7 +322,9 @@ export class GmailService {
     try {
       this.logger.info(`📧 Fetching email by id: ${messageId}`);
 
-      const email = await this.fetchAndParseMessage(messageId, {
+      const gmailClient = this.buildGmail();
+
+      const email = await this.fetchAndParseMessage(gmailClient, messageId, {
         includeBody: options.includeBody ?? true,
         includeHeaders: options.includeHeaders ?? true
       });
@@ -262,7 +353,9 @@ export class GmailService {
     try {
       this.logger.info(`📧 Fetching thread messages for thread: ${threadId}`);
 
-      const response = await gmail.users.threads.get({
+      const gmailClient = this.buildGmail();
+
+      const response = await gmailClient.users.threads.get({
         userId: 'me',
         id: threadId,
         format: options.includeBody || options.includeHeaders ? 'full' : 'metadata'
@@ -354,7 +447,9 @@ export class GmailService {
         };
       }
 
-      const response = await gmail.users.messages.send({
+      const gmailClient = this.buildGmail();
+
+      const response = await gmailClient.users.messages.send({
         userId: 'me',
         requestBody: {
           raw: payload.encoded,
@@ -391,7 +486,9 @@ export class GmailService {
 
       this.logger.info(`📧 Preparing reply for message: ${request.messageId}`);
 
-      const original = await gmail.users.messages.get({
+      const gmailClient = this.buildGmail();
+
+      const original = await gmailClient.users.messages.get({
         userId: 'me',
         id: request.messageId,
         format: 'metadata'
@@ -446,7 +543,9 @@ export class GmailService {
     try {
       this.logger.info(`📧 Marking email as read: ${messageId}`);
 
-      await gmail.users.messages.modify({
+      const gmailClient = this.buildGmail();
+
+      await gmailClient.users.messages.modify({
         userId: 'me',
         id: messageId,
         requestBody: {
@@ -473,7 +572,9 @@ export class GmailService {
     try {
       this.logger.info(`📧 Marking email as unread: ${messageId}`);
 
-      await gmail.users.messages.modify({
+      const gmailClient = this.buildGmail();
+
+      await gmailClient.users.messages.modify({
         userId: 'me',
         id: messageId,
         requestBody: {
@@ -497,11 +598,12 @@ export class GmailService {
   }
 
   private async fetchAndParseMessage(
+    gmailClient: gmail_v1.Gmail,
     messageId: string,
     options: { includeBody?: boolean; includeHeaders?: boolean } = {}
   ): Promise<EmailSummary | null> {
     try {
-      const response = await gmail.users.messages.get({
+      const response = await gmailClient.users.messages.get({
         userId: 'me',
         id: messageId,
         format: options.includeBody || options.includeHeaders ? 'full' : 'metadata'

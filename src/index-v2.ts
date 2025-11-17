@@ -27,7 +27,14 @@ function initializeArchitecture() {
 
 
 // Export the new processMessage function with Advanced Orchestration
-export async function processMessageV2(userPhone: string, messageText: string): Promise<string> {
+export async function processMessageV2(
+  userPhone: string, 
+  messageText: string,
+  options?: {
+    whatsappMessageId?: string;
+    replyToMessageId?: string;
+  }
+): Promise<string> {
   try {
     // Initialize architecture if not already done
     if (!agentManager) {
@@ -41,7 +48,7 @@ export async function processMessageV2(userPhone: string, messageText: string): 
 
     // Centralize reasoning in MainAgent (intent parsing, delegation, final response)
     logger.info('🤖 Main Agent activated');
-    return await agentManager.getMainAgent().processRequest(messageText, userPhone);
+    return await agentManager.getMainAgent().processRequest(messageText, userPhone, options);
 
   } catch (error) {
     logger.error('Error in processMessageV2:', error);
@@ -56,6 +63,7 @@ export * from './services/database/ContactService';
 export * from './services/database/ListService';
 export * from './services/database/TaskService';
 export * from './services/database/UserDataService';
+export * from './services/database/UserService';
 export * from './services/email/GmailService';
 export { AgentManager, ServiceContainer };
 

@@ -1,4 +1,5 @@
 import { OpenAIService } from '../../services/ai/OpenAIService';
+import { RequestContext } from '../context/RequestContext';
 import { IFunctionHandler } from '../interfaces/IAgent';
 import { FunctionDefinition, IAgent } from '../types/AgentTypes';
 
@@ -11,7 +12,14 @@ export abstract class BaseAgent implements IAgent {
     protected logger: any = logger
   ) {}
 
-  abstract processRequest(message: string, userPhone: string): Promise<string>;
+  abstract processRequest(
+    message: string, 
+    userPhone: string,
+    optionsOrContext?: {
+      whatsappMessageId?: string;
+      replyToMessageId?: string;
+    } | any[]
+  ): Promise<string>;
   abstract getSystemPrompt(): string;
   abstract getFunctions(): FunctionDefinition[];
 
@@ -73,8 +81,10 @@ export abstract class BaseAgent implements IAgent {
   }
 
   protected async getUserId(userPhone: string): Promise<string> {
-    // This should be implemented by each agent or use a shared service
-    // For now, we'll use a placeholder
+    const requestContext = RequestContext.get();
+    if (requestContext) {
+      return requestContext.whatsappNumber;
+    }
     return userPhone;
   }
 

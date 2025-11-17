@@ -69,10 +69,29 @@ CREATE DATABASE whatsapp_assistant;
 -- Users table
 CREATE TABLE users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    phone VARCHAR(20) UNIQUE NOT NULL,
+    whatsapp_number VARCHAR(20) UNIQUE NOT NULL,
+    plan_type TEXT NOT NULL DEFAULT 'standard' CHECK (plan_type IN ('free', 'standard', 'pro')),
     timezone VARCHAR(50) DEFAULT 'Asia/Jerusalem',
     settings JSONB DEFAULT '{}',
-    created_at TIMESTAMP DEFAULT NOW()
+    google_email TEXT,
+    onboarding_complete BOOLEAN NOT NULL DEFAULT FALSE,
+    onboarding_last_prompt_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE user_google_tokens (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    access_token TEXT,
+    refresh_token TEXT,
+    expires_at TIMESTAMP,
+    scope TEXT[],
+    token_type TEXT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE (user_id, provider)
 );
 
 -- Tasks table
@@ -99,7 +118,7 @@ CREATE TABLE subtasks (
 -- Contact list table
 CREATE TABLE contact_list (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    contact_list_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
     name VARCHAR(255),
     phone_number VARCHAR(20),
     email VARCHAR(255),
@@ -111,7 +130,7 @@ CREATE TABLE contact_list (
 -- Lists table
 CREATE TABLE lists (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    list_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
     list_name VARCHAR(50) CHECK (list_name IN ('note', 'checklist')),
     content JSONB,
     created_at TIMESTAMP DEFAULT NOW()
@@ -129,8 +148,8 @@ CREATE TABLE conversation_memory (
 -- Indexes for performance
 CREATE INDEX idx_tasks_user ON tasks(user_id);
 CREATE INDEX idx_subtasks_task ON subtasks(task_id);
-CREATE INDEX idx_contact_user ON contact_list(contact_list_id);
-CREATE INDEX idx_lists_user ON lists(list_id);
+CREATE INDEX idx_contact_user ON contact_list(user_id);
+CREATE INDEX idx_lists_user ON lists(user_id);
 CREATE INDEX idx_conversation_user ON conversation_memory(user_phone, created_at);
 
 -- Function to automatically create user on first message
@@ -139,10 +158,10 @@ RETURNS UUID AS $$
 DECLARE
     user_uuid UUID;
 BEGIN
-    SELECT id INTO user_uuid FROM users WHERE phone = phone_number;
+    SELECT id INTO user_uuid FROM users WHERE whatsapp_number = phone_number;
     
     IF user_uuid IS NULL THEN
-        INSERT INTO users (phone) VALUES (phone_number) RETURNING id INTO user_uuid;
+        INSERT INTO users (whatsapp_number) VALUES (phone_number) RETURNING id INTO user_uuid;
     END IF;
     
     RETURN user_uuid;
@@ -187,6 +206,12 @@ OPENAI_API_KEY=your_openai_api_key_here
 # Google OAuth2
 GOOGLE_CLIENT_ID=your_google_client_id_here
 GOOGLE_CLIENT_SECRET=your_google_client_secret_here
+GOOGLE_REDIRECT_URI=https://your-domain.com/auth/google/callback
+APP_PUBLIC_URL=https://your-domain.com
+GOOGLE_OAUTH_SCOPES=https://www.googleapis.com/auth/calendar,https://www.googleapis.com/auth/gmail.modify,openid,email,profile
+JWT_SECRET=change_me_super_secret_value
+
+# Legacy single-user credentials (optional, will be replaced by per-user tokens)
 GOOGLE_REFRESH_TOKEN=your_refresh_token_here
 GOOGLE_CALENDAR_EMAIL=your_calendar_email@gmail.com
 GMAIL_EMAIL=your_gmail@gmail.com

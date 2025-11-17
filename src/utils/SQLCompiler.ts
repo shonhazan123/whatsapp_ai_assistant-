@@ -381,8 +381,8 @@ export class SQLCompiler {
 	private static getUserIdColumn(entity: 'tasks' | 'contacts' | 'lists'): string {
 		const columns = {
 			tasks: 'user_id',
-			contacts: 'contact_list_id',
-			lists: 'list_id'
+			contacts: 'user_id',
+			lists: 'user_id'
 		};
 		return columns[entity];
 	}

@@ -7,9 +7,9 @@ const WHATSAPP_API_URL = 'https://graph.facebook.com/v22.0';
 const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const ACCESS_TOKEN = process.env.WHATSAPP_API_TOKEN;
 
-export async function sendWhatsAppMessage(to: string, message: string): Promise<void> {
+export async function sendWhatsAppMessage(to: string, message: string): Promise<string | null> {
   try {
-    await axios.post(
+    const response = await axios.post(
       `${WHATSAPP_API_URL}/${PHONE_NUMBER_ID}/messages`,
       {
         messaging_product: 'whatsapp',
@@ -23,16 +23,21 @@ export async function sendWhatsAppMessage(to: string, message: string): Promise<
         }
       }
     );
-    logger.info(`Message sent to ${to}`);
     
-    // Add message to conversation memory (non-blocking)
+    // Extract message ID from response
+    const messageId = response.data?.messages?.[0]?.id || null;
+    logger.info(`Message sent to ${to}${messageId ? ` (ID: ${messageId})` : ''}`);
+    
+    // Add message to conversation memory with message ID (non-blocking)
     try {
       const conversationWindow = ConversationWindow.getInstance();
-      conversationWindow.addMessage(to, 'assistant', message);
+      conversationWindow.addMessage(to, 'assistant', message, undefined, messageId || undefined);
     } catch (memoryError) {
       // Don't fail message sending if memory save fails
       logger.warn('Failed to save message to conversation memory:', memoryError);
     }
+    
+    return messageId;
   } catch (error) {
     logger.error('Error sending WhatsApp message:', error);
     throw error;

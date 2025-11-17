@@ -134,7 +134,7 @@ export class ReminderService {
    */
   private async getOneTimeReminders(): Promise<TaskWithUser[]> {
     const result = await query(
-      `SELECT t.*, u.phone, u.timezone
+      `SELECT t.*, u.whatsapp_number AS phone, u.timezone
        FROM tasks t
        JOIN users u ON t.user_id = u.id
        WHERE t.due_date IS NOT NULL
@@ -153,7 +153,7 @@ export class ReminderService {
    */
   private async getRecurringReminders(): Promise<TaskWithUser[]> {
     const result = await query(
-      `SELECT t.*, u.phone, u.timezone
+      `SELECT t.*, u.whatsapp_number AS phone, u.timezone
        FROM tasks t
        JOIN users u ON t.user_id = u.id
        WHERE t.reminder_recurrence IS NOT NULL
@@ -187,7 +187,7 @@ export class ReminderService {
    */
   private async getAllUsers(): Promise<User[]> {
     const result = await query(
-      'SELECT id, phone, COALESCE(timezone, \'Asia/Jerusalem\') as timezone FROM users'
+      'SELECT id, whatsapp_number AS phone, COALESCE(timezone, \'Asia/Jerusalem\') as timezone FROM users'
     );
     return result.rows;
   }

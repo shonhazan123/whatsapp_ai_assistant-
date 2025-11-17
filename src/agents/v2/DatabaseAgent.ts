@@ -38,7 +38,16 @@ export class DatabaseAgent extends BaseAgent {
     this.registerFunctions();
   }
 
-  async processRequest(message: string, userPhone: string, context: any[] = []): Promise<string> {
+  async processRequest(
+    message: string, 
+    userPhone: string,
+    optionsOrContext?: {
+      whatsappMessageId?: string;
+      replyToMessageId?: string;
+    } | any[]
+  ): Promise<string> {
+    // Handle both new options format and legacy context array format
+    const context: any[] = Array.isArray(optionsOrContext) ? optionsOrContext : [];
     try {
       this.logger.info('💾 Database Agent activated');
       this.logger.info(`📝 Processing database request: "${message}"`);

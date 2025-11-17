@@ -311,7 +311,7 @@ export class TaskService extends BaseService {
     let userId: string | undefined;
     let data: any;
     try {
-      userId = await this.ensureUserExists(request.userPhone);
+      userId = await this.resolveUserId(request.userId, request.userPhone);
       data = this.sanitizeInput(request.data);
 
       const validation = this.validateRequiredFields(data, ['text']);
@@ -362,7 +362,7 @@ export class TaskService extends BaseService {
   async createMultiple(request: CreateMultipleRequest): Promise<IResponse> {
     let userId: string | undefined;
     try {
-      userId = await this.ensureUserExists(request.userPhone);
+      userId = await this.resolveUserId(request.userId, request.userPhone);
       const results = [];
       const errors = [];
 
@@ -434,7 +434,7 @@ export class TaskService extends BaseService {
 
   async getById(request: GetRequest): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
+      const userId = await this.resolveUserId(request.userId, request.userPhone);
       
       const task = await this.executeSingleQuery<Task>(
         `SELECT t.id, t.text, t.category, t.due_date, t.reminder, t.reminder_recurrence, t.next_reminder_at, t.completed, t.created_at,
@@ -469,7 +469,7 @@ export class TaskService extends BaseService {
 
   async getAll(request: GetRequest): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
+      const userId = await this.resolveUserId(request.userId, request.userPhone);
       
       let query = `
         SELECT t.id, t.text, t.category, t.due_date, t.reminder, t.reminder_recurrence, t.next_reminder_at, t.completed, t.created_at,
@@ -549,7 +549,7 @@ export class TaskService extends BaseService {
 
   async update(request: UpdateRequest): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
+      const userId = await this.resolveUserId(request.userId, request.userPhone);
       const data = this.sanitizeInput(request.data);
 
       // Validate reminder fields
@@ -667,7 +667,7 @@ export class TaskService extends BaseService {
 
   async delete(request: DeleteRequest): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
+      const userId = await this.resolveUserId(request.userId, request.userPhone);
 
       const result = await this.executeSingleQuery<Task>(
         `DELETE FROM tasks 
@@ -698,7 +698,7 @@ export class TaskService extends BaseService {
 
   async addSubtask(request: CreateRequest): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
+      const userId = await this.resolveUserId(request.userId, request.userPhone);
       const data = this.sanitizeInput(request.data);
 
       const validation = this.validateRequiredFields(data, ['taskId', 'text']);
@@ -737,7 +737,7 @@ export class TaskService extends BaseService {
    */
   async deleteAll(userPhone: string, filter: TaskFilter, preview = false): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(userPhone);
+      const userId = await this.resolveUserId(undefined, userPhone);
 
       // Compile WHERE clause using SQLCompiler
       const { whereSql, params } = SQLCompiler.compileWhere('tasks', userId, filter);
@@ -783,7 +783,7 @@ export class TaskService extends BaseService {
    */
   async updateAll(userPhone: string, filter: TaskFilter, patch: BulkPatch, preview = false): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(userPhone);
+      const userId = await this.resolveUserId(undefined, userPhone);
       const allowedColumns = SQLCompiler.getAllowedColumns('tasks');
 
       const sanitizedPatch = this.sanitizeInput({ ...patch });

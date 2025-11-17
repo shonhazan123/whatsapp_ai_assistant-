@@ -1,9 +1,9 @@
-import { BaseService } from './BaseService';
-import { TaskService, TaskFilters } from './TaskService';
-import { ContactService, ContactFilters } from './ContactService';
-import { ListService, ListFilters } from './ListService';
+import { GetRequest, IResponse } from '../../core/types/AgentTypes';
 import { logger } from '../../utils/logger';
-import { IResponse, GetRequest } from '../../core/types/AgentTypes';
+import { BaseService } from './BaseService';
+import { ContactFilters, ContactService } from './ContactService';
+import { ListFilters, ListService } from './ListService';
+import { TaskFilters, TaskService } from './TaskService';
 
 export interface UserDataOverview {
   tasks: {
@@ -46,7 +46,7 @@ export class UserDataService extends BaseService {
 
   async getOverview(request: GetRequest): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
+      const userId = await this.resolveUserId(request.userId, request.userPhone);
       
       // Get tasks summary
       const tasksResponse = await this.taskService.getAll({
@@ -106,7 +106,7 @@ export class UserDataService extends BaseService {
 
   async getAllData(request: UserDataRequest): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
+      const userId = await this.resolveUserId(request.userId, request.userPhone);
       const results: any = {};
 
       // Get tasks if requested
@@ -161,7 +161,7 @@ export class UserDataService extends BaseService {
 
   async searchAll(request: GetRequest & { query: string }): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
+      const userId = await this.resolveUserId(request.userId, request.userPhone);
       const results: any = {};
 
       // Search tasks
@@ -196,7 +196,7 @@ export class UserDataService extends BaseService {
 
   async getStatistics(request: GetRequest): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
+      const userId = await this.resolveUserId(request.userId, request.userPhone);
       
       // Get all tasks for statistics
       const tasksResponse = await this.taskService.getAll(request);

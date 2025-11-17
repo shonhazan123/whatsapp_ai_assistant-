@@ -11,6 +11,11 @@ export interface WhatsAppMessage {
       id: string;
       mime_type: string;
     };
+    context?: {
+      from: string;
+      id: string; // message_id of the message being replied to
+      referred_product?: any;
+    };
   }
   
   export interface WhatsAppWebhookPayload {

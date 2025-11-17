@@ -1,8 +1,9 @@
 import { SystemPrompts } from '../config/system-prompts';
 import { ServiceContainer } from '../core/container/ServiceContainer';
+import { RequestContext } from '../core/context/RequestContext';
 import { AgentFactory } from '../core/factory/AgentFactory';
 import { AgentName, IAgent } from '../core/interfaces/IAgent';
-import { OpenAIService } from '../services/ai/OpenAIService';
+import { IntentDecision, OpenAIService } from '../services/ai/OpenAIService';
 import { logger } from '../utils/logger';
 import { CoordinatorAgent, ExecutionResult, PlannedAction } from './types/MultiAgentPlan';
 
@@ -40,43 +41,162 @@ export class MultiAgentCoordinator {
     }
   }
 
-  /**
-   * Execute actions for multi-task requests
-   */
-  async executeActions(messageText: string, userPhone: string, context: any[] = []): Promise<string> {
+  async handleRequest(messageText: string, userPhone: string, context: any[] = []): Promise<string> {
     try {
-      const plan = await this.planActions(messageText, context);
-      if (plan.length === 0) {
-        logger.warn('Planner returned empty plan for multi-agent request');
-        return 'מצטער, לא הצלחתי לפרק את הבקשה לפעולות.';
+      const intentDecision = await this.openaiService.detectIntent(messageText, context);
+      logger.info(
+        `🧭 Orchestrator intent: ${intentDecision.primaryIntent} (plan: ${intentDecision.requiresPlan}, agents: ${
+          intentDecision.involvedAgents.join(', ') || 'none'
+        })`
+      );
+
+      if (intentDecision.primaryIntent === 'general' || intentDecision.involvedAgents.length === 0) {
+        return await this.generateGeneralResponse(context, messageText);
       }
 
-      const executionResults = await this.executePlan(plan, userPhone, context);
-      return await this.buildSummary(plan, executionResults, context, userPhone);
+      const involvedAgents = this.resolveInvolvedAgents(intentDecision);
+      if (!intentDecision.requiresPlan && involvedAgents.length === 1) {
+        return await this.executeSingleAgent(involvedAgents[0], messageText, userPhone, context);
+      }
+
+      const plan = await this.planActions(messageText, context, involvedAgents);
+      if (plan.length === 0) {
+        logger.warn('Planner returned empty plan for orchestrated request');
+        return this.buildNoActionResponse(intentDecision.primaryIntent);
+      }
+
+      const requestContext = RequestContext.get();
+      const filteredPlan = plan.filter(action => this.isAgentAllowed(action.agent as AgentName, requestContext));
+
+      if (filteredPlan.length === 0) {
+        return this.buildCapabilityDeniedMessage(involvedAgents, requestContext);
+      }
+
+      const executionResults = await this.executePlan(filteredPlan, userPhone, context);
+      const distinctAgents = new Set(filteredPlan.map(action => action.agent));
+
+      if (distinctAgents.size <= 1) {
+        return this.combineSingleAgentResults(filteredPlan[0].agent, executionResults);
+      }
+
+      return await this.buildSummary(filteredPlan, executionResults, context, userPhone);
     } catch (error) {
-      logger.error('Error executing multi-agent workflow:', error);
-      return 'An error occurred while coordinating multiple agents.';
+      logger.error('Error handling orchestrated request:', error);
+      return 'An error occurred while coordinating your request.';
     }
   }
 
-  private async planActions(messageText: string, context: any[] = []): Promise<PlannedAction[]> {
-    const baseMessages = this.buildPlannerMessages(messageText, context);
+  private async planActions(
+    messageText: string,
+    context: any[] = [],
+    allowedAgents: AgentName[] = []
+  ): Promise<PlannedAction[]> {
+    const baseMessages = this.buildPlannerMessages(messageText, context, allowedAgents);
 
     try {
-      return await this.requestPlan(baseMessages);
+      const plan = await this.requestPlan(baseMessages);
+      if (allowedAgents.length === 0) {
+        return plan;
+      }
+
+      return plan.filter(action => allowedAgents.includes(action.agent));
     } catch (error) {
       logger.error('Failed to obtain multi-agent plan:', error);
       return [];
     }
   }
 
-  private buildPlannerMessages(messageText: string, context: any[]): Array<{ role: 'system' | 'user' | 'assistant'; content: string }> {
+  private resolveInvolvedAgents(intentDecision: IntentDecision): AgentName[] {
+    const knownAgents: AgentName[] = [AgentName.CALENDAR, AgentName.GMAIL, AgentName.DATABASE];
+
+    const explicitAgents = intentDecision.involvedAgents.filter(agent => knownAgents.includes(agent));
+    if (explicitAgents.length > 0) {
+      return explicitAgents;
+    }
+
+    if (
+      intentDecision.primaryIntent !== 'general' &&
+      intentDecision.primaryIntent !== AgentName.MULTI_TASK &&
+      knownAgents.includes(intentDecision.primaryIntent)
+    ) {
+      return [intentDecision.primaryIntent];
+    }
+
+    // Fallback for ambiguous multi-task intents: allow all
+    if (intentDecision.primaryIntent === AgentName.MULTI_TASK) {
+      return knownAgents;
+    }
+
+    return [];
+  }
+
+  private async executeSingleAgent(
+    agentName: AgentName,
+    messageText: string,
+    userPhone: string,
+    context: any[]
+  ): Promise<string> {
+    const requestContext = RequestContext.get();
+    const accessError = this.getAgentAccessError(agentName, requestContext);
+    if (accessError) {
+      return accessError;
+    }
+
+    const agent = this.agents.get(agentName as CoordinatorAgent);
+    if (!agent) {
+      logger.error(`Agent not initialized: ${agentName}`);
+      return 'The requested capability is currently unavailable.';
+    }
+
+    try {
+      logger.info(`🔁 Delegating request directly to ${agentName} agent`);
+      return await (agent as any).processRequest(messageText, userPhone, context);
+    } catch (error) {
+      logger.error(`Direct agent execution failed for ${agentName}`, error);
+      return 'I encountered an error while handling your request. Please try again.';
+    }
+  }
+
+  private buildNoActionResponse(intent: IntentDecision['primaryIntent']): string {
+    if (intent === 'general') {
+      return 'לא זיהיתי פעולה לביצוע, אשמח לעזור אם תפרט קצת יותר.';
+    }
+    return 'מצטער, לא הצלחתי לפרק את הבקשה לפעולות.';
+  }
+
+  private buildCapabilityDeniedMessage(
+    agents: AgentName[],
+    requestContext: ReturnType<typeof RequestContext.get>
+  ): string {
+    if (agents.length === 1) {
+      const accessError = this.getAgentAccessError(agents[0], requestContext);
+      if (accessError) {
+        return accessError;
+      }
+    }
+    return 'The requested actions require capabilities that are not available on your current plan.';
+  }
+
+  private buildPlannerMessages(
+    messageText: string,
+    context: any[],
+    allowedAgents: AgentName[] = []
+  ): Array<{ role: 'system' | 'user' | 'assistant'; content: string }> {
     const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
       {
         role: 'system',
         content: SystemPrompts.getMultiAgentPlannerPrompt()
       }
     ];
+
+    if (allowedAgents.length > 0) {
+      messages.push({
+        role: 'system',
+        content: `You may only generate actions for the following agents: ${allowedAgents.join(
+          ', '
+        )}. Do not invent actions for other agents.`
+      });
+    }
 
     const recentContext = context.slice(-4);
     recentContext.forEach((msg: any) => {
@@ -101,6 +221,38 @@ export class MultiAgentCoordinator {
     return messages;
   }
 
+  private getAgentAccessError(agent: AgentName, context: ReturnType<typeof RequestContext.get>): string | null {
+    if (!context) {
+      return null;
+    }
+
+    switch (agent) {
+      case AgentName.CALENDAR:
+        if (!context.capabilities.calendar) {
+          return 'Your current plan does not include calendar features.';
+        }
+        if (!context.googleConnected) {
+          return 'Please connect your Google account before using calendar features.';
+        }
+        return null;
+      case AgentName.GMAIL:
+        if (!context.capabilities.gmail) {
+          return 'Upgrade to the pro plan to enable Gmail features.';
+        }
+        if (!context.googleConnected) {
+          return 'Please connect your Google account before using Gmail features.';
+        }
+        return null;
+      case AgentName.DATABASE:
+        if (!context.capabilities.database) {
+          return 'Your plan does not include database features.';
+        }
+        return null;
+      default:
+        return null;
+    }
+  }
+
   private async requestPlan(
     messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
     attempt = 1
@@ -108,7 +260,7 @@ export class MultiAgentCoordinator {
     const completion = await this.openaiService.createCompletion({
       messages: messages as any,
       temperature: 0.2,
-      maxTokens: 700,
+      maxTokens: 1000,
       model: 'gpt-4o'
     });
 
@@ -193,6 +345,50 @@ export class MultiAgentCoordinator {
     });
 
     return plan;
+  }
+
+  private combineSingleAgentResults(agent: CoordinatorAgent, results: ExecutionResult[]): string {
+    const responses = results
+      .filter(result => result.success && typeof result.response === 'string' && result.response.trim().length > 0)
+      .map(result => result.response!.trim());
+
+    if (responses.length > 0) {
+      return responses.join('\n\n');
+    }
+
+    const failed = results.find(result => result.status === 'failed');
+    if (failed?.error) {
+      return failed.error;
+    }
+
+    const blocked = results.find(result => result.status === 'blocked');
+    if (blocked?.error) {
+      return blocked.error;
+    }
+
+    return 'I was unable to complete the requested action.';
+  }
+
+  private async generateGeneralResponse(context: any[], messageText: string): Promise<string> {
+    const messages: any[] = [
+      {
+        role: 'system',
+        content: SystemPrompts.getMainAgentPrompt()
+      },
+      ...context,
+      {
+        role: 'user',
+        content: messageText
+      }
+    ];
+
+    const completion = await this.openaiService.createCompletion({
+      messages: messages as any,
+      temperature: 0.7,
+      maxTokens: 500
+    });
+
+    return completion.choices[0]?.message?.content?.trim() || 'I could not generate a response.';
   }
 
   private async executePlan(plan: PlannedAction[], userPhone: string, context: any[]): Promise<ExecutionResult[]> {
@@ -295,6 +491,10 @@ export class MultiAgentCoordinator {
     }
 
     return results;
+  }
+
+  private isAgentAllowed(agent: AgentName, context: ReturnType<typeof RequestContext.get>): boolean {
+    return !this.getAgentAccessError(agent, context);
   }
 
   private async buildSummary(
