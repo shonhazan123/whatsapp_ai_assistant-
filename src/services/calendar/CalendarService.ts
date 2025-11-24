@@ -1,6 +1,18 @@
-import { calendar } from '../../config/google';
-import { logger } from '../../utils/logger';
+import { calendar_v3, google } from 'googleapis';
+import { RequestContext } from '../../core/context/RequestContext';
 import { IResponse } from '../../core/types/AgentTypes';
+import { RequestUserContext } from '../../types/UserContext';
+import { UpsertGoogleTokenPayload, UserService } from '../database/UserService';
+
+export interface CalendarReminderOverride {
+  method: 'popup' | 'email';
+  minutes: number;
+}
+
+export interface CalendarReminders {
+  useDefault: boolean;
+  overrides?: CalendarReminderOverride[];
+}
 
 export interface CalendarEvent {
   id?: string;
@@ -10,6 +22,7 @@ export interface CalendarEvent {
   attendees?: string[];
   description?: string;
   location?: string;
+  reminders?: CalendarReminders;
 }
 
 export interface CreateEventRequest {
@@ -19,6 +32,8 @@ export interface CreateEventRequest {
   attendees?: string[];
   description?: string;
   location?: string;
+  timeZone?: string;
+  reminders?: CalendarReminders;
 }
 
 export interface UpdateEventRequest {
@@ -29,6 +44,9 @@ export interface UpdateEventRequest {
   attendees?: string[];
   description?: string;
   location?: string;
+  timeZone?: string;
+  reminders?: CalendarReminders;
+  calendarId?: string;
 }
 
 export interface GetEventsRequest {
@@ -50,50 +68,146 @@ export interface RecurringEventRequest {
   description?: string;
   location?: string;
   until?: string; // Optional ISO date to stop recurrence
+  reminders?: CalendarReminders;
 }
 
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
+const GOOGLE_REDIRECT_URI =
+  process.env.GOOGLE_REDIRECT_URI ||
+  (process.env.APP_PUBLIC_URL ? `${process.env.APP_PUBLIC_URL.replace(/\/$/, '')}/auth/google/callback` : undefined);
+
 export class CalendarService {
-  private calendarId: string;
+  private userService: UserService;
 
   constructor(
-    private logger: any = logger,
-    calendarId?: string
+    private logger: any = logger
   ) {
-    this.calendarId = calendarId || process.env.GOOGLE_CALENDAR_EMAIL || '';
+    this.userService = new UserService(logger);
+  }
+
+  private getRequestContext(): RequestUserContext {
+    const context = RequestContext.get();
+    if (!context) {
+      throw new Error('Request context is not available for calendar operation.');
+    }
+    return context;
+  }
+
+  private buildOAuthClient(context: RequestUserContext) {
+    if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+      throw new Error('Google OAuth client is not configured properly.');
+    }
+    if (!context.googleTokens) {
+      throw new Error('Google account is not connected for this user.');
+    }
+
+    const oauthClient = new google.auth.OAuth2(
+      GOOGLE_CLIENT_ID,
+      GOOGLE_CLIENT_SECRET,
+      GOOGLE_REDIRECT_URI
+    );
+
+    const credentials: {
+      access_token?: string;
+      refresh_token?: string;
+      expiry_date?: number;
+      token_type?: string;
+    } = {};
+
+    if (context.googleTokens.access_token) {
+      credentials.access_token = context.googleTokens.access_token;
+    }
+    if (context.googleTokens.refresh_token) {
+      credentials.refresh_token = context.googleTokens.refresh_token;
+    }
+    if (context.googleTokens.expires_at) {
+      credentials.expiry_date = new Date(context.googleTokens.expires_at).getTime();
+    }
+    if (context.googleTokens.token_type) {
+      credentials.token_type = context.googleTokens.token_type;
+    }
+
+    oauthClient.setCredentials(credentials);
+    oauthClient.on('tokens', tokens => {
+      this.persistTokens(tokens, context).catch(error =>
+        this.logger.error('Failed to persist Google tokens after refresh', error)
+      );
+    });
+
+    return oauthClient;
+  }
+
+  private buildCalendar(): calendar_v3.Calendar {
+    const context = this.getRequestContext();
+    const oauthClient = this.buildOAuthClient(context);
+    return google.calendar({ version: 'v3', auth: oauthClient });
+  }
+
+  private resolveCalendarId(requestedId?: string): string {
+    if (requestedId) {
+      return requestedId;
+    }
+    const context = this.getRequestContext();
+    return context.user.google_email || 'primary';
+  }
+
+  private async persistTokens(tokens: any, context: RequestUserContext): Promise<void> {
+    const payload: UpsertGoogleTokenPayload = {
+      accessToken: tokens.access_token ?? context.googleTokens?.access_token ?? null,
+      refreshToken: tokens.refresh_token ?? context.googleTokens?.refresh_token ?? null,
+      expiresAt: tokens.expiry_date ?? context.googleTokens?.expires_at ?? null,
+      scope: tokens.scope
+        ? Array.isArray(tokens.scope)
+          ? tokens.scope
+          : tokens.scope.split(' ')
+        : context.googleTokens?.scope ?? null,
+      tokenType: tokens.token_type ?? context.googleTokens?.token_type ?? null
+    };
+
+    const updatedTokens = await this.userService.upsertGoogleTokens(context.user.id, payload);
+    context.googleTokens = updatedTokens;
   }
 
   async createEvent(request: CreateEventRequest): Promise<IResponse> {
     try {
       this.logger.info(`📅 Creating calendar event: "${request.summary}"`);
-      
-      const event = {
+      const timeZone = request.timeZone || process.env.DEFAULT_TIMEZONE || 'Asia/Jerusalem';
+
+      const event: calendar_v3.Schema$Event = {
         summary: request.summary,
         start: {
           dateTime: request.start,
-          timeZone: process.env.DEFAULT_TIMEZONE || 'Asia/Jerusalem'
+          timeZone
         },
         end: {
           dateTime: request.end,
-          timeZone: process.env.DEFAULT_TIMEZONE || 'Asia/Jerusalem'
+          timeZone
         },
-        attendees: request.attendees?.map((email: string) => ({ email })),
+        attendees: request.attendees?.map(email => ({ email })),
         description: request.description,
         location: request.location
       };
 
-      // Log attendees if provided
+      if (request.reminders) {
+        event.reminders = request.reminders;
+      }
+
       if (request.attendees && request.attendees.length > 0) {
         this.logger.info(`📧 Adding ${request.attendees.length} attendees: ${request.attendees.join(', ')}`);
       }
 
-      const response = await calendar.events.insert({
-        calendarId: this.calendarId,
+      const calendarClient = this.buildCalendar();
+      const calendarId = this.resolveCalendarId();
+
+      const response = await calendarClient.events.insert({
+        calendarId,
         requestBody: event,
         sendUpdates: request.attendees && request.attendees.length > 0 ? 'all' : 'none'
       });
 
       this.logger.info(`✅ Event created: "${request.summary}"`);
-      
+
       return {
         success: true,
         data: {
@@ -168,8 +282,11 @@ export class CalendarService {
     try {
       this.logger.info(`📅 Getting calendar events from ${request.timeMin} to ${request.timeMax}`);
       
-      const response = await calendar.events.list({
-        calendarId: this.calendarId,
+      const calendarClient = this.buildCalendar();
+      const calendarId = this.resolveCalendarId(request.calendarId);
+
+      const response = await calendarClient.events.list({
+        calendarId,
         timeMin: request.timeMin,
         timeMax: request.timeMax,
         singleEvents: true,
@@ -183,7 +300,8 @@ export class CalendarService {
         end: event.end?.dateTime || event.end?.date,
         attendees: event.attendees?.map(attendee => attendee.email),
         description: event.description,
-        location: event.location
+        location: event.location,
+        recurringEventId: event.recurringEventId // Include recurring event ID
       })) || [];
 
       this.logger.info(`✅ Retrieved ${events.length} calendar events`);
@@ -209,6 +327,7 @@ export class CalendarService {
       this.logger.info(`📅 Updating calendar event: ${request.eventId}`);
       
       const updates: any = {};
+      const timeZone = request.timeZone || process.env.DEFAULT_TIMEZONE || 'Asia/Jerusalem';
       
       if (request.summary) updates.summary = request.summary;
       if (request.description) updates.description = request.description;
@@ -217,14 +336,14 @@ export class CalendarService {
       if (request.start) {
         updates.start = {
           dateTime: request.start,
-          timeZone: process.env.DEFAULT_TIMEZONE || 'Asia/Jerusalem'
+          timeZone
         };
       }
       
       if (request.end) {
         updates.end = {
           dateTime: request.end,
-          timeZone: process.env.DEFAULT_TIMEZONE || 'Asia/Jerusalem'
+          timeZone
         };
       }
       
@@ -232,8 +351,15 @@ export class CalendarService {
         updates.attendees = request.attendees.map((email: string) => ({ email }));
       }
 
-      const response = await calendar.events.patch({
-        calendarId: this.calendarId,
+      if (request.reminders) {
+        updates.reminders = request.reminders;
+      }
+
+      const calendarClient = this.buildCalendar();
+      const calendarId = this.resolveCalendarId(request.calendarId);
+
+      const response = await calendarClient.events.patch({
+        calendarId,
         eventId: request.eventId,
         requestBody: updates
       });
@@ -258,9 +384,12 @@ export class CalendarService {
     try {
       this.logger.info(`📅 Deleting calendar event: ${eventId}`);
       
-      await calendar.events.delete({
-        calendarId: this.calendarId,
-        eventId: eventId
+      const calendarClient = this.buildCalendar();
+      const calendarId = this.resolveCalendarId();
+
+      await calendarClient.events.delete({
+        calendarId,
+        eventId
       });
 
       this.logger.info(`✅ Event deleted: ${eventId}`);
@@ -282,9 +411,12 @@ export class CalendarService {
     try {
       this.logger.info(`📅 Getting calendar event: ${eventId}`);
       
-      const response = await calendar.events.get({
-        calendarId: this.calendarId,
-        eventId: eventId
+      const calendarClient = this.buildCalendar();
+      const calendarId = this.resolveCalendarId();
+
+      const response = await calendarClient.events.get({
+        calendarId,
+        eventId
       });
 
       const event = {
@@ -294,7 +426,8 @@ export class CalendarService {
         end: response.data.end?.dateTime || response.data.end?.date,
         attendees: response.data.attendees?.map(attendee => attendee.email),
         description: response.data.description,
-        location: response.data.location
+        location: response.data.location,
+        recurringEventId: response.data.recurringEventId // Include recurring event ID
       };
 
       this.logger.info(`✅ Retrieved calendar event: ${eventId}`);
@@ -349,7 +482,7 @@ export class CalendarService {
       }
 
       // Create the recurring event
-      const event = {
+      const event: any = {
         summary: request.summary,
         start: {
           dateTime: startDate.toISOString(),
@@ -364,10 +497,16 @@ export class CalendarService {
         recurrence: [rrule]
       };
 
+      if (request.reminders) {
+        event.reminders = request.reminders;
+      }
+
       this.logger.info(`Creating recurring event with RRULE: ${rrule}`);
 
-      const response = await calendar.events.insert({
-        calendarId: this.calendarId,
+      const calendarClient = this.buildCalendar();
+      const calendarId = this.resolveCalendarId();
+      const response = await calendarClient.events.insert({
+        calendarId,
         requestBody: event
       });
 
@@ -402,8 +541,11 @@ export class CalendarService {
     try {
       this.logger.info(`📅 Getting instances of recurring event: ${recurringEventId}`);
       
-      const response = await calendar.events.instances({
-        calendarId: this.calendarId,
+      const calendarClient = this.buildCalendar();
+      const calendarId = this.resolveCalendarId();
+
+      const response = await calendarClient.events.instances({
+        calendarId,
         eventId: recurringEventId
       });
 
@@ -439,9 +581,12 @@ export class CalendarService {
       this.logger.info(`📅 Truncating recurring event: ${eventId} until ${until}`);
       
       // Get the current event
-      const eventResponse = await calendar.events.get({
-        calendarId: this.calendarId,
-        eventId: eventId
+      const calendarClient = this.buildCalendar();
+      const calendarId = this.resolveCalendarId();
+
+      const eventResponse = await calendarClient.events.get({
+        calendarId,
+        eventId
       });
 
       const currentEvent = eventResponse.data;
@@ -465,9 +610,9 @@ export class CalendarService {
       });
 
       // Update the event
-      const response = await calendar.events.patch({
-        calendarId: this.calendarId,
-        eventId: eventId,
+      const response = await calendarClient.events.patch({
+        calendarId,
+        eventId,
         requestBody: {
           recurrence: updatedRecurrence
         }
@@ -496,10 +641,13 @@ export class CalendarService {
     try {
       this.logger.info(`🔍 Checking for conflicts between ${timeMin} and ${timeMax}`);
 
-      const response = await calendar.events.list({
-        calendarId: this.calendarId,
-        timeMin: timeMin,
-        timeMax: timeMax,
+      const calendarClient = this.buildCalendar();
+      const calendarId = this.resolveCalendarId();
+
+      const response = await calendarClient.events.list({
+        calendarId,
+        timeMin,
+        timeMax,
         singleEvents: true,
         orderBy: 'startTime'
       });

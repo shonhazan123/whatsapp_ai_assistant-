@@ -26,7 +26,7 @@ export async function getConversationHistory(
       `SELECT cm.role, cm.content, cm.created_at 
        FROM conversation_memory cm
        JOIN users u ON cm.user_id = u.id
-       WHERE u.phone = $1 
+       WHERE u.whatsapp_number = $1 
          AND cm.created_at > NOW() - INTERVAL '${MAX_MESSAGE_AGE_HOURS} hours'
        ORDER BY cm.created_at DESC 
        LIMIT $2`,
@@ -71,7 +71,7 @@ export async function saveMessage(
        WHERE id IN (
          SELECT cm.id FROM conversation_memory cm
          JOIN users u ON cm.user_id = u.id
-         WHERE u.phone = $1 
+         WHERE u.whatsapp_number = $1 
          ORDER BY cm.created_at DESC 
          OFFSET 50
        )`,
@@ -106,7 +106,7 @@ export async function getLastResolutionContext(userPhone: string): Promise<any |
       `SELECT cm.content
        FROM conversation_memory cm
        JOIN users u ON cm.user_id = u.id
-       WHERE u.phone = $1 
+       WHERE u.whatsapp_number = $1 
        AND cm.role = 'system'
        ORDER BY cm.created_at DESC 
        LIMIT 20`,
@@ -136,7 +136,7 @@ export async function clearConversationHistory(userPhone: string): Promise<void>
   try {
     await query(
       `DELETE FROM conversation_memory 
-       WHERE user_id IN (SELECT id FROM users WHERE phone = $1)`,
+       WHERE user_id IN (SELECT id FROM users WHERE whatsapp_number = $1)`,
       [userPhone]
     );
     logger.info(`Cleared conversation history for ${userPhone}`);
@@ -162,7 +162,7 @@ export async function getConversationStats(userPhone: string): Promise<{
          MAX(cm.created_at) as newest
        FROM conversation_memory cm
        JOIN users u ON cm.user_id = u.id
-       WHERE u.phone = $1`,
+       WHERE u.whatsapp_number = $1`,
       [userPhone]
     );
 

@@ -1,6 +1,11 @@
 import { query } from '../../config/database';
+import { RequestContext } from '../../core/context/RequestContext';
+import { RequestUserContext } from '../../types/UserContext';
 import { logger } from '../../utils/logger';
+import { OpenAIService } from '../ai/OpenAIService';
+import { CalendarService } from '../calendar/CalendarService';
 import { ReminderRecurrence, Task } from '../database/TaskService';
+import { UserService } from '../database/UserService';
 import { sendWhatsAppMessage } from '../whatsapp';
 
 interface User {
@@ -15,7 +20,17 @@ interface TaskWithUser extends Task {
 }
 
 export class ReminderService {
-  constructor(private loggerInstance: any = logger) {}
+  private calendarService: CalendarService;
+  private userService: UserService;
+
+  constructor(
+    private loggerInstance: any = logger,
+    private openaiService?: OpenAIService
+  ) {
+    this.openaiService = openaiService || new OpenAIService(this.loggerInstance);
+    this.calendarService = new CalendarService(this.loggerInstance);
+    this.userService = new UserService(this.loggerInstance);
+  }
 
   /**
    * Send reminders for tasks that are due soon (both one-time and recurring)
@@ -31,7 +46,8 @@ export class ReminderService {
       // Send one-time reminders
       for (const task of oneTimeReminders) {
         try {
-          const message = this.formatReminderMessage(task);
+          const rawData = this.buildOneTimeReminderData(task);
+          const message = await this.enhanceMessageWithAI(rawData);
           await sendWhatsAppMessage(task.phone, message);
           this.loggerInstance.info(`✅ Sent one-time reminder to ${task.phone}: ${task.text}`);
           
@@ -68,7 +84,8 @@ export class ReminderService {
           }
 
           // Send reminder
-          const message = this.formatRecurringReminderMessage(task);
+          const rawData = this.buildRecurringReminderData(task);
+          const message = await this.enhanceMessageWithAI(rawData);
           await sendWhatsAppMessage(task.phone, message);
           this.loggerInstance.info(`✅ Sent recurring reminder to ${task.phone}: ${task.text}`);
 
@@ -91,32 +108,40 @@ export class ReminderService {
   }
 
   /**
-   * Send daily digest for today's tasks at 8:00 AM
+   * Send daily digest for today's tasks at specified hour
    * Excludes recurring reminders (they have no due_date)
    */
-  async sendMorningDigest(): Promise<void> {
+  async sendMorningDigest(morningDigestHour: number = 8): Promise<void> {
     try {
-      this.loggerInstance.info('📋 Sending morning digest...');
+      this.loggerInstance.info(`📋 Sending morning digest (checking for hour ${morningDigestHour})...`);
 
       const users = await this.getAllUsers();
 
       for (const user of users) {
         try {
-          // Check if it's 8 AM in user's timezone
+          // Check if it's the specified hour in user's timezone
           const userTime = this.getCurrentTimeInTimezone(user.timezone);
           const hour = userTime.getHours();
           const minute = userTime.getMinutes();
 
-          // Only send if it's 8 AM (within 0-10 minute window)
-          if (hour === 8 && minute < 10) {
-            const tasks = await this.getTodaysTasks(user.id, user.timezone);
+          // Only send if it's the specified hour (within 0-10 minute window)
+          if (hour === morningDigestHour && minute < 10) {
+            const plannedTasks = await this.getTodaysTasks(user.id, user.timezone);
+            const unplannedTasks = await this.getUnplannedTasks(user.id);
+            const calendarEvents = await this.getTodaysCalendarEvents(user.id, user.timezone);
             
-            if (tasks.length > 0) {
-              const message = this.formatDailyDigest(tasks, user);
+            let message: string;
+            if (plannedTasks.length > 0 || unplannedTasks.length > 0 || calendarEvents.length > 0) {
+              const rawData = this.buildDailyDigestData(plannedTasks, unplannedTasks, calendarEvents, user);
+              message = await this.enhanceMessageWithAI(rawData);
               await sendWhatsAppMessage(user.phone, message);
-              this.loggerInstance.info(`✅ Sent morning digest to ${user.phone} with ${tasks.length} tasks`);
+              this.loggerInstance.info(`✅ Sent morning digest to ${user.phone} with ${plannedTasks.length} planned tasks, ${unplannedTasks.length} unplanned tasks, and ${calendarEvents.length} calendar events`);
             } else {
-              this.loggerInstance.debug(`No tasks for today for user ${user.phone}`);
+              // No tasks or events - send empty digest message
+              const rawData = this.buildEmptyDigestData(user);
+              message = await this.enhanceMessageWithAI(rawData);
+              await sendWhatsAppMessage(user.phone, message);
+              this.loggerInstance.info(`✅ Sent empty morning digest to ${user.phone}`);
             }
           }
         } catch (error) {
@@ -134,7 +159,7 @@ export class ReminderService {
    */
   private async getOneTimeReminders(): Promise<TaskWithUser[]> {
     const result = await query(
-      `SELECT t.*, u.phone, u.timezone
+      `SELECT t.*, u.whatsapp_number AS phone, u.timezone
        FROM tasks t
        JOIN users u ON t.user_id = u.id
        WHERE t.due_date IS NOT NULL
@@ -153,7 +178,7 @@ export class ReminderService {
    */
   private async getRecurringReminders(): Promise<TaskWithUser[]> {
     const result = await query(
-      `SELECT t.*, u.phone, u.timezone
+      `SELECT t.*, u.whatsapp_number AS phone, u.timezone
        FROM tasks t
        JOIN users u ON t.user_id = u.id
        WHERE t.reminder_recurrence IS NOT NULL
@@ -167,6 +192,7 @@ export class ReminderService {
 
   /**
    * Get today's tasks for a user (excluding recurring reminders)
+   * Recurring tasks have their own reminder system and should not appear in daily digest
    */
   private async getTodaysTasks(userId: string, timezone: string): Promise<Task[]> {
     const result = await query(
@@ -174,10 +200,28 @@ export class ReminderService {
        FROM tasks t
        WHERE t.user_id = $1
          AND t.due_date IS NOT NULL
-         AND t.reminder_recurrence IS NULL
+         AND t.reminder_recurrence IS NULL  -- Exclude recurring tasks (they have their own reminders)
          AND DATE(t.due_date AT TIME ZONE $2) = CURRENT_DATE
        ORDER BY t.due_date, t.category`,
       [userId, timezone]
+    );
+    return result.rows;
+  }
+
+  /**
+   * Get unplanned tasks (no due date) for a user
+   * These are tasks that haven't been scheduled yet
+   */
+  private async getUnplannedTasks(userId: string): Promise<Task[]> {
+    const result = await query(
+      `SELECT t.*
+       FROM tasks t
+       WHERE t.user_id = $1
+         AND t.due_date IS NULL
+         AND t.reminder_recurrence IS NULL  -- Exclude recurring tasks
+         AND t.completed = FALSE
+       ORDER BY t.created_at DESC, t.category`,
+      [userId]
     );
     return result.rows;
   }
@@ -187,7 +231,7 @@ export class ReminderService {
    */
   private async getAllUsers(): Promise<User[]> {
     const result = await query(
-      'SELECT id, phone, COALESCE(timezone, \'Asia/Jerusalem\') as timezone FROM users'
+      'SELECT id, whatsapp_number AS phone, COALESCE(timezone, \'Asia/Jerusalem\') as timezone FROM users'
     );
     return result.rows;
   }
@@ -309,28 +353,41 @@ export class ReminderService {
   }
 
   /**
-   * Format one-time reminder message
+   * Enhance message using AI
    */
-  private formatReminderMessage(task: TaskWithUser): string {
+  private async enhanceMessageWithAI(rawData: string): Promise<string> {
+    try {
+      return await this.openaiService!.generateResponse(rawData);
+    } catch (error) {
+      this.loggerInstance.error('Failed to enhance message with AI, using fallback:', error);
+      // Return raw data as fallback
+      return rawData;
+    }
+  }
+
+  /**
+   * Build data structure for one-time reminder
+   */
+  private buildOneTimeReminderData(task: TaskWithUser): string {
     const dueDate = task.due_date ? new Date(task.due_date).toLocaleString('en-US', {
       timeZone: task.timezone || 'Asia/Jerusalem',
       dateStyle: 'medium',
       timeStyle: 'short'
     }) : 'N/A';
     
-    let message = `🔔 Reminder\n\nTask: ${task.text}\nDue: ${dueDate}`;
+    let data = `Task: ${task.text}\nDue: ${dueDate}`;
     
     if (task.category) {
-      message += `\nCategory: ${task.category}`;
+      data += `\nCategory: ${task.category}`;
     }
     
-    return message;
+    return data;
   }
 
   /**
-   * Format recurring reminder message
+   * Build data structure for recurring reminder
    */
-  private formatRecurringReminderMessage(task: TaskWithUser): string {
+  private buildRecurringReminderData(task: TaskWithUser): string {
     let recurrenceInfo = 'Recurring reminder';
     
     if (task.reminder_recurrence) {
@@ -359,52 +416,161 @@ export class ReminderService {
       }
     }
     
-    let message = `🔔 Reminder\n\n${task.text}\n${recurrenceInfo}`;
+    let data = `Task: ${task.text}\nRecurrence: ${recurrenceInfo}`;
     
     if (task.category) {
-      message += `\nCategory: ${task.category}`;
+      data += `\nCategory: ${task.category}`;
     }
     
-    return message;
+    return data;
   }
 
   /**
-   * Format daily digest message
+   * Get today's calendar events for a user
    */
-  private formatDailyDigest(tasks: Task[], user: User): string {
+  private async getTodaysCalendarEvents(userId: string, timezone: string): Promise<any[]> {
+    try {
+      // Get user record and Google tokens
+      const userRecord = await this.userService.findById(userId);
+      if (!userRecord) {
+        this.loggerInstance.warn(`User ${userId} not found for calendar events`);
+        return [];
+      }
+
+      const googleTokens = await this.userService.getGoogleTokens(userId);
+      if (!googleTokens || !googleTokens.access_token) {
+        // User doesn't have Google Calendar connected
+        return [];
+      }
+
+      // Calculate today's date range in user's timezone
+      const now = new Date();
+      const userDate = new Date(now.toLocaleString('en-US', { timeZone: timezone }));
+      const startOfDay = new Date(userDate);
+      startOfDay.setHours(0, 0, 0, 0);
+      const endOfDay = new Date(userDate);
+      endOfDay.setHours(23, 59, 59, 999);
+
+      // Convert to ISO strings
+      const timeMin = startOfDay.toISOString();
+      const timeMax = endOfDay.toISOString();
+
+      // Build RequestUserContext
+      const context: RequestUserContext = {
+        user: userRecord,
+        planType: userRecord.plan_type,
+        whatsappNumber: userRecord.whatsapp_number,
+        capabilities: {
+          database: true,
+          calendar: !!googleTokens,
+          gmail: !!googleTokens
+        },
+        googleTokens: googleTokens,
+        googleConnected: !!googleTokens
+      };
+
+      // Get calendar events within RequestContext
+      const eventsResponse = await RequestContext.run(context, async () => {
+        return await this.calendarService.getEvents({
+          timeMin,
+          timeMax
+        });
+      });
+
+      if (eventsResponse.success && eventsResponse.data?.events) {
+        return eventsResponse.data.events;
+      }
+
+      return [];
+    } catch (error) {
+      this.loggerInstance.error(`Failed to get calendar events for user ${userId}:`, error);
+      // Return empty array on error - don't block digest sending
+      return [];
+    }
+  }
+
+  /**
+   * Build data structure for daily digest with tasks and calendar events
+   */
+  private buildDailyDigestData(plannedTasks: Task[], unplannedTasks: Task[], calendarEvents: any[], user: User): string {
     const today = new Date().toLocaleDateString('en-US', {
       timeZone: user.timezone || 'Asia/Jerusalem',
       dateStyle: 'long'
     });
     
-    const incomplete = tasks.filter(t => !t.completed);
-    const completed = tasks.filter(t => t.completed);
+    const incomplete = plannedTasks.filter(t => !t.completed);
+    const completed = plannedTasks.filter(t => t.completed);
     
-    let message = `📋 Your Tasks for Today (${today})\n\n`;
+    let data = `Today's Schedule - ${today}\n\n`;
     
-    if (incomplete.length > 0) {
-      message += `📌 Incomplete:\n`;
-      incomplete.forEach(task => {
-        const time = task.due_date ? new Date(task.due_date).toLocaleTimeString('en-US', {
+    // Calendar Events
+    if (calendarEvents.length > 0) {
+      data += `Calendar Events:\n`;
+      calendarEvents.forEach(event => {
+        const startTime = event.start ? new Date(event.start).toLocaleTimeString('en-US', {
           timeZone: user.timezone || 'Asia/Jerusalem',
           timeStyle: 'short'
         }) : '';
-        message += `- ${task.text}${time ? ` at ${time}` : ''}\n`;
+        const endTime = event.end ? new Date(event.end).toLocaleTimeString('en-US', {
+          timeZone: user.timezone || 'Asia/Jerusalem',
+          timeStyle: 'short'
+        }) : '';
+        data += `- ${event.summary || 'Untitled Event'}${startTime ? ` from ${startTime}` : ''}${endTime ? ` to ${endTime}` : ''}\n`;
+        if (event.location) {
+          data += `  Location: ${event.location}\n`;
+        }
       });
-      message += `\n`;
+      data += `\n`;
     }
     
-    if (completed.length > 0) {
-      message += `✅ Completed:\n`;
-      completed.forEach(task => {
-        message += `- ${task.text}\n`;
-      });
-      message += `\n`;
+    // Planned tasks (with due date)
+    if (incomplete.length > 0 || completed.length > 0) {
+      data += `Tasks:\n`;
+      
+      if (incomplete.length > 0) {
+        data += `Incomplete:\n`;
+        incomplete.forEach(task => {
+          const time = task.due_date ? new Date(task.due_date).toLocaleTimeString('en-US', {
+            timeZone: user.timezone || 'Asia/Jerusalem',
+            timeStyle: 'short'
+          }) : '';
+          data += `- ${task.text}${time ? ` at ${time}` : ''}\n`;
+        });
+        data += `\n`;
+      }
+      
+      if (completed.length > 0) {
+        data += `Completed:\n`;
+        completed.forEach(task => {
+          data += `- ${task.text}\n`;
+        });
+        data += `\n`;
+      }
+      
+      data += `Total: ${incomplete.length} incomplete, ${completed.length} completed\n\n`;
     }
     
-    message += `Total: ${incomplete.length} incomplete, ${completed.length} completed`;
+    // Unplanned tasks (no due date)
+    if (unplannedTasks.length > 0) {
+      data += `Unplanned Tasks (these are tasks you didn't plan):\n`;
+      unplannedTasks.forEach(task => {
+        data += `- ${task.text}\n`;
+      });
+    }
     
-    return message;
+    return data;
+  }
+
+  /**
+   * Build data structure for empty daily digest
+   */
+  private buildEmptyDigestData(user: User): string {
+    const today = new Date().toLocaleDateString('en-US', {
+      timeZone: user.timezone || 'Asia/Jerusalem',
+      dateStyle: 'long'
+    });
+    
+    return `Today's Schedule - ${today}\n\nNo tasks or events scheduled for today.`;
   }
 
   /**

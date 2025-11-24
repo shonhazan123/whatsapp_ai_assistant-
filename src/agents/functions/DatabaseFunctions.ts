@@ -1,4 +1,5 @@
 import { IFunction, IResponse } from '../../core/interfaces/IAgent';
+import { ConversationWindow, RecentTaskSnapshot } from '../../core/memory/ConversationWindow';
 import { QueryResolver } from '../../core/orchestrator/QueryResolver';
 import { ContactService } from '../../services/database/ContactService';
 import { ListService } from '../../services/database/ListService';
@@ -71,6 +72,26 @@ export class TaskFunction implements IFunction {
         },
         required: ['type', 'time']
       },
+      reminderDetails: {
+        type: 'object',
+        description: 'Structured reminder payload containing dueDate/reminder/reminderRecurrence information',
+        properties: {
+          dueDate: { type: 'string', description: 'ISO date for reminder target (also used as dueDate)' },
+          reminder: { type: 'string', description: 'Reminder interval (e.g., "30 minutes", "2 hours")' },
+          reminderRecurrence: {
+            type: 'object',
+            description: 'Recurring reminder payload',
+            properties: {
+              type: { type: 'string', enum: ['daily', 'weekly', 'monthly'] },
+              time: { type: 'string' },
+              days: { type: 'array', items: { type: 'number' } },
+              dayOfMonth: { type: 'number' },
+              until: { type: 'string' },
+              timezone: { type: 'string' }
+            }
+          }
+        }
+      },
       filters: {
         type: 'object',
         properties: {
@@ -98,6 +119,24 @@ export class TaskFunction implements IFunction {
             category: { type: 'string' },
             dueDate: { type: 'string' },
             reminder: { type: 'string' },
+            reminderDetails: {
+              type: 'object',
+              properties: {
+                dueDate: { type: 'string' },
+                reminder: { type: 'string' },
+                reminderRecurrence: {
+                  type: 'object',
+                  properties: {
+                    type: { type: 'string', enum: ['daily', 'weekly', 'monthly'] },
+                    time: { type: 'string' },
+                    days: { type: 'array', items: { type: 'number' } },
+                    dayOfMonth: { type: 'number' },
+                    until: { type: 'string' },
+                    timezone: { type: 'string' }
+                  }
+                }
+              }
+            },
             reminderRecurrence: {
               type: 'object',
               properties: {
@@ -130,6 +169,24 @@ export class TaskFunction implements IFunction {
             category: { type: 'string' },
             dueDate: { type: 'string' },
             reminder: { type: 'string' },
+            reminderDetails: {
+              type: 'object',
+              properties: {
+                dueDate: { type: 'string' },
+                reminder: { type: 'string' },
+                reminderRecurrence: {
+                  type: 'object',
+                  properties: {
+                    type: { type: 'string', enum: ['daily', 'weekly', 'monthly'] },
+                    time: { type: 'string' },
+                    days: { type: 'array', items: { type: 'number' } },
+                    dayOfMonth: { type: 'number' },
+                    until: { type: 'string' },
+                    timezone: { type: 'string' }
+                  }
+                }
+              }
+            },
             reminderRecurrence: {
               type: 'object',
               properties: {
@@ -144,7 +201,7 @@ export class TaskFunction implements IFunction {
             },
             completed: { type: 'boolean' }
           },
-          required: ['taskId']
+          required: []
         }
       }
     },
@@ -153,8 +210,35 @@ export class TaskFunction implements IFunction {
 
   constructor(
     private taskService: TaskService,
-    private logger: any = logger
+    private logger: any = logger,
+    private conversationWindow: ConversationWindow = ConversationWindow.getInstance()
   ) {}
+
+  private applyReminderDetails(target: Record<string, any>, reminderDetails?: any): void {
+    if (!reminderDetails || typeof reminderDetails !== 'object') {
+      return;
+    }
+
+    if (reminderDetails.dueDate !== undefined) {
+      target.dueDate = reminderDetails.dueDate;
+    }
+
+    if (reminderDetails.reminder !== undefined) {
+      target.reminder = reminderDetails.reminder;
+    }
+
+    if (reminderDetails.reminderRecurrence !== undefined) {
+      target.reminderRecurrence = reminderDetails.reminderRecurrence;
+    }
+  }
+
+  private storeRecentTasks(userPhone: string, tasks: RecentTaskSnapshot[] | RecentTaskSnapshot | null | undefined): void {
+    if (!tasks) {
+      return;
+    }
+    const taskList = Array.isArray(tasks) ? tasks : [tasks];
+    this.conversationWindow.pushRecentTasks(userPhone, taskList);
+  }
 
   async execute(args: any, userId: string): Promise<IResponse> {
     try {
@@ -168,19 +252,46 @@ export class TaskFunction implements IFunction {
 
       switch (operation) {
         case 'create':
-          return await this.taskService.create({
-            userPhone: userId,
-            data: params
-          });
+          {
+            const payload = { ...params };
+            this.applyReminderDetails(payload, (payload as any).reminderDetails);
+            delete (payload as any).reminderDetails;
+
+            const response = await this.taskService.create({
+              userPhone: userId,
+              data: payload
+            });
+
+            if (response?.success && response.data) {
+              this.storeRecentTasks(userId, response.data);
+            }
+
+            return response;
+          }
 
         case 'createMultiple':
           if (!params.tasks || !Array.isArray(params.tasks) || params.tasks.length === 0) {
             return { success: false, error: 'Tasks array is required for createMultiple operation' };
           }
-          return await this.taskService.createMultiple({
-            userPhone: userId,
-            items: params.tasks
-          });
+          {
+            const items = params.tasks.map((task: any) => {
+              const taskPayload = { ...task };
+              this.applyReminderDetails(taskPayload, taskPayload.reminderDetails);
+              delete taskPayload.reminderDetails;
+              return taskPayload;
+            });
+
+            const response = await this.taskService.createMultiple({
+              userPhone: userId,
+              items
+            });
+
+            if (response?.success && response.data?.created) {
+              this.storeRecentTasks(userId, response.data.created);
+            }
+
+            return response;
+          }
 
         case 'get':
           {
@@ -191,10 +302,16 @@ export class TaskFunction implements IFunction {
             if (!resolved.id) {
               return { success: false, error: 'Task not found (provide taskId or recognizable text)' };
             }
-            return await this.taskService.getById({
+            const response = await this.taskService.getById({
               userPhone: userId,
               id: resolved.id
             });
+
+            if (response?.success && response.data) {
+              this.storeRecentTasks(userId, response.data);
+            }
+
+            return response;
           }
 
         case 'getAll':
@@ -214,11 +331,21 @@ export class TaskFunction implements IFunction {
             if (!resolved.id) {
               return { success: false, error: 'Task not found (provide taskId or recognizable text)' };
             }
-            return await this.taskService.update({
+            const payload = { ...params };
+            this.applyReminderDetails(payload, (payload as any).reminderDetails);
+            delete (payload as any).reminderDetails;
+
+            const response = await this.taskService.update({
               userPhone: userId,
               id: resolved.id,
-              data: params
+              data: payload
             });
+
+            if (response?.success && response.data) {
+              this.storeRecentTasks(userId, response.data);
+            }
+
+            return response;
           }
 
         case 'updateMultiple':
@@ -243,10 +370,14 @@ export class TaskFunction implements IFunction {
                 updateErrors.push({ taskText: update.text, error: 'Task not found' });
                 continue;
               }
+              const updatePayload = { ...update };
+              this.applyReminderDetails(updatePayload, (updatePayload as any).reminderDetails);
+              delete (updatePayload as any).reminderDetails;
+
               const result = await this.taskService.update({
                 userPhone: userId,
                 id: resolvedId,
-                data: update
+                data: updatePayload
               });
               if (result.success) {
                 updateResults.push(result.data);
@@ -257,6 +388,11 @@ export class TaskFunction implements IFunction {
               updateErrors.push({ taskId: update.taskId, error: error instanceof Error ? error.message : 'Unknown error' });
             }
           }
+
+          if (updateResults.length > 0) {
+            this.storeRecentTasks(userId, updateResults);
+          }
+
           return {
             success: updateErrors.length === 0,
             data: {
@@ -275,10 +411,24 @@ export class TaskFunction implements IFunction {
             if (!resolved.id) {
               return { success: false, error: 'Task not found (provide taskId or recognizable text)' };
             }
-            return await this.taskService.delete({
+            const response = await this.taskService.delete({
               userPhone: userId,
               id: resolved.id
             });
+
+            if (response?.success && response.data?.id) {
+              // Remove deleted task from recent context
+              const remaining = this.conversationWindow
+                .getRecentTasks(userId)
+                .filter(task => task.id !== response.data.id && task.text !== response.data.text);
+              if (remaining.length === 0) {
+                this.conversationWindow.clearRecentTasks(userId);
+              } else {
+                this.conversationWindow.pushRecentTasks(userId, remaining, { replace: true });
+              }
+            }
+
+            return response;
           }
 
         case 'deleteMultiple':
@@ -316,6 +466,19 @@ export class TaskFunction implements IFunction {
               deleteErrors.push({ taskId, error: error instanceof Error ? error.message : 'Unknown error' });
             }
             }
+
+            if (deleteResults.length > 0) {
+              const deletedIds = new Set(deleteResults.map((task: any) => task.id));
+              const remaining = this.conversationWindow
+                .getRecentTasks(userId)
+                .filter(task => !deletedIds.has(task.id || ''));
+              if (remaining.length === 0) {
+                this.conversationWindow.clearRecentTasks(userId);
+              } else {
+                this.conversationWindow.pushRecentTasks(userId, remaining, { replace: true });
+              }
+            }
+
             return {
               success: deleteErrors.length === 0,
               data: {
@@ -335,11 +498,17 @@ export class TaskFunction implements IFunction {
             if (!resolved.id) {
               return { success: false, error: 'Task not found (provide taskId or recognizable text)' };
             }
-            return await this.taskService.complete({
+            const response = await this.taskService.complete({
               userPhone: userId,
               id: resolved.id,
               data: {}
             });
+
+            if (response?.success && response.data) {
+              this.storeRecentTasks(userId, response.data);
+            }
+
+            return response;
           }
 
         case 'deleteAll':

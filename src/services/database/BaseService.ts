@@ -11,6 +11,13 @@ export class DuplicateEntryError extends Error {
   }
 }
 
+export class InvalidIdentifierError extends Error {
+  constructor(public readonly detail?: string) {
+    super('Invalid identifier');
+    this.name = 'InvalidIdentifierError';
+  }
+}
+
 export abstract class BaseService {
   constructor(protected logger: any = logger) {}
 
@@ -22,6 +29,10 @@ export abstract class BaseService {
       if (error?.code === '23505') {
         this.logger.warn?.('Duplicate key violation', { constraint: error.constraint, detail: error.detail });
         throw new DuplicateEntryError(error.constraint, error.detail);
+      }
+      if (error?.code === '22P02') {
+        this.logger.warn?.('Invalid identifier supplied to query', { detail: error.detail });
+        throw new InvalidIdentifierError(error.detail);
       }
       this.logger.error(`Database query error: ${sql}`, error);
       throw new Error(`Database error: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -54,6 +65,16 @@ export abstract class BaseService {
       success: false,
       error
     };
+  }
+
+  protected async resolveUserId(userId: string | undefined, userPhone: string): Promise<string> {
+    if (userId) {
+      return userId;
+    }
+    if (!userPhone) {
+      throw new Error('User identifier is required');
+    }
+    return this.ensureUserExists(userPhone);
   }
 
   protected validateRequiredFields(data: any, requiredFields: string[]): string | null {

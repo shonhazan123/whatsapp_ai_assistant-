@@ -1,5 +1,12 @@
 export interface IAgent {
-  processRequest(message: string, userPhone: string): Promise<string>;
+  processRequest(
+    message: string, 
+    userPhone: string,
+    optionsOrContext?: {
+      whatsappMessageId?: string;
+      replyToMessageId?: string;
+    } | any[]
+  ): Promise<string>;
   getSystemPrompt(): string;
   getFunctions(): FunctionDefinition[];
 }
@@ -60,6 +67,7 @@ export interface ResolutionResult<T = any> {
 
 export interface BaseRequest {
   userPhone: string;
+  userId?: string;
 }
 
 export interface CreateRequest extends BaseRequest {

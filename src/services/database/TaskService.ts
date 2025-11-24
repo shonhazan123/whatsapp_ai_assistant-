@@ -2,7 +2,7 @@ import { CreateMultipleRequest, CreateRequest, DeleteRequest, GetRequest, IRespo
 import { BulkPatch, TaskFilter } from '../../core/types/Filters';
 import { SQLCompiler } from '../../utils/SQLCompiler';
 import { logger } from '../../utils/logger';
-import { BaseService, DuplicateEntryError } from './BaseService';
+import { BaseService, DuplicateEntryError, InvalidIdentifierError } from './BaseService';
 
 export interface ReminderRecurrence {
   type: 'daily' | 'weekly' | 'monthly';
@@ -64,31 +64,6 @@ export class TaskService extends BaseService {
     super(loggerInstance);
   }
 
-  /**
-   * Validate reminder fields - ensure only one reminder type is set
-   */
-  private validateReminderFields(data: any): string | null {
-    const hasOneTimeReminder = (data.dueDate && data.reminder !== undefined) || data.reminder !== undefined;
-    const hasRecurringReminder = data.reminderRecurrence !== undefined && data.reminderRecurrence !== null;
-
-    if (hasOneTimeReminder && hasRecurringReminder) {
-      return 'Cannot have both one-time reminder (dueDate+reminder) and recurring reminder (reminderRecurrence). Choose one.';
-    }
-
-    if (hasRecurringReminder && data.dueDate) {
-      return 'Recurring reminders cannot have a dueDate. Remove dueDate when creating a recurring reminder.';
-    }
-
-    if (hasRecurringReminder && data.reminder) {
-      return 'Recurring reminders cannot have a reminder interval. Remove reminder when creating a recurring reminder.';
-    }
-
-    return null;
-  }
-
-  /**
-   * Calculate default reminder (30 minutes) if not specified
-   */
   private calculateDefaultReminder(dueDate?: string): string | null {
     if (dueDate) {
       return '30 minutes';
@@ -96,6 +71,76 @@ export class TaskService extends BaseService {
     return null;
   }
 
+  private normalizeReminderPayload(
+    data: any,
+    options: { allowDefaultReminder?: boolean } = {}
+  ): {
+    dueDate?: string;
+    reminder?: string | null;
+    reminderRecurrence?: ReminderRecurrence | null;
+    validationError?: string | null;
+    nextReminderAt?: string | null;
+  } {
+    const result: {
+      dueDate?: string;
+      reminder?: string | null;
+      reminderRecurrence?: ReminderRecurrence | null;
+      validationError?: string | null;
+      nextReminderAt?: string | null;
+    } = {
+      dueDate: data.dueDate,
+      reminder: data.reminder ?? null,
+      reminderRecurrence: data.reminderRecurrence ?? null
+    };
+
+    const hasOneTimeReminder =
+      (result.dueDate && result.reminder !== undefined && result.reminder !== null) ||
+      (result.reminder !== undefined && result.reminder !== null);
+    const hasRecurringReminder =
+      result.reminderRecurrence !== undefined && result.reminderRecurrence !== null;
+
+    if (hasOneTimeReminder && hasRecurringReminder) {
+      result.validationError =
+        'Cannot have both one-time reminder (dueDate+reminder) and recurring reminder (reminderRecurrence). Choose one.';
+      return result;
+    }
+
+    if (hasRecurringReminder && result.dueDate) {
+      result.validationError =
+        'Recurring reminders cannot have a dueDate. Remove dueDate when creating a recurring reminder.';
+      return result;
+    }
+
+    if (hasRecurringReminder && result.reminder) {
+      result.validationError =
+        'Recurring reminders cannot have a reminder interval. Remove reminder when creating a recurring reminder.';
+      return result;
+    }
+
+    if (
+      options.allowDefaultReminder !== false &&
+      !hasOneTimeReminder &&
+      !hasRecurringReminder &&
+      result.dueDate
+    ) {
+      result.reminder = this.calculateDefaultReminder(result.dueDate);
+    }
+
+    try {
+      if (result.dueDate && result.reminder && !hasRecurringReminder) {
+        result.nextReminderAt = this.calculateOneTimeReminderAt(result.dueDate, result.reminder);
+      } else if (result.reminderRecurrence) {
+        result.nextReminderAt = this.calculateNextReminderAt(result.reminderRecurrence);
+      } else {
+        result.nextReminderAt = null;
+      }
+    } catch (error) {
+      result.validationError =
+        error instanceof Error ? error.message : 'Failed to calculate next reminder time';
+    }
+
+    return result;
+  }
   /**
    * Calculate next_reminder_at for one-time reminders
    * Formula: next_reminder_at = due_date - reminder_interval
@@ -266,7 +311,7 @@ export class TaskService extends BaseService {
     let userId: string | undefined;
     let data: any;
     try {
-      userId = await this.ensureUserExists(request.userPhone);
+      userId = await this.resolveUserId(request.userId, request.userPhone);
       data = this.sanitizeInput(request.data);
 
       const validation = this.validateRequiredFields(data, ['text']);
@@ -274,43 +319,9 @@ export class TaskService extends BaseService {
         return this.createErrorResponse(validation);
       }
 
-      // Validate reminder fields
-      const reminderValidation = this.validateReminderFields(data);
-      if (reminderValidation) {
-        return this.createErrorResponse(reminderValidation);
-      }
-
-      // Handle reminders
-      let reminder: string | null = data.reminder || null;
-      let reminderRecurrence: any = null;
-      let nextReminderAt: string | null = null;
-
-      // One-time reminder: calculate default if needed
-      if (data.dueDate && !data.reminder && !data.reminderRecurrence) {
-        reminder = this.calculateDefaultReminder(data.dueDate);
-      }
-
-      // One-time reminder: calculate next_reminder_at
-      if (data.dueDate && reminder && !data.reminderRecurrence) {
-        try {
-          nextReminderAt = this.calculateOneTimeReminderAt(data.dueDate, reminder);
-        } catch (error) {
-          return this.createErrorResponse(
-            error instanceof Error ? error.message : 'Failed to calculate next reminder time'
-          );
-        }
-      }
-
-      // Recurring reminder: calculate next_reminder_at
-      if (data.reminderRecurrence) {
-        reminderRecurrence = JSON.stringify(data.reminderRecurrence);
-        try {
-          nextReminderAt = this.calculateNextReminderAt(data.reminderRecurrence);
-        } catch (error) {
-          return this.createErrorResponse(
-            error instanceof Error ? error.message : 'Failed to calculate next reminder time'
-          );
-        }
+      const reminderPayload = this.normalizeReminderPayload(data);
+      if (reminderPayload.validationError) {
+        return this.createErrorResponse(reminderPayload.validationError);
       }
 
       const result = await this.executeSingleQuery<Task>(
@@ -321,10 +332,10 @@ export class TaskService extends BaseService {
           userId,
           data.text,
           data.category || null,
-          data.dueDate || null,
-          reminder,
-          reminderRecurrence,
-          nextReminderAt
+          reminderPayload.dueDate || null,
+          reminderPayload.reminder || null,
+          reminderPayload.reminderRecurrence ? JSON.stringify(reminderPayload.reminderRecurrence) : null,
+          reminderPayload.nextReminderAt || null
         ]
       );
 
@@ -339,7 +350,9 @@ export class TaskService extends BaseService {
     } catch (error) {
       if (error instanceof DuplicateEntryError) {
         this.logger.info(`Duplicate task name detected for user ${userId ?? 'unknown'}: ${data?.text}`);
-        return this.createErrorResponse('Task name already exists. Please choose a different name.');
+        return this.createErrorResponse(
+          'There is already a task with this text. Ask me to update its reminder instead of creating a new one.'
+        );
       }
       this.logger.error('Error creating task:', error);
       return this.createErrorResponse('Failed to create task');
@@ -349,7 +362,7 @@ export class TaskService extends BaseService {
   async createMultiple(request: CreateMultipleRequest): Promise<IResponse> {
     let userId: string | undefined;
     try {
-      userId = await this.ensureUserExists(request.userPhone);
+      userId = await this.resolveUserId(request.userId, request.userPhone);
       const results = [];
       const errors = [];
 
@@ -363,47 +376,10 @@ export class TaskService extends BaseService {
             continue;
           }
 
-          // Validate reminder fields
-          const reminderValidation = this.validateReminderFields(sanitizedItem);
-          if (reminderValidation) {
-            errors.push({ item, error: reminderValidation });
+          const reminderPayload = this.normalizeReminderPayload(sanitizedItem);
+          if (reminderPayload.validationError) {
+            errors.push({ item, error: reminderPayload.validationError });
             continue;
-          }
-
-          // Handle reminders (same logic as create)
-          let reminder: string | null = sanitizedItem.reminder || null;
-          let reminderRecurrence: any = null;
-          let nextReminderAt: string | null = null;
-
-          if (sanitizedItem.dueDate && !sanitizedItem.reminder && !sanitizedItem.reminderRecurrence) {
-            reminder = this.calculateDefaultReminder(sanitizedItem.dueDate);
-          }
-          
-          // One-time reminder: calculate next_reminder_at
-          if (sanitizedItem.dueDate && reminder && !sanitizedItem.reminderRecurrence) {
-            try {
-              nextReminderAt = this.calculateOneTimeReminderAt(sanitizedItem.dueDate, reminder);
-            } catch (error) {
-              errors.push({
-                item,
-                error: error instanceof Error ? error.message : 'Failed to calculate next reminder time'
-              });
-              continue;
-            }
-          }
-
-          // Recurring reminder: calculate next_reminder_at
-          if (sanitizedItem.reminderRecurrence) {
-            reminderRecurrence = JSON.stringify(sanitizedItem.reminderRecurrence);
-            try {
-              nextReminderAt = this.calculateNextReminderAt(sanitizedItem.reminderRecurrence);
-            } catch (error) {
-              errors.push({
-                item,
-                error: error instanceof Error ? error.message : 'Failed to calculate next reminder time'
-              });
-              continue;
-            }
           }
 
           const result = await this.executeSingleQuery<Task>(
@@ -414,10 +390,10 @@ export class TaskService extends BaseService {
               userId,
               sanitizedItem.text,
               sanitizedItem.category || null,
-              sanitizedItem.dueDate || null,
-              reminder,
-              reminderRecurrence,
-              nextReminderAt
+              reminderPayload.dueDate || null,
+              reminderPayload.reminder || null,
+              reminderPayload.reminderRecurrence ? JSON.stringify(reminderPayload.reminderRecurrence) : null,
+              reminderPayload.nextReminderAt || null
             ]
           );
 
@@ -429,7 +405,10 @@ export class TaskService extends BaseService {
           results.push(result);
         } catch (error) {
           if (error instanceof DuplicateEntryError) {
-            errors.push({ item, error: 'Task name already exists. Please choose a different name.' });
+            errors.push({
+              item,
+              error: 'One of these tasks already exists. Ask me to update its reminder instead of creating it again.'
+            });
             continue;
           }
           errors.push({ item, error: error instanceof Error ? error.message : 'Unknown error' });
@@ -455,7 +434,7 @@ export class TaskService extends BaseService {
 
   async getById(request: GetRequest): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
+      const userId = await this.resolveUserId(request.userId, request.userPhone);
       
       const task = await this.executeSingleQuery<Task>(
         `SELECT t.id, t.text, t.category, t.due_date, t.reminder, t.reminder_recurrence, t.next_reminder_at, t.completed, t.created_at,
@@ -490,7 +469,7 @@ export class TaskService extends BaseService {
 
   async getAll(request: GetRequest): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
+      const userId = await this.resolveUserId(request.userId, request.userPhone);
       
       let query = `
         SELECT t.id, t.text, t.category, t.due_date, t.reminder, t.reminder_recurrence, t.next_reminder_at, t.completed, t.created_at,
@@ -570,16 +549,10 @@ export class TaskService extends BaseService {
 
   async update(request: UpdateRequest): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
+      const userId = await this.resolveUserId(request.userId, request.userPhone);
       const data = this.sanitizeInput(request.data);
 
       // Validate reminder fields
-      const reminderValidation = this.validateReminderFields(data);
-      if (reminderValidation) {
-        return this.createErrorResponse(reminderValidation);
-      }
-
-      // Fetch current task to calculate next_reminder_at for one-time reminders
       const currentTask = await this.executeSingleQuery<Task>(
         'SELECT due_date, reminder, reminder_recurrence FROM tasks WHERE user_id = $1 AND id = $2',
         [userId, request.id]
@@ -589,119 +562,71 @@ export class TaskService extends BaseService {
         return this.createErrorResponse('Task not found');
       }
 
-      const updateFields = [];
+      const currentReminderRecurrence =
+        typeof currentTask.reminder_recurrence === 'string'
+          ? JSON.parse(currentTask.reminder_recurrence)
+          : currentTask.reminder_recurrence;
+
+      const reminderInput = {
+        dueDate: data.dueDate !== undefined ? data.dueDate : currentTask.due_date || undefined,
+        reminder: data.reminder !== undefined ? data.reminder : currentTask.reminder ?? undefined,
+        reminderRecurrence:
+          data.reminderRecurrence !== undefined
+            ? data.reminderRecurrence
+            : currentReminderRecurrence ?? undefined
+      };
+
+      const reminderPayload = this.normalizeReminderPayload(reminderInput, {
+        allowDefaultReminder: false
+      });
+
+      if (reminderPayload.validationError) {
+        return this.createErrorResponse(reminderPayload.validationError);
+      }
+
+      const updateFields: string[] = [];
       const params: any[] = [userId, request.id];
       let paramCount = 2;
 
-      if (data.text !== undefined) {
+      const pushField = (field: string, value: any) => {
         paramCount++;
-        updateFields.push(`text = $${paramCount}`);
-        params.push(data.text);
+        updateFields.push(`${field} = $${paramCount}`);
+        params.push(value);
+      };
+
+      if (data.text !== undefined) {
+        pushField('text', data.text);
       }
 
       if (data.category !== undefined) {
-        paramCount++;
-        updateFields.push(`category = $${paramCount}`);
-        params.push(data.category);
+        pushField('category', data.category);
       }
 
       if (data.dueDate !== undefined) {
-        paramCount++;
-        updateFields.push(`due_date = $${paramCount}`);
-        params.push(data.dueDate);
+        pushField('due_date', reminderPayload.dueDate || null);
       }
 
-      // Handle reminder updates
-      if (data.reminder !== undefined) {
-        paramCount++;
-        updateFields.push(`reminder = $${paramCount}`);
-        params.push(data.reminder || null);
-        // If clearing reminder, also clear reminder_recurrence and next_reminder_at
-        if (!data.reminder) {
-          paramCount++;
-          updateFields.push(`reminder_recurrence = $${paramCount}`);
-          params.push(null);
-          paramCount++;
-          updateFields.push(`next_reminder_at = $${paramCount}`);
-          params.push(null);
-        }
+      if (data.reminder !== undefined || data.dueDate !== undefined) {
+        pushField('reminder', reminderPayload.reminder || null);
       }
 
       if (data.reminderRecurrence !== undefined) {
-        if (data.reminderRecurrence === null) {
-          // Remove recurring reminder
-          paramCount++;
-          updateFields.push(`reminder_recurrence = $${paramCount}`);
-          params.push(null);
-          paramCount++;
-          updateFields.push(`next_reminder_at = $${paramCount}`);
-          params.push(null);
-          paramCount++;
-          updateFields.push(`reminder = $${paramCount}`);
-          params.push(null);
-        } else {
-          // Update recurring reminder
-          paramCount++;
-          updateFields.push(`reminder_recurrence = $${paramCount}::jsonb`);
-          params.push(JSON.stringify(data.reminderRecurrence));
-          
-          // Recalculate next_reminder_at
-          try {
-            const nextReminderAt = this.calculateNextReminderAt(data.reminderRecurrence);
-            paramCount++;
-            updateFields.push(`next_reminder_at = $${paramCount}`);
-            params.push(nextReminderAt);
-          } catch (error) {
-            return this.createErrorResponse(
-              error instanceof Error ? error.message : 'Failed to calculate next reminder time'
-            );
-          }
-          
-          // Clear reminder if was set
-          paramCount++;
-          updateFields.push(`reminder = $${paramCount}`);
-          params.push(null);
-        }
+        pushField(
+          'reminder_recurrence',
+          reminderPayload.reminderRecurrence ? JSON.stringify(reminderPayload.reminderRecurrence) : null
+        );
       }
 
       if (data.completed !== undefined) {
-        paramCount++;
-        updateFields.push(`completed = $${paramCount}`);
-        params.push(data.completed);
+        pushField('completed', data.completed);
       }
 
-      // Recalculate next_reminder_at for one-time reminders
-      // Check if we need to recalculate based on changes to dueDate or reminder
-      const dueDateChanged = data.dueDate !== undefined;
-      const reminderChanged = data.reminder !== undefined;
-      const shouldRecalcOneTime = dueDateChanged || reminderChanged;
-
-      if (shouldRecalcOneTime) {
-        // Determine the actual values after update
-        const finalDueDate = data.dueDate !== undefined ? data.dueDate : currentTask.due_date;
-        const finalReminder = data.reminder !== undefined ? data.reminder : currentTask.reminder;
-        
-        // Only recalculate if both dueDate and reminder are present (one-time reminder)
-        if (finalDueDate && finalReminder && !data.reminderRecurrence) {
-          try {
-            const nextReminderAt = this.calculateOneTimeReminderAt(finalDueDate, finalReminder);
-            // Check if next_reminder_at is already in the update fields
-            const alreadyIncluded = updateFields.some(field => field.includes('next_reminder_at'));
-            if (!alreadyIncluded) {
-              paramCount++;
-              updateFields.push(`next_reminder_at = $${paramCount}`);
-              params.push(nextReminderAt);
-            }
-          } catch (error) {
-            // If calculation fails, clear next_reminder_at
-            const alreadyIncluded = updateFields.some(field => field.includes('next_reminder_at'));
-            if (!alreadyIncluded) {
-              paramCount++;
-              updateFields.push(`next_reminder_at = $${paramCount}`);
-              params.push(null);
-            }
-          }
-        }
+      if (
+        data.reminder !== undefined ||
+        data.reminderRecurrence !== undefined ||
+        data.dueDate !== undefined
+      ) {
+        pushField('next_reminder_at', reminderPayload.nextReminderAt || null);
       }
 
       if (updateFields.length === 0) {
@@ -729,6 +654,12 @@ export class TaskService extends BaseService {
       
       return this.createSuccessResponse(result, 'Task updated successfully');
     } catch (error) {
+      if (error instanceof InvalidIdentifierError) {
+        this.logger.warn('Attempted to update task with invalid identifier', { detail: error.detail });
+        return this.createErrorResponse(
+          'I could not find that task. Mention it by the original task text so I can locate it.'
+        );
+      }
       this.logger.error('Error updating task:', error);
       return this.createErrorResponse('Failed to update task');
     }
@@ -736,7 +667,7 @@ export class TaskService extends BaseService {
 
   async delete(request: DeleteRequest): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
+      const userId = await this.resolveUserId(request.userId, request.userPhone);
 
       const result = await this.executeSingleQuery<Task>(
         `DELETE FROM tasks 
@@ -767,7 +698,7 @@ export class TaskService extends BaseService {
 
   async addSubtask(request: CreateRequest): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(request.userPhone);
+      const userId = await this.resolveUserId(request.userId, request.userPhone);
       const data = this.sanitizeInput(request.data);
 
       const validation = this.validateRequiredFields(data, ['taskId', 'text']);
@@ -806,7 +737,7 @@ export class TaskService extends BaseService {
    */
   async deleteAll(userPhone: string, filter: TaskFilter, preview = false): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(userPhone);
+      const userId = await this.resolveUserId(undefined, userPhone);
 
       // Compile WHERE clause using SQLCompiler
       const { whereSql, params } = SQLCompiler.compileWhere('tasks', userId, filter);
@@ -852,11 +783,77 @@ export class TaskService extends BaseService {
    */
   async updateAll(userPhone: string, filter: TaskFilter, patch: BulkPatch, preview = false): Promise<IResponse> {
     try {
-      const userId = await this.ensureUserExists(userPhone);
+      const userId = await this.resolveUserId(undefined, userPhone);
       const allowedColumns = SQLCompiler.getAllowedColumns('tasks');
 
+      const sanitizedPatch = this.sanitizeInput({ ...patch });
+
+      if (sanitizedPatch.reminderDetails && typeof sanitizedPatch.reminderDetails === 'object') {
+        const details = sanitizedPatch.reminderDetails;
+        if (details.dueDate !== undefined) {
+          sanitizedPatch.dueDate = details.dueDate;
+        }
+        if (details.reminder !== undefined) {
+          sanitizedPatch.reminder = details.reminder;
+        }
+        if (details.reminderRecurrence !== undefined) {
+          sanitizedPatch.reminderRecurrence = details.reminderRecurrence;
+        }
+        delete sanitizedPatch.reminderDetails;
+      }
+
+      const normalizedPatch: BulkPatch = {};
+
+      if (sanitizedPatch.text !== undefined) {
+        normalizedPatch.text = sanitizedPatch.text;
+      }
+
+      if (sanitizedPatch.category !== undefined) {
+        normalizedPatch.category = sanitizedPatch.category;
+      }
+
+      const reminderFieldsProvided =
+        sanitizedPatch.dueDate !== undefined ||
+        sanitizedPatch.reminder !== undefined ||
+        sanitizedPatch.reminderRecurrence !== undefined;
+
+      if (reminderFieldsProvided) {
+        const reminderPayload = this.normalizeReminderPayload(
+          {
+            dueDate: sanitizedPatch.dueDate,
+            reminder: sanitizedPatch.reminder,
+            reminderRecurrence: sanitizedPatch.reminderRecurrence
+          },
+          { allowDefaultReminder: false }
+        );
+
+        if (reminderPayload.validationError) {
+          return this.createErrorResponse(reminderPayload.validationError);
+        }
+
+        if (sanitizedPatch.dueDate !== undefined) {
+          normalizedPatch.due_date = reminderPayload.dueDate || null;
+        }
+
+        if (sanitizedPatch.reminder !== undefined || sanitizedPatch.dueDate !== undefined) {
+          normalizedPatch.reminder = reminderPayload.reminder || null;
+        }
+
+        if (sanitizedPatch.reminderRecurrence !== undefined) {
+          normalizedPatch.reminder_recurrence = reminderPayload.reminderRecurrence
+            ? JSON.stringify(reminderPayload.reminderRecurrence)
+            : null;
+        }
+
+        normalizedPatch.next_reminder_at = reminderPayload.nextReminderAt || null;
+      }
+
+      if (sanitizedPatch.completed !== undefined) {
+        normalizedPatch.completed = sanitizedPatch.completed;
+      }
+
       // Compile SET clause
-      const { setSql, setParams } = SQLCompiler.compileSet(patch, allowedColumns, 1);
+      const { setSql, setParams } = SQLCompiler.compileSet(normalizedPatch, allowedColumns, 1);
       
       if (!setSql) {
         return this.createErrorResponse('No valid fields to update');

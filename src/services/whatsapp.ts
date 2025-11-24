@@ -7,9 +7,9 @@ const WHATSAPP_API_URL = 'https://graph.facebook.com/v22.0';
 const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const ACCESS_TOKEN = process.env.WHATSAPP_API_TOKEN;
 
-export async function sendWhatsAppMessage(to: string, message: string): Promise<void> {
+export async function sendWhatsAppMessage(to: string, message: string): Promise<string | null> {
   try {
-    await axios.post(
+    const response = await axios.post(
       `${WHATSAPP_API_URL}/${PHONE_NUMBER_ID}/messages`,
       {
         messaging_product: 'whatsapp',
@@ -23,16 +23,21 @@ export async function sendWhatsAppMessage(to: string, message: string): Promise<
         }
       }
     );
-    logger.info(`Message sent to ${to}`);
     
-    // Add message to conversation memory (non-blocking)
+    // Extract message ID from response
+    const messageId = response.data?.messages?.[0]?.id || null;
+    logger.info(`Message sent to ${to}${messageId ? ` (ID: ${messageId})` : ''}`);
+    
+    // Add message to conversation memory with message ID (non-blocking)
     try {
       const conversationWindow = ConversationWindow.getInstance();
-      conversationWindow.addMessage(to, 'assistant', message);
+      conversationWindow.addMessage(to, 'assistant', message, undefined, messageId || undefined);
     } catch (memoryError) {
       // Don't fail message sending if memory save fails
       logger.warn('Failed to save message to conversation memory:', memoryError);
     }
+    
+    return messageId;
   } catch (error) {
     logger.error('Error sending WhatsApp message:', error);
     throw error;
@@ -87,32 +92,68 @@ export async function markMessageAsRead(messageId: string): Promise<void> {
   }
 }
 
-export async function downloadWhatsAppMedia(mediaId: string): Promise<Buffer> {
-  try {
-    // Get media URL
-    const mediaInfo = await axios.get(
-      `${WHATSAPP_API_URL}/${mediaId}`,
-      {
+export async function downloadWhatsAppMedia(mediaId: string, retries: number = 3): Promise<Buffer> {
+  let lastError: any;
+  
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      // Get media URL
+      const mediaInfo = await axios.get(
+        `${WHATSAPP_API_URL}/${mediaId}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${ACCESS_TOKEN}`
+          },
+          timeout: 10000 // 10 second timeout
+        }
+      );
+
+      if (!mediaInfo.data?.url) {
+        throw new Error('Media URL not found in response');
+      }
+
+      const mediaUrl = mediaInfo.data.url;
+
+      // Download media with timeout
+      const response = await axios.get(mediaUrl, {
         headers: {
           'Authorization': `Bearer ${ACCESS_TOKEN}`
-        }
+        },
+        responseType: 'arraybuffer',
+        timeout: 30000, // 30 second timeout for download
+        maxContentLength: 25 * 1024 * 1024, // 25MB max
+        maxBodyLength: 25 * 1024 * 1024
+      });
+
+      if (!response.data || response.data.length === 0) {
+        throw new Error('Downloaded media is empty');
       }
-    );
 
-    const mediaUrl = mediaInfo.data.url;
+      return Buffer.from(response.data);
+    } catch (error: any) {
+      lastError = error;
+      
+      // Don't retry on certain errors
+      if (error.response?.status === 404) {
+        throw new Error('Media not found. It may have expired or been deleted.');
+      }
+      
+      if (error.response?.status === 403) {
+        throw new Error('Access denied to media. Please check your WhatsApp API permissions.');
+      }
 
-    // Download media
-    const response = await axios.get(mediaUrl, {
-      headers: {
-        'Authorization': `Bearer ${ACCESS_TOKEN}`
-      },
-      responseType: 'arraybuffer'
-    });
-
-    return Buffer.from(response.data);
-  } catch (error) {
-    logger.error('Error downloading media:', error);
-    throw error;
+      // Log retry attempt
+      if (attempt < retries) {
+        const delay = Math.min(1000 * Math.pow(2, attempt - 1), 5000); // Exponential backoff, max 5s
+        logger.warn(`Failed to download media (attempt ${attempt}/${retries}), retrying in ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      } else {
+        logger.error(`Failed to download media after ${retries} attempts:`, error);
+      }
+    }
   }
+
+  // If we get here, all retries failed
+  throw new Error(`Failed to download media after ${retries} attempts: ${lastError?.message || 'Unknown error'}`);
 }
 

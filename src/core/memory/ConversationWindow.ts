@@ -7,13 +7,35 @@ export interface ConversationMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: number;
-  metadata?: { // metadata for disambiguation context
+  whatsappMessageId?: string; // Store WhatsApp message ID for reply context
+  replyToMessageId?: string; // If this message is a reply, store the message ID it's replying to
+  metadata?: {
+    // metadata for disambiguation context or recent tasks
     disambiguationContext?: {
       candidates: Array<{ id: string; displayText: string; [key: string]: any }>; // candidates are the entities that match the user's query
       entityType: string; // entity type is the type of the entity that the user is querying
       expiresAt: number;
     };
+    recentTasks?: {
+      tasks: RecentTaskSnapshot[];
+      updatedAt: number;
+    };
+    imageContext?: {
+      imageId: string; // WhatsApp media ID
+      analysisResult: any; // ImageAnalysisResult - using any to avoid circular dependency
+      imageType: 'structured' | 'random';
+      extractedAt: number; // Timestamp
+    };
   };
+}
+
+export interface RecentTaskSnapshot {
+  id?: string | null;
+  text: string;
+  dueDate?: string | null;
+  reminder?: string | null;
+  reminderRecurrence?: any;
+  createdAt?: string | number | null;
 }
 
 /**
@@ -21,7 +43,9 @@ export interface ConversationMessage {
  * 
  * Features:
  * - In-memory storage only (no database)
- * - Maximum 10 user messages per conversation (oldest removed when exceeded)
+ * - Maximum 10 user-assistant pairs (20 messages total) per conversation
+ * - Maintains conversation pairs together (user message + its response)
+ * - Supports WhatsApp reply context detection
  * - Singleton pattern for global access
  * - Simple API for adding/getting messages
  */
@@ -30,9 +54,11 @@ export class ConversationWindow {
   
   // In-memory storage: userPhone -> array of messages
   private memory = new Map<string, ConversationMessage[]>();
+  private recentTaskContext = new Map<string, RecentTaskSnapshot[]>();
   
   // Configuration
-  private readonly MAX_USER_MESSAGES = 10;
+  private readonly MAX_USER_MESSAGES = 10; // Maximum 10 user messages (each with its assistant response = 20 messages total)
+  private readonly MAX_RECENT_TASKS = 6;
   
   private constructor() {
     logger.info('🧠 ConversationWindow singleton created');
@@ -50,8 +76,21 @@ export class ConversationWindow {
   
   /**
    * Add a message to the conversation window
+   * @param userPhone - User's phone number
+   * @param role - Message role (user, assistant, system)
+   * @param content - Message content
+   * @param metadata - Optional metadata (disambiguation, tasks, etc.)
+   * @param whatsappMessageId - Optional WhatsApp message ID for reply context
+   * @param replyToMessageId - Optional ID of the message this is replying to
    */
-  public addMessage(userPhone: string, role: 'user' | 'assistant' | 'system', content: string, metadata?: ConversationMessage['metadata']): void {
+  public addMessage(
+    userPhone: string, 
+    role: 'user' | 'assistant' | 'system', 
+    content: string, 
+    metadata?: ConversationMessage['metadata'],
+    whatsappMessageId?: string,
+    replyToMessageId?: string
+  ): void {
     try {
       // Get or create conversation for user
       if (!this.memory.has(userPhone)) {
@@ -60,16 +99,38 @@ export class ConversationWindow {
       
       const messages = this.memory.get(userPhone)!;
       
-      // If adding a user message, check if we need to remove oldest user message
+      // For user messages: enforce limit of MAX_USER_MESSAGES user messages
+      // Each user message should have its corresponding assistant response
+      // System messages are allowed but don't count toward the user message limit
       if (role === 'user') {
         const userMessageCount = messages.filter(m => m.role === 'user').length;
+        
+        // If we're at the limit, remove the oldest user message AND its assistant response (if exists)
         if (userMessageCount >= this.MAX_USER_MESSAGES) {
-          // Find and remove the oldest user message
+          // Find the oldest user message
           const oldestUserIndex = messages.findIndex(m => m.role === 'user');
           if (oldestUserIndex !== -1) {
+            // Remove the user message
             messages.splice(oldestUserIndex, 1);
-            logger.debug(`Removed oldest user message for ${userPhone} (limit: ${this.MAX_USER_MESSAGES})`);
+            
+            // If there's an assistant message right after it, remove that too (maintain pairs)
+            // Also check if there's a system message between them (shouldn't happen, but be safe)
+            if (oldestUserIndex < messages.length && messages[oldestUserIndex].role === 'assistant') {
+              messages.splice(oldestUserIndex, 1);
+              logger.debug(`Removed oldest user-assistant pair for ${userPhone} (limit: ${this.MAX_USER_MESSAGES} user messages)`);
+            } else {
+              logger.debug(`Removed oldest user message for ${userPhone} (limit: ${this.MAX_USER_MESSAGES} user messages)`);
+            }
           }
+        }
+      }
+      
+      // For assistant messages: if there's no preceding user message, log a warning
+      // (This shouldn't happen in normal flow, but helps with debugging)
+      if (role === 'assistant' && messages.length > 0) {
+        const lastMessage = messages[messages.length - 1];
+        if (lastMessage.role !== 'user' && lastMessage.role !== 'system') {
+          logger.warn(`Assistant message added without preceding user message for ${userPhone}`);
         }
       }
       
@@ -78,15 +139,33 @@ export class ConversationWindow {
         role,
         content,
         timestamp: Date.now(),
+        whatsappMessageId,
+        replyToMessageId,
         metadata
       };
       
       messages.push(message);
       
-      logger.debug(`Added ${role} message for ${userPhone} (${messages.length} total messages)`);
+      const userMsgCount = messages.filter(m => m.role === 'user').length;
+      logger.debug(`Added ${role} message for ${userPhone} (${messages.length} total messages, ${userMsgCount} user messages)`);
     } catch (error) {
       logger.error('Error adding message to conversation window:', error);
     }
+  }
+  
+  /**
+   * Get the message that a user is replying to (if any)
+   * @param userPhone - User's phone number
+   * @param replyToMessageId - WhatsApp message ID being replied to
+   * @returns The message being replied to, or null if not found
+   */
+  public getRepliedToMessage(userPhone: string, replyToMessageId: string): ConversationMessage | null {
+    const messages = this.memory.get(userPhone);
+    if (!messages) return null;
+    
+    // Find message by WhatsApp message ID
+    const repliedTo = messages.find(m => m.whatsappMessageId === replyToMessageId);
+    return repliedTo || null;
   }
 
   /**
@@ -165,6 +244,95 @@ export class ConversationWindow {
     logger.debug(`Retrieved ${messages.length} messages for ${userPhone}`);
     return [...messages]; // Return copy to prevent external modification
   }
+
+  /**
+   * Get the last message with image context (if any)
+   * Searches backwards through messages to find the most recent one with imageContext
+   */
+  public getLastMessageWithImageContext(userPhone: string): ConversationMessage | null {
+    const messages = this.memory.get(userPhone);
+    if (!messages) return null;
+    
+    // Search backwards through messages
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.metadata?.imageContext) {
+        return msg;
+      }
+    }
+    
+    return null;
+  }
+
+  /**
+   * Store or refresh recent task context for a user
+   */
+  public pushRecentTasks(userPhone: string, tasks: RecentTaskSnapshot[], options: { replace?: boolean } = {}): void {
+    if (!tasks || tasks.length === 0) {
+      return;
+    }
+
+    const normalized: RecentTaskSnapshot[] = tasks
+      .filter(task => !!task && typeof task.text === 'string' && task.text.trim().length > 0)
+      .map(task => ({
+        id: task.id ?? (task as any).taskId ?? null,
+        text: task.text.trim(),
+        dueDate: (task as any).dueDate ?? (task as any).due_date ?? null,
+        reminder: (task as any).reminder ?? null,
+        reminderRecurrence: (task as any).reminderRecurrence ?? (task as any).reminder_recurrence ?? null,
+        createdAt: task.createdAt ?? (task as any).created_at ?? null
+      }));
+
+    if (normalized.length === 0) {
+      return;
+    }
+
+    const existing = options.replace ? [] : (this.recentTaskContext.get(userPhone) || []);
+
+    // Merge and deduplicate by id when available, otherwise by text
+    const merged = [...existing, ...normalized];
+    const dedupMap = new Map<string, RecentTaskSnapshot>();
+
+    for (const task of merged) {
+      const key = task.id && typeof task.id === 'string' && task.id.length > 0
+        ? `id:${task.id}`
+        : `text:${task.text.toLowerCase()}`;
+      dedupMap.set(key, task);
+    }
+
+    const deduped = Array.from(dedupMap.values());
+    const trimmed = deduped.slice(-this.MAX_RECENT_TASKS);
+
+    this.recentTaskContext.set(userPhone, trimmed);
+
+    const summaryLines = trimmed.map((task, idx) => `${idx + 1}. ${task.text}`);
+    this.addMessage(
+      userPhone,
+      'system',
+      `RECENT_TASKS_CONTEXT\n${summaryLines.join('\n')}`,
+      {
+        recentTasks: {
+          tasks: trimmed,
+          updatedAt: Date.now()
+        }
+      }
+    );
+  }
+
+  /**
+   * Retrieve recent task context for a user
+   */
+  public getRecentTasks(userPhone: string): RecentTaskSnapshot[] {
+    const tasks = this.recentTaskContext.get(userPhone) || [];
+    return [...tasks];
+  }
+
+  /**
+   * Remove stored recent tasks for a user
+   */
+  public clearRecentTasks(userPhone: string): void {
+    this.recentTaskContext.delete(userPhone);
+  }
   
   
   /**
@@ -172,18 +340,23 @@ export class ConversationWindow {
    */
   public clear(userPhone: string): void {
     this.memory.delete(userPhone);
+    this.recentTaskContext.delete(userPhone);
     logger.info(`Cleared conversation for ${userPhone}`);
   }
   
   /**
    * Get conversation statistics
    */
-  public getStats(userPhone: string): { messageCount: number; userMessageCount: number } {
+  public getStats(userPhone: string): { messageCount: number; userMessageCount: number; assistantMessageCount: number; systemMessageCount: number } {
     const messages = this.memory.get(userPhone) || [];
     const userMessageCount = messages.filter(m => m.role === 'user').length;
+    const assistantMessageCount = messages.filter(m => m.role === 'assistant').length;
+    const systemMessageCount = messages.filter(m => m.role === 'system').length;
     return {
       messageCount: messages.length,
-      userMessageCount
+      userMessageCount,
+      assistantMessageCount,
+      systemMessageCount
     };
   }
   
@@ -204,6 +377,7 @@ export class ConversationWindow {
     for (const [userPhone, messages] of this.memory.entries()) {
       if (messages.length === 0) {
         this.memory.delete(userPhone);
+        this.recentTaskContext.delete(userPhone);
         continue;
       }
       
@@ -211,6 +385,7 @@ export class ConversationWindow {
       const lastMessage = messages[messages.length - 1];
       if (now - lastMessage.timestamp > maxAge) {
         this.memory.delete(userPhone);
+        this.recentTaskContext.delete(userPhone);
         logger.debug(`Cleaned up old conversation for ${userPhone}`);
       }
     }

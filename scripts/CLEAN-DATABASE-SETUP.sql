@@ -21,10 +21,29 @@
 -- Users table
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    phone TEXT NOT NULL UNIQUE,
+    whatsapp_number TEXT NOT NULL UNIQUE,
+    plan_type TEXT NOT NULL DEFAULT 'standard' CHECK (plan_type IN ('free', 'standard', 'pro')),
     timezone TEXT DEFAULT 'Asia/Jerusalem',
     settings JSONB DEFAULT '{}',
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    google_email TEXT,
+    onboarding_complete BOOLEAN NOT NULL DEFAULT FALSE,
+    onboarding_last_prompt_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS user_google_tokens (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    access_token TEXT,
+    refresh_token TEXT,
+    expires_at TIMESTAMP WITH TIME ZONE,
+    scope TEXT[],
+    token_type TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE (user_id, provider)
 );
 
 -- Tasks table
@@ -54,7 +73,7 @@ CREATE TABLE IF NOT EXISTS subtasks (
 -- Contact list table
 CREATE TABLE IF NOT EXISTS contact_list (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    contact_list_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name VARCHAR(255),
     phone_number VARCHAR(20),
     email VARCHAR(255),
@@ -66,7 +85,7 @@ CREATE TABLE IF NOT EXISTS contact_list (
 -- Lists table
 CREATE TABLE IF NOT EXISTS lists (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    list_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     list_name VARCHAR(50) CHECK (list_name IN ('note', 'checklist')),
     content JSONB,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -98,10 +117,10 @@ WHERE reminder_recurrence IS NOT NULL AND next_reminder_at IS NOT NULL AND compl
 CREATE INDEX IF NOT EXISTS idx_subtasks_task ON subtasks(task_id);
 
 -- Contact list indexes
-CREATE INDEX IF NOT EXISTS idx_contact_user ON contact_list(contact_list_id);
+CREATE INDEX IF NOT EXISTS idx_contact_user ON contact_list(user_id);
 
 -- Lists indexes
-CREATE INDEX IF NOT EXISTS idx_lists_user ON lists(list_id);
+CREATE INDEX IF NOT EXISTS idx_lists_user ON lists(user_id);
 
 -- Conversation memory indexes
 CREATE INDEX IF NOT EXISTS idx_conversation_user_time ON conversation_memory(user_id, created_at DESC);
@@ -117,13 +136,33 @@ RETURNS UUID AS $$
 DECLARE
     user_uuid UUID;
 BEGIN
-    SELECT id INTO user_uuid FROM users WHERE phone = phone_number;
+    SELECT id INTO user_uuid FROM users WHERE whatsapp_number = phone_number;
     IF user_uuid IS NULL THEN
-        INSERT INTO users (phone) VALUES (phone_number) RETURNING id INTO user_uuid;
+        INSERT INTO users (whatsapp_number) VALUES (phone_number) RETURNING id INTO user_uuid;
     END IF;
     RETURN user_uuid;
 END;
 $$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION set_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS set_users_updated_at ON users;
+CREATE TRIGGER set_users_updated_at
+    BEFORE UPDATE ON users
+    FOR EACH ROW
+    EXECUTE FUNCTION set_updated_at();
+
+DROP TRIGGER IF EXISTS set_user_google_tokens_updated_at ON user_google_tokens;
+CREATE TRIGGER set_user_google_tokens_updated_at
+    BEFORE UPDATE ON user_google_tokens
+    FOR EACH ROW
+    EXECUTE FUNCTION set_updated_at();
 
 -- Cleanup old conversations
 CREATE OR REPLACE FUNCTION cleanup_old_conversations()
@@ -169,7 +208,7 @@ SELECT
     table_name as name,
     'OK' as status
 FROM information_schema.tables
-WHERE table_name IN ('users', 'tasks', 'subtasks', 'contact_list', 'lists', 'conversation_memory')
+WHERE table_name IN ('users', 'user_google_tokens', 'tasks', 'subtasks', 'contact_list', 'lists', 'conversation_memory')
     AND table_schema = 'public'
 ORDER BY table_name;
 

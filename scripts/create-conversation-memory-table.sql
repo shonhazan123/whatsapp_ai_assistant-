@@ -7,9 +7,29 @@
 -- First, ensure users table exists (if not already created)
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    phone TEXT NOT NULL UNIQUE,
+    whatsapp_number TEXT NOT NULL UNIQUE,
+    plan_type TEXT NOT NULL DEFAULT 'standard' CHECK (plan_type IN ('free', 'standard', 'pro')),
     timezone TEXT DEFAULT 'Asia/Jerusalem',
-    settings JSONB DEFAULT '{}'
+    settings JSONB DEFAULT '{}',
+    google_email TEXT,
+    onboarding_complete BOOLEAN NOT NULL DEFAULT FALSE,
+    onboarding_last_prompt_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS user_google_tokens (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    access_token TEXT,
+    refresh_token TEXT,
+    expires_at TIMESTAMP WITH TIME ZONE,
+    scope TEXT[],
+    token_type TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE (user_id, provider)
 );
 
 -- Create the conversation_memory table with foreign key
@@ -45,11 +65,11 @@ DECLARE
     user_uuid UUID;
 BEGIN
     -- Try to find existing user
-    SELECT id INTO user_uuid FROM users WHERE phone = phone_number;
+    SELECT id INTO user_uuid FROM users WHERE whatsapp_number = phone_number;
     
     -- If not found, create new user
     IF user_uuid IS NULL THEN
-        INSERT INTO users (phone) VALUES (phone_number) RETURNING id INTO user_uuid;
+        INSERT INTO users (whatsapp_number) VALUES (phone_number) RETURNING id INTO user_uuid;
     END IF;
     
     RETURN user_uuid;

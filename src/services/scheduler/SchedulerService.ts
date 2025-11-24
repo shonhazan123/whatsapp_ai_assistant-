@@ -5,9 +5,11 @@ import { ReminderService } from '../reminder/ReminderService';
 export class SchedulerService {
   private reminderService: ReminderService;
   private isRunning: boolean = false;
+  private morningDigestHour: number;
 
-  constructor(reminderService?: ReminderService) {
+  constructor(reminderService?: ReminderService, morningDigestHour: number = 8) {
     this.reminderService = reminderService || new ReminderService();
+    this.morningDigestHour = morningDigestHour;
   }
 
   /**
@@ -34,24 +36,20 @@ export class SchedulerService {
 
     logger.info('✅ Scheduled reminder checks every 5 minutes');
 
-    // Run daily digest at multiple UTC times to cover different timezones
+    // Run daily digest check every hour
     // The ReminderService.sendMorningDigest() method handles timezone filtering
-    // Run at 5, 6, 7, 8, 9, 10, 11 UTC to cover timezones from UTC-3 to UTC+3 (including Asia/Jerusalem at UTC+2/+3)
-    const digestHours = [5, 6, 7, 8, 9, 10, 11];
-    
-    digestHours.forEach(hour => {
-      cron.schedule(`0 ${hour} * * *`, async () => {
-        try {
-          logger.debug(`⏰ Running scheduled morning digest check at ${hour}:00 UTC...`);
-          await this.reminderService.sendMorningDigest();
-        } catch (error) {
-          logger.error(`❌ Error in scheduled morning digest at ${hour}:00 UTC:`, error);
-          // Continue running - don't let one failure stop the scheduler
-        }
-      });
+    // It checks if it's the configured hour for each user's timezone
+    cron.schedule('0 * * * *', async () => {
+      try {
+        logger.debug('⏰ Running scheduled morning digest check...');
+        await this.reminderService.sendMorningDigest(this.morningDigestHour);
+      } catch (error) {
+        logger.error('❌ Error in scheduled morning digest:', error);
+        // Continue running - don't let one failure stop the scheduler
+      }
     });
 
-    logger.info(`✅ Scheduled daily digest checks at ${digestHours.join(', ')}:00 UTC`);
+    logger.info(`✅ Scheduled daily digest checks every hour (will send at ${this.morningDigestHour}:00 in user's timezone)`);
 
     this.isRunning = true;
     logger.info('✅ Reminder scheduler started successfully');
@@ -85,7 +83,25 @@ export class SchedulerService {
    */
   async triggerMorningDigest(): Promise<void> {
     logger.info('📋 Manually triggering morning digest...');
-    await this.reminderService.sendMorningDigest();
+    await this.reminderService.sendMorningDigest(this.morningDigestHour);
+  }
+
+  /**
+   * Set morning digest hour
+   */
+  setMorningDigestHour(hour: number): void {
+    if (hour < 0 || hour > 23) {
+      throw new Error('Morning digest hour must be between 0 and 23');
+    }
+    this.morningDigestHour = hour;
+    logger.info(`📅 Morning digest hour updated to ${hour}:00`);
+  }
+
+  /**
+   * Get morning digest hour
+   */
+  getMorningDigestHour(): number {
+    return this.morningDigestHour;
   }
 
   /**

@@ -1,3 +1,4 @@
+import { SystemPrompts } from '../../config/system-prompts';
 import { BaseAgent } from '../../core/base/BaseAgent';
 import { IFunctionHandler } from '../../core/interfaces/IAgent';
 import { FunctionDefinition } from '../../core/types/AgentTypes';
@@ -5,7 +6,6 @@ import { OpenAIService } from '../../services/ai/OpenAIService';
 import { GmailService } from '../../services/email/GmailService';
 import { logger } from '../../utils/logger';
 import { GmailFunction } from '../functions/GmailFunctions';
-import { SystemPrompts } from '../../config/system-prompts';
 
 export class GmailAgent extends BaseAgent {
   private gmailService: GmailService;
@@ -24,7 +24,16 @@ export class GmailAgent extends BaseAgent {
     this.registerFunctions();
   }
 
-  async processRequest(message: string, userPhone: string, context: any[] = []): Promise<string> {
+  async processRequest(
+    message: string, 
+    userPhone: string,
+    optionsOrContext?: {
+      whatsappMessageId?: string;
+      replyToMessageId?: string;
+    } | any[]
+  ): Promise<string> {
+    // Handle both new options format and legacy context array format
+    const context: any[] = Array.isArray(optionsOrContext) ? optionsOrContext : [];
     try {
       this.logger.info('📧 Gmail Agent activated');
       this.logger.info(`📝 Processing email request: "${message}"`);
