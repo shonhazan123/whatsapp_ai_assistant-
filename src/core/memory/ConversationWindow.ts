@@ -20,6 +20,12 @@ export interface ConversationMessage {
       tasks: RecentTaskSnapshot[];
       updatedAt: number;
     };
+    imageContext?: {
+      imageId: string; // WhatsApp media ID
+      analysisResult: any; // ImageAnalysisResult - using any to avoid circular dependency
+      imageType: 'structured' | 'random';
+      extractedAt: number; // Timestamp
+    };
   };
 }
 
@@ -237,6 +243,25 @@ export class ConversationWindow {
     const messages = this.memory.get(userPhone) || [];
     logger.debug(`Retrieved ${messages.length} messages for ${userPhone}`);
     return [...messages]; // Return copy to prevent external modification
+  }
+
+  /**
+   * Get the last message with image context (if any)
+   * Searches backwards through messages to find the most recent one with imageContext
+   */
+  public getLastMessageWithImageContext(userPhone: string): ConversationMessage | null {
+    const messages = this.memory.get(userPhone);
+    if (!messages) return null;
+    
+    // Search backwards through messages
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.metadata?.imageContext) {
+        return msg;
+      }
+    }
+    
+    return null;
   }
 
   /**

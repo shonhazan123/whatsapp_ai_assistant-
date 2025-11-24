@@ -1,7 +1,9 @@
 import dotenv from 'dotenv';
 import express, { Request, Response } from 'express';
 import { RequestContext } from '../core/context/RequestContext';
+import { ConversationWindow } from '../core/memory/ConversationWindow';
 import { processMessageV2 } from '../index-v2';
+import { OpenAIService } from '../services/ai/OpenAIService';
 import { googleOAuthService } from '../services/auth/GoogleOAuthService';
 import { GoogleTokenManager } from '../services/auth/GoogleTokenManager';
 import { UserGoogleToken, UserRecord, UserService } from '../services/database/UserService';
@@ -21,6 +23,8 @@ export const whatsappWebhook = express.Router();
 
 const userService = new UserService();
 const googleTokenManager = new GoogleTokenManager();
+const openaiService = new OpenAIService(logger);
+const conversationWindow = ConversationWindow.getInstance();
 
 // Webhook verification (GET request from WhatsApp)
 whatsappWebhook.get('/whatsapp', (req: Request, res: Response) => {
@@ -99,12 +103,83 @@ async function handleIncomingMessage(message: WhatsAppMessage): Promise<void> {
       const audioBuffer = await downloadWhatsAppMedia(message.audio.id);
       messageText = await transcribeAudio(audioBuffer);
       logger.info(`🎤 Audio transcribed: "${messageText}"`);
+    } else if (message.type === 'image' && message.image) {
+      // Download and analyze image
+      logger.info('🖼️  Processing image message');
+      
+      let imageBuffer: Buffer;
+      const imageCaption = message.image.caption || '';
+      
+      // Step 1: Download image with error handling
+      try {
+        imageBuffer = await downloadWhatsAppMedia(message.image.id);
+        logger.info(`📷 Image downloaded (${(imageBuffer.length / 1024).toFixed(2)}KB)`);
+      } catch (downloadError: any) {
+        logger.error('Error downloading image:', downloadError);
+        const errorMessage = downloadError.message?.includes('not found') 
+          ? 'Sorry, I couldn\'t access the image. It may have expired or been deleted. Please send the image again.'
+          : downloadError.message?.includes('timeout')
+          ? 'The image download timed out. Please try sending the image again.'
+          : 'Sorry, I couldn\'t download your image. Please try sending it again.';
+        
+        await sendWhatsAppMessage(userPhone, errorMessage);
+        return;
+      }
+      
+      if (imageCaption) {
+        logger.info(`📝 Image caption: "${imageCaption}"`);
+      }
+      
+      // Step 2: Analyze image using OpenAI Vision
+      try {
+        const analysisResult = await openaiService.analyzeImage(imageBuffer, imageCaption);
+        logger.info(`✅ Image analysis complete: ${analysisResult.imageType} (confidence: ${analysisResult.confidence})`);
+        
+        // Store image context in conversation memory for future reference
+        conversationWindow.addMessage(
+          userPhone,
+          'user',
+          imageCaption || '[Image]',
+          {
+            imageContext: {
+              imageId: message.image.id,
+              analysisResult: analysisResult,
+              imageType: analysisResult.imageType,
+              extractedAt: Date.now()
+            }
+          },
+          message.id
+        );
+        logger.info(`💾 Stored image context in conversation memory`);
+        
+        // Send formatted message directly from LLM
+        const responseMessage = analysisResult.formattedMessage || 
+          'I analyzed your image. Is there anything you\'d like me to help you with?';
+        
+        await sendWhatsAppMessage(userPhone, responseMessage);
+        logger.info(`📤 Sent formatted image analysis response to ${userPhone}`);
+      } catch (error: any) {
+        logger.error('Error analyzing image:', error);
+        
+        // The analyzeImage method already returns a formatted error message
+        // But we'll send a user-friendly message here as well
+        const errorMessage = error.message || 'Sorry, I encountered an error analyzing your image.';
+        await sendWhatsAppMessage(
+          userPhone,
+          errorMessage.includes('rate limit')
+            ? 'The image analysis service is currently busy. Please try again in a few moments.'
+            : errorMessage.includes('timeout')
+            ? 'The image took too long to process. Please try with a smaller image.'
+            : 'Sorry, I encountered an error analyzing your image. Please try again or describe what you see.'
+        );
+      }
+      return; // Exit early - image processing complete
     } else {
       // Unsupported message type
       logger.warn(`⚠️  Unsupported message type: ${message.type}`);
       await sendWhatsAppMessage(
         userPhone,
-        'Sorry, I can only process text and audio messages at the moment.'
+        'Sorry, I can only process text, audio, and image messages at the moment.'
       );
       return;
     }

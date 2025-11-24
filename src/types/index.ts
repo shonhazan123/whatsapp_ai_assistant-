@@ -11,6 +11,12 @@ export interface WhatsAppMessage {
       id: string;
       mime_type: string;
     };
+    image?: {
+      id: string;
+      mime_type: string;
+      sha256: string;
+      caption?: string; // Optional user caption with the image
+    };
     context?: {
       from: string;
       id: string; // message_id of the message being replied to
