@@ -6,6 +6,14 @@
 import { createHash } from 'crypto';
 import { logger } from '../../utils/logger';
 
+// Dynamic import for sharp (fastest image processing library)
+let sharp: any = null;
+try {
+  sharp = require('sharp');
+} catch (error) {
+  logger.warn('sharp library not found. Image compression will be limited. Install with: npm install sharp');
+}
+
 export interface ImageValidationResult {
   valid: boolean;
   error?: string;
@@ -98,42 +106,136 @@ export class ImageProcessor {
   }
 
   /**
-   * Compress image if needed
-   * Note: This is a basic implementation. For production, consider using sharp or jimp library
+   * Compress image if needed using sharp (fastest image processing library)
    */
   static async compressImage(buffer: Buffer, targetSize?: number): Promise<CompressionResult> {
     const target = targetSize || this.MAX_IMAGE_SIZE_FOR_API;
+    const originalSize = buffer.length;
     
-    if (buffer.length <= target) {
+    if (originalSize <= target) {
       return {
         compressed: false,
-        originalSize: buffer.length,
-        compressedSize: buffer.length,
+        originalSize,
+        compressedSize: originalSize,
         buffer
       };
     }
 
     try {
-      // For now, we'll just return the original buffer with a warning
-      // In production, you should use a library like 'sharp' for actual compression
-      logger.warn(`Image size (${(buffer.length / 1024 / 1024).toFixed(2)}MB) exceeds API limit. Compression not implemented yet.`);
-      
-      // TODO: Implement actual compression using sharp or jimp
-      // For now, we'll truncate if it's way too large (not ideal, but prevents API errors)
-      if (buffer.length > target * 2) {
-        logger.error(`Image is too large even after compression attempt. Size: ${(buffer.length / 1024 / 1024).toFixed(2)}MB`);
-        throw new Error(`Image is too large (${(buffer.length / 1024 / 1024).toFixed(2)}MB). Please use a smaller image.`);
+      // If sharp is not available, fall back to basic error
+      if (!sharp) {
+        logger.warn(`Image size (${(originalSize / 1024 / 1024).toFixed(2)}MB) exceeds API limit. Sharp library not installed.`);
+        if (originalSize > target * 2) {
+          throw new Error(`Image is too large (${(originalSize / 1024 / 1024).toFixed(2)}MB). Please use a smaller image or install sharp: npm install sharp`);
+        }
+        return {
+          compressed: false,
+          originalSize,
+          compressedSize: originalSize,
+          buffer
+        };
       }
 
+      logger.info(`Compressing image: ${(originalSize / 1024 / 1024).toFixed(2)}MB → target: ${(target / 1024 / 1024).toFixed(2)}MB`);
+
+      // Detect format
+      const format = this.detectImageFormat(buffer);
+      const outputFormat = format === 'png' ? 'png' : 'jpeg'; // Convert to JPEG for better compression (except PNG)
+
+      // Progressive compression: try different quality levels
+      let quality = 85; // Start with high quality
+      let compressedBuffer: Buffer = buffer; // Initialize with original buffer as fallback
+      let attempts = 0;
+      const maxAttempts = 5;
+
+      while (attempts < maxAttempts) {
+        // Create sharp instance and compress
+        let sharpInstance = sharp(buffer);
+
+        // Resize if image is very large (maintain aspect ratio)
+        const metadata = await sharp(buffer).metadata();
+        const maxDimension = 2048; // Max width or height
+        if (metadata.width && metadata.height && (metadata.width > maxDimension || metadata.height > maxDimension)) {
+          const ratio = Math.min(maxDimension / metadata.width, maxDimension / metadata.height);
+          const newWidth = Math.round(metadata.width * ratio);
+          const newHeight = Math.round(metadata.height * ratio);
+          logger.info(`Resizing image: ${metadata.width}x${metadata.height} → ${newWidth}x${newHeight}`);
+          sharpInstance = sharpInstance.resize(newWidth, newHeight, {
+            fit: 'inside',
+            withoutEnlargement: true
+          });
+        }
+
+        // Apply compression based on format
+        if (outputFormat === 'jpeg') {
+          compressedBuffer = await sharpInstance
+            .jpeg({ 
+              quality,
+              progressive: true,
+              mozjpeg: true // Use mozjpeg for better compression
+            })
+            .toBuffer();
+        } else {
+          compressedBuffer = await sharpInstance
+            .png({ 
+              quality,
+              compressionLevel: 9,
+              adaptiveFiltering: true
+            })
+            .toBuffer();
+        }
+
+        // Check if we've reached target size
+        if (compressedBuffer.length <= target) {
+          logger.info(`✅ Compression successful: ${(originalSize / 1024 / 1024).toFixed(2)}MB → ${(compressedBuffer.length / 1024 / 1024).toFixed(2)}MB (quality: ${quality})`);
+          return {
+            compressed: true,
+            originalSize,
+            compressedSize: compressedBuffer.length,
+            buffer: compressedBuffer
+          };
+        }
+
+        // Reduce quality for next attempt
+        quality -= 15;
+        attempts++;
+
+        if (quality < 30) {
+          // If quality is too low, stop trying
+          logger.warn(`Reached minimum quality threshold. Final size: ${(compressedBuffer.length / 1024 / 1024).toFixed(2)}MB`);
+          break;
+        }
+      }
+
+      // If we still haven't reached target, use the best result we got
+      if (compressedBuffer.length > target * 1.5) {
+        // If still way too large, throw error
+        throw new Error(`Unable to compress image to target size. Final size: ${(compressedBuffer.length / 1024 / 1024).toFixed(2)}MB (target: ${(target / 1024 / 1024).toFixed(2)}MB)`);
+      }
+
+      logger.warn(`⚠️  Compression reached ${(compressedBuffer.length / 1024 / 1024).toFixed(2)}MB (target: ${(target / 1024 / 1024).toFixed(2)}MB)`);
       return {
-        compressed: false, // Not actually compressed, but within acceptable range
-        originalSize: buffer.length,
-        compressedSize: buffer.length,
-        buffer
+        compressed: true,
+        originalSize,
+        compressedSize: compressedBuffer.length,
+        buffer: compressedBuffer
       };
-    } catch (error) {
+
+    } catch (error: any) {
       logger.error('Error compressing image:', error);
-      throw error;
+      
+      // If compression fails but image is not too large, return original
+      if (originalSize <= target * 1.5) {
+        logger.warn('Compression failed, using original image');
+        return {
+          compressed: false,
+          originalSize,
+          compressedSize: originalSize,
+          buffer
+        };
+      }
+      
+      throw new Error(`Failed to compress image: ${error.message || 'Unknown error'}`);
     }
   }
 
