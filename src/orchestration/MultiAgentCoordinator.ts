@@ -35,6 +35,10 @@ export class MultiAgentCoordinator {
         AgentName.GMAIL,
         AgentFactory.getAgent(AgentName.GMAIL)
       );
+      this.agents.set(
+        AgentName.SECOND_BRAIN,
+        AgentFactory.getAgent(AgentName.SECOND_BRAIN)
+      );
       logger.info('✅ Multi-agent coordinator initialized');
     } catch (error) {
       logger.error('Error initializing agents:', error);
@@ -107,7 +111,7 @@ export class MultiAgentCoordinator {
   }
 
   private resolveInvolvedAgents(intentDecision: IntentDecision): AgentName[] {
-    const knownAgents: AgentName[] = [AgentName.CALENDAR, AgentName.GMAIL, AgentName.DATABASE];
+    const knownAgents: AgentName[] = [AgentName.CALENDAR, AgentName.GMAIL, AgentName.DATABASE, AgentName.SECOND_BRAIN];
 
     const explicitAgents = intentDecision.involvedAgents.filter(agent => knownAgents.includes(agent));
     if (explicitAgents.length > 0) {
@@ -248,6 +252,9 @@ export class MultiAgentCoordinator {
           return 'Your plan does not include database features.';
         }
         return null;
+      case AgentName.SECOND_BRAIN:
+        // Second brain is available to all users (no special requirements)
+        return null;
       default:
         return null;
     }
@@ -304,7 +311,7 @@ export class MultiAgentCoordinator {
       const action = item as Record<string, unknown>;
       const agent = action.agent;
 
-      if (agent !== AgentName.DATABASE && agent !== AgentName.CALENDAR && agent !== AgentName.GMAIL) {
+      if (agent !== AgentName.DATABASE && agent !== AgentName.CALENDAR && agent !== AgentName.GMAIL && agent !== AgentName.SECOND_BRAIN) {
         logger.warn('Skipping action with unsupported agent:', agent);
         return;
       }

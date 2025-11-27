@@ -37,7 +37,6 @@ export class FunctionHandler implements IFunctionHandler {
 
   registerFunction(functionDef: IFunction): void {
     this.functions.set(functionDef.name, functionDef);
-    this.logger.info(`📝 Registered function: ${functionDef.name}`);
   }
 
   getRegisteredFunctions(): FunctionDefinition[] {

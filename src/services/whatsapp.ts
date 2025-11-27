@@ -9,11 +9,20 @@ const ACCESS_TOKEN = process.env.WHATSAPP_API_TOKEN;
 
 export async function sendWhatsAppMessage(to: string, message: string): Promise<string | null> {
   try {
+    // WhatsApp API requires phone numbers without + sign
+    const normalizedPhone = to.replace(/^\+/, '');
+    
+    // Check message length (WhatsApp has a 4096 character limit)
+    if (message.length > 4096) {
+      logger.warn(`Message too long (${message.length} chars), truncating to 4096 characters`);
+      message = message.substring(0, 4093) + '...';
+    }
+    
     const response = await axios.post(
       `${WHATSAPP_API_URL}/${PHONE_NUMBER_ID}/messages`,
       {
         messaging_product: 'whatsapp',
-        to: to,
+        to: normalizedPhone,
         text: { body: message }
       },
       {
@@ -38,8 +47,24 @@ export async function sendWhatsAppMessage(to: string, message: string): Promise<
     }
     
     return messageId;
-  } catch (error) {
-    logger.error('Error sending WhatsApp message:', error);
+  } catch (error: any) {
+    // Log detailed error information from WhatsApp API
+    if (error.response) {
+      const errorData = error.response.data;
+      logger.error('Error sending WhatsApp message:', {
+        status: error.response.status,
+        statusText: error.response.statusText,
+        error: errorData?.error || errorData,
+        phone: to,
+        messageLength: message.length
+      });
+    } else {
+      logger.error('Error sending WhatsApp message:', {
+        message: error.message,
+        phone: to,
+        messageLength: message.length
+      });
+    }
     throw error;
   }
 }

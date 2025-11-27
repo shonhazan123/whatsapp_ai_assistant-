@@ -14,9 +14,6 @@ function initializeArchitecture() {
     agentManager = AgentManager.getInstance();
     agentManager.initialize();
     
-    logger.info('✅ V2 architecture initialized successfully');
-    logger.info('📊 AgentManager status:', agentManager.getStatus());
-    
   } catch (error) {
     logger.error('❌ Failed to initialize V2 architecture:', error);
     throw error;

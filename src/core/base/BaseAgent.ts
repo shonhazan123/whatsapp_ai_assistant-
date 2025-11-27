@@ -44,12 +44,23 @@ export abstract class BaseAgent implements IAgent {
         const args = JSON.parse(functionCall.arguments);
 
         this.logger.info(`🔧 Executing function: ${functionCall.name}`);
+        this.logger.debug(`   Function arguments: ${JSON.stringify(args, null, 2)}`);
+        
+        const userId = await this.getUserId(userPhone);
+        this.logger.debug(`   User identifier: ${userId}`);
         
         const result = await this.functionHandler.executeFunction(
           functionCall.name,
           args,
-          await this.getUserId(userPhone)
+          userId
         );
+        
+        this.logger.debug(`   Function result: ${JSON.stringify({
+          success: result.success,
+          error: result.error,
+          dataKeys: result.data ? Object.keys(result.data) : [],
+          message: result.message
+        }, null, 2)}`);
 
         // Get final response with function result
         const finalCompletion = await this.openaiService.createCompletion({

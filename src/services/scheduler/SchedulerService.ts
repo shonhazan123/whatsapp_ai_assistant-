@@ -26,7 +26,6 @@ export class SchedulerService {
     // Run reminder checks every 5 minutes
     cron.schedule('*/5 * * * *', async () => {
       try {
-        logger.debug('⏰ Running scheduled reminder check...');
         await this.reminderService.sendUpcomingReminders();
       } catch (error) {
         logger.error('❌ Error in scheduled reminder check:', error);

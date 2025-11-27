@@ -166,6 +166,7 @@ export class OpenAIService {
       AgentName.CALENDAR,
       AgentName.GMAIL,
       AgentName.DATABASE,
+      AgentName.SECOND_BRAIN,
       AgentName.MULTI_TASK,
       'general'
     ];
@@ -190,7 +191,7 @@ export class OpenAIService {
       involvedAgents = candidate.involvedAgents
         .map((value: any) => (typeof value === 'string' ? value.toLowerCase() : ''))
         .filter((value: string): value is AgentName =>
-          [AgentName.CALENDAR, AgentName.GMAIL, AgentName.DATABASE, AgentName.MULTI_TASK].includes(value as AgentName)
+          [AgentName.CALENDAR, AgentName.GMAIL, AgentName.DATABASE, AgentName.SECOND_BRAIN, AgentName.MULTI_TASK].includes(value as AgentName)
         )
         .filter((agent: AgentName) => agent !== AgentName.MULTI_TASK);
     }
@@ -625,6 +626,58 @@ export class OpenAIService {
       return message;
     } else {
       return result.description || 'I analyzed your image. Is there anything you\'d like me to help you with?';
+    }
+  }
+
+  /**
+   * Create embedding vector for text using OpenAI embeddings API
+   * @param text The text to embed
+   * @param model The embedding model to use (default: text-embedding-3-small)
+   * @returns Array of 1536 numbers representing the embedding vector
+   */
+  async createEmbedding(
+    text: string,
+    model: string = 'text-embedding-3-small'
+  ): Promise<number[]> {
+    try {
+      if (!text || text.trim().length === 0) {
+        throw new Error('Text cannot be empty');
+      }
+
+      this.logger.info(`Creating embedding for text (length: ${text.length}, model: ${model})`);
+
+      const response = await openai.embeddings.create({
+        model,
+        input: text.trim(),
+      });
+
+      if (!response.data || response.data.length === 0) {
+        throw new Error('No embedding data returned from OpenAI');
+      }
+
+      const embedding = response.data[0].embedding;
+      
+      // Validate embedding dimensions
+      if (model === 'text-embedding-3-small' && embedding.length !== 1536) {
+        this.logger.warn(`Unexpected embedding dimension: ${embedding.length}, expected 1536`);
+      }
+
+      this.logger.debug(`Embedding created successfully (dimensions: ${embedding.length})`);
+      return embedding;
+    } catch (error: any) {
+      this.logger.error('Error creating embedding:', error);
+      
+      // Handle rate limiting
+      if (error.status === 429) {
+        throw new Error('OpenAI API rate limit exceeded. Please try again in a few moments.');
+      }
+      
+      // Handle invalid input
+      if (error.status === 400) {
+        throw new Error(`Invalid input for embedding: ${error.message || 'Bad request'}`);
+      }
+      
+      throw new Error(`Failed to create embedding: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 }

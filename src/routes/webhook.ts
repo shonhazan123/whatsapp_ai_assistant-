@@ -237,7 +237,6 @@ async function handleIncomingMessage(message: WhatsAppMessage): Promise<void> {
     logger.info(`💡 AI Response: "${response}"`);
 
     // Step 4: Send response back to user
-    logger.debug('Step 4: Sending response to user...');
     await sendWhatsAppMessage(userPhone, response);
     
     const duration = Date.now() - startTime;

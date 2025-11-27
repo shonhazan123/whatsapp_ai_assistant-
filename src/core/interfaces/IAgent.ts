@@ -3,7 +3,14 @@ import { FunctionDefinition, IResponse } from '../types/AgentTypes';
 export { IResponse } from '../types/AgentTypes';
 
 export interface IAgent {
-  processRequest(message: string, userPhone: string): Promise<string>;
+  processRequest(
+    message: string, 
+    userPhone: string,
+    optionsOrContext?: {
+      whatsappMessageId?: string;
+      replyToMessageId?: string;
+    } | any[]
+  ): Promise<string>;
   getSystemPrompt(): string;
   getFunctions(): FunctionDefinition[];
 }
@@ -25,5 +32,6 @@ export enum AgentName {
   CALENDAR = 'calendar',
   GMAIL = 'gmail',
   MAIN = 'main',
-  MULTI_TASK = 'multi-task'
+  MULTI_TASK = 'multi-task',
+  SECOND_BRAIN = 'second-brain'
 }

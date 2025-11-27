@@ -1,6 +1,6 @@
 import { AgentName } from '../../core/interfaces/IAgent';
 
-export type CoordinatorAgent = AgentName.DATABASE | AgentName.CALENDAR | AgentName.GMAIL;
+export type CoordinatorAgent = AgentName.DATABASE | AgentName.CALENDAR | AgentName.GMAIL | AgentName.SECOND_BRAIN;
 
 export interface PlannedAction {
   id: string;

@@ -41,7 +41,6 @@ export class ReminderService {
 
       // Get one-time reminders
       const oneTimeReminders = await this.getOneTimeReminders();
-      this.loggerInstance.info(`Found ${oneTimeReminders.length} one-time reminders to send`);
 
       // Send one-time reminders
       for (const task of oneTimeReminders) {
@@ -61,7 +60,6 @@ export class ReminderService {
 
       // Get recurring reminders
       const recurringReminders = await this.getRecurringReminders();
-      this.loggerInstance.info(`Found ${recurringReminders.length} recurring reminders to send`);
 
       // Send recurring reminders and update next_reminder_at
       for (const task of recurringReminders) {
@@ -100,7 +98,6 @@ export class ReminderService {
         }
       }
 
-      this.loggerInstance.info(`✅ Reminder check complete. Sent ${oneTimeReminders.length + recurringReminders.length} reminders`);
     } catch (error) {
       this.loggerInstance.error('Error in sendUpcomingReminders:', error);
       throw error;
@@ -135,13 +132,11 @@ export class ReminderService {
               const rawData = this.buildDailyDigestData(plannedTasks, unplannedTasks, calendarEvents, user);
               message = await this.enhanceMessageWithAI(rawData);
               await sendWhatsAppMessage(user.phone, message);
-              this.loggerInstance.info(`✅ Sent morning digest to ${user.phone} with ${plannedTasks.length} planned tasks, ${unplannedTasks.length} unplanned tasks, and ${calendarEvents.length} calendar events`);
             } else {
               // No tasks or events - send empty digest message
               const rawData = this.buildEmptyDigestData(user);
               message = await this.enhanceMessageWithAI(rawData);
               await sendWhatsAppMessage(user.phone, message);
-              this.loggerInstance.info(`✅ Sent empty morning digest to ${user.phone}`);
             }
           }
         } catch (error) {
