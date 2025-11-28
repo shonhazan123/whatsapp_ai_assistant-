@@ -1,13 +1,14 @@
-import { IAgent , AgentName } from '../interfaces/IAgent';
-import { OpenAIService } from '../../services/ai/OpenAIService';
-import { FunctionHandler } from '../base/FunctionHandler';
-import { logger } from '../../utils/logger';
-import { DatabaseAgent } from '../../agents/v2/DatabaseAgent';
 import { CalendarAgent } from '../../agents/v2/CalendarAgent';
+import { DatabaseAgent } from '../../agents/v2/DatabaseAgent';
 import { GmailAgent } from '../../agents/v2/GmailAgent';
 import { MainAgent } from '../../agents/v2/MainAgent';
+import { SecondBrainAgent } from '../../agents/v2/SecondBrainAgent';
+import { OpenAIService } from '../../services/ai/OpenAIService';
+import { logger } from '../../utils/logger';
+import { FunctionHandler } from '../base/FunctionHandler';
+import { AgentName, IAgent } from '../interfaces/IAgent';
 
-export type AgentType = AgentName.DATABASE| AgentName.CALENDAR | AgentName.GMAIL | AgentName.MAIN;
+export type AgentType = AgentName.DATABASE| AgentName.CALENDAR | AgentName.GMAIL | AgentName.MAIN | AgentName.SECOND_BRAIN;
 
 export class AgentFactory {
   private static instances: Map<AgentType, IAgent> = new Map();
@@ -66,6 +67,14 @@ export class AgentFactory {
         );
         break;
 
+      case AgentName.SECOND_BRAIN:
+        agent = new SecondBrainAgent(
+          AgentFactory.openaiService,
+          AgentFactory.functionHandler,
+          AgentFactory.logger
+        );
+        break;
+
       default:
         throw new Error(`Unknown agent type: ${type}`);
     }
@@ -83,6 +92,6 @@ export class AgentFactory {
   }
 
   static getAllAgentTypes(): AgentType[] {
-    return [AgentName.DATABASE, AgentName.CALENDAR, AgentName.GMAIL, AgentName.MAIN];
+    return [AgentName.DATABASE, AgentName.CALENDAR, AgentName.GMAIL, AgentName.MAIN, AgentName.SECOND_BRAIN];
   }
 }

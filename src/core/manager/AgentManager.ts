@@ -47,7 +47,6 @@ export class AgentManager {
    */
   public initialize(): void {
     try {
-      logger.info('🚀 Initializing AgentManager...');
       
       // Initialize AgentFactory with dependencies
       AgentFactory.initialize(
@@ -76,7 +75,6 @@ export class AgentManager {
    * Initialize core agents as singletons
    */
   private initializeCoreAgents(): void {
-    logger.info('🔧 Initializing core agents...');
     
     this.databaseAgent = AgentFactory.getAgent(AgentName.DATABASE);
     this.calendarAgent = AgentFactory.getAgent(AgentName.CALENDAR);
@@ -90,7 +88,6 @@ export class AgentManager {
    * Initialize orchestration components as singletons
    */
   private initializeOrchestrationComponents(): void {
-    logger.info('🎭 Initializing orchestration components...');
     
     // MultiAgentCoordinator (no parameters needed)
     this.multiAgentCoordinator = new MultiAgentCoordinator();

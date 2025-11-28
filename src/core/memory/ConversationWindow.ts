@@ -146,8 +146,6 @@ export class ConversationWindow {
       
       messages.push(message);
       
-      const userMsgCount = messages.filter(m => m.role === 'user').length;
-      logger.debug(`Added ${role} message for ${userPhone} (${messages.length} total messages, ${userMsgCount} user messages)`);
     } catch (error) {
       logger.error('Error adding message to conversation window:', error);
     }
