@@ -37,7 +37,6 @@ export class ReminderService {
    */
   async sendUpcomingReminders(): Promise<void> {
     try {
-      this.loggerInstance.info('🔔 Checking for upcoming reminders...');
 
       // Get one-time reminders
       const oneTimeReminders = await this.getOneTimeReminders();

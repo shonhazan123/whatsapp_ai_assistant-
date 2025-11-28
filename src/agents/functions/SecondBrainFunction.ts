@@ -134,20 +134,39 @@ export class SecondBrainFunction implements IFunction {
         };
       }
 
-      const memory = await this.secondBrainService.insertMemory(
+      // Generate embedding first (required for insertOrMergeMemory)
+      this.loggerInstance.debug(`   Generating embedding for new memory text`);
+      const embedding = await this.secondBrainService.embedText(params.text);
+
+      // Use insertOrMergeMemory to check for similar memories and merge if found
+      const result = await this.secondBrainService.insertOrMergeMemory(
         userId,
         params.text,
-        undefined, // embedding will be generated
+        embedding,
         params.metadata || {}
       );
 
-      this.loggerInstance.info(`✅ [storeMemory] Memory stored successfully (id: ${memory.id})`);
-      
-      return {
-        success: true,
-        data: memory,
-        message: 'Memory stored successfully'
-      };
+      if (result.merged) {
+        this.loggerInstance.info(`✅ [storeMemory] Memory merged into existing (id: ${result.memory.id})`);
+        return {
+          success: true,
+          data: {
+            id: result.memory.id,
+            merged: true
+          },
+          message: 'Memory merged with existing similar memory'
+        };
+      } else {
+        this.loggerInstance.info(`✅ [storeMemory] Memory stored as new (id: ${result.memory.id})`);
+        return {
+          success: true,
+          data: {
+            id: result.memory.id,
+            merged: false
+          },
+          message: 'Memory stored successfully'
+        };
+      }
     } catch (error) {
       this.loggerInstance.error('Error storing memory:', error);
       return {

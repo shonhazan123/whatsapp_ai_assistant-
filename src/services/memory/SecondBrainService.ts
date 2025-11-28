@@ -4,6 +4,7 @@ import { MemoryMetadata, MemoryRecord, SearchResult } from '../../types/memory';
 import { logger } from '../../utils/logger';
 import { OpenAIService } from '../ai/OpenAIService';
 import { BaseService } from '../database/BaseService';
+import { DEFAULT_MERGE_THRESHOLD } from '../../config/secondBrain';
 
 export class SecondBrainService extends BaseService {
   private openaiService: OpenAIService;
@@ -23,6 +24,51 @@ export class SecondBrainService extends BaseService {
   }
 
   /**
+   * Convert pgvector string to JavaScript array
+   * @param vectorString String in format '[0.1,0.2,...]' from pgvector
+   * @returns Array of numbers
+   */
+  private vectorStringToArray(vectorString: string): number[] {
+    try {
+      // Handle different possible formats from pgvector
+      let cleaned = String(vectorString).trim();
+      
+      // Remove brackets if present
+      if (cleaned.startsWith('[') && cleaned.endsWith(']')) {
+        cleaned = cleaned.slice(1, -1);
+      }
+      
+      // Split by comma and parse
+      const parts = cleaned.split(',');
+      const result = parts.map(part => {
+        const num = parseFloat(part.trim());
+        if (isNaN(num)) {
+          throw new Error(`Invalid number in vector: "${part}"`);
+        }
+        return num;
+      });
+      
+      return result;
+    } catch (error) {
+      this.logger.error(`[vectorStringToArray] Error parsing vector string: ${vectorString.substring(0, 100)}`, error);
+      throw new Error(`Failed to parse vector string: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Calculate element-wise average of two vectors
+   * @param v1 First vector
+   * @param v2 Second vector
+   * @returns Average vector
+   */
+  private averageVectors(v1: number[], v2: number[]): number[] {
+    if (v1.length !== v2.length) {
+      throw new Error('Vectors must have the same length');
+    }
+    return v1.map((val, i) => (val + v2[i]) / 2);
+  }
+
+  /**
    * Create embedding for text using OpenAI
    * @param text Text to embed
    * @returns 1536-dimensional embedding vector
@@ -34,6 +80,267 @@ export class SecondBrainService extends BaseService {
       return embedding;
     } catch (error) {
       this.logger.error('Error in embedText:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Insert or merge a new memory into the database
+   * If a similar memory exists (similarity >= 0.70), merge into it instead of creating new row
+   * @param userIdOrPhone User ID (UUID) or phone number (will be resolved to UUID)
+   * @param newText New memory text content
+   * @param embedding Pre-computed embedding vector (must be provided, 1536 dimensions)
+   * @param metadata Optional metadata (tags, category, language, etc.)
+   * @returns Object with memory record and merge status
+   */
+  async insertOrMergeMemory(
+    userIdOrPhone: string,
+    newText: string,
+    embedding: number[],
+    metadata: MemoryMetadata = {}
+  ): Promise<{ memory: MemoryRecord; merged: boolean }> {
+    try {
+      if (!newText || newText.trim().length === 0) {
+        throw new Error('Memory text cannot be empty');
+      }
+
+      if (!userIdOrPhone) {
+        throw new Error('User identifier is required');
+      }
+
+      if (!embedding || embedding.length !== 1536) {
+        throw new Error('Embedding must be provided and have 1536 dimensions');
+      }
+
+      // Resolve phone number to user UUID if needed
+      const userId = await this.resolveUserId(undefined, userIdOrPhone);
+
+      // Search for most similar existing memory
+      const queryVectorString = this.arrayToVectorString(embedding);
+      const mergeThreshold = DEFAULT_MERGE_THRESHOLD;
+
+      this.logger.info(`[insertOrMergeMemory] Searching for similar memories (threshold: ${mergeThreshold})`);
+
+      const searchSql = `
+        SELECT 
+          id,
+          user_id,
+          text,
+          embedding,
+          metadata,
+          created_at,
+          updated_at,
+          1 - (embedding <=> $1::vector) AS similarity
+        FROM second_brain_memory
+        WHERE user_id = $2
+          AND (1 - (embedding <=> $1::vector)) >= $3
+        ORDER BY embedding <=> $1::vector
+        LIMIT 1
+      `;
+
+      const searchResult = await query(searchSql, [
+        queryVectorString,
+        userId,
+        mergeThreshold,
+      ]);
+
+      // If similar memory found, merge into it
+      if (searchResult.rows && searchResult.rows.length > 0) {
+        const existingRow = searchResult.rows[0];
+        const similarity = parseFloat(existingRow.similarity) || 0;
+
+        this.logger.info(`[insertOrMergeMemory] Found similar memory (id: ${existingRow.id}, similarity: ${similarity.toFixed(4)}) - merging`);
+
+        // Convert existing embedding from vector string to array
+        // pgvector returns embedding as a string representation like '[0.1,0.2,...]'
+        const existingEmbeddingString = String(existingRow.embedding || '[]');
+        this.logger.debug(`[insertOrMergeMemory] Existing embedding string length: ${existingEmbeddingString.length}, first 100 chars: ${existingEmbeddingString.substring(0, 100)}`);
+        
+        let existingEmbedding: number[];
+        try {
+          existingEmbedding = this.vectorStringToArray(existingEmbeddingString);
+          this.logger.debug(`[insertOrMergeMemory] Parsed existing embedding: ${existingEmbedding.length} dimensions`);
+        } catch (error) {
+          this.logger.error(`[insertOrMergeMemory] Failed to parse existing embedding, using new embedding only`, error);
+          // Fallback: use new embedding only
+          existingEmbedding = embedding;
+        }
+        
+        if (existingEmbedding.length !== 1536) {
+          this.logger.warn(`[insertOrMergeMemory] Existing embedding has unexpected length: ${existingEmbedding.length}, expected 1536. Using new embedding only.`);
+          // Fallback: use new embedding only if existing is malformed
+          const finalEmbedding = embedding;
+          const finalVectorString = this.arrayToVectorString(finalEmbedding);
+          
+          // Merge text
+          const mergedText = `${existingRow.text}\n- ${newText.trim()}`;
+          
+          // Detect language
+          const detectedLanguage = metadata.language || this.detectLanguage(newText);
+          const mergedMetadata: MemoryMetadata = {
+            ...(existingRow.metadata || {}),
+            ...metadata,
+            language: detectedLanguage,
+          };
+          
+          // Update with new embedding only
+          const updateSql = `
+            UPDATE second_brain_memory
+            SET 
+              text = $1,
+              embedding = $2::vector,
+              metadata = $3::jsonb,
+              updated_at = NOW()
+            WHERE id = $4 AND user_id = $5
+            RETURNING 
+              id,
+              user_id,
+              text,
+              embedding,
+              metadata,
+              created_at,
+              updated_at
+          `;
+          
+          const updateResult = await query(updateSql, [
+            mergedText,
+            finalVectorString,
+            JSON.stringify(mergedMetadata),
+            existingRow.id,
+            userId,
+          ]);
+          
+          if (!updateResult.rows || updateResult.rows.length === 0) {
+            throw new Error('Failed to update merged memory');
+          }
+          
+          const updatedRow = updateResult.rows[0];
+          const memory: MemoryRecord = {
+            id: updatedRow.id,
+            user_id: updatedRow.user_id,
+            text: updatedRow.text,
+            embedding: finalEmbedding,
+            metadata: updatedRow.metadata || {},
+            created_at: new Date(updatedRow.created_at),
+            updated_at: new Date(updatedRow.updated_at),
+          };
+          
+          this.logger.info(`[insertOrMergeMemory] Memory merged successfully (id: ${memory.id}, used new embedding only)`);
+          return { memory, merged: true };
+        }
+
+        // Merge text: existing + new
+        const mergedText = `${existingRow.text}\n- ${newText.trim()}`;
+
+        // Average the embeddings
+        const averagedEmbedding = this.averageVectors(existingEmbedding, embedding);
+        const averagedVectorString = this.arrayToVectorString(averagedEmbedding);
+
+        // Detect language if not provided
+        const detectedLanguage = metadata.language || this.detectLanguage(newText);
+        const mergedMetadata: MemoryMetadata = {
+          ...(existingRow.metadata || {}),
+          ...metadata,
+          language: detectedLanguage, // Use new text's language if different
+        };
+
+        // Update existing row
+        const updateSql = `
+          UPDATE second_brain_memory
+          SET 
+            text = $1,
+            embedding = $2::vector,
+            metadata = $3::jsonb,
+            updated_at = NOW()
+          WHERE id = $4 AND user_id = $5
+          RETURNING 
+            id,
+            user_id,
+            text,
+            embedding,
+            metadata,
+            created_at,
+            updated_at
+        `;
+
+        const updateResult = await query(updateSql, [
+          mergedText,
+          averagedVectorString,
+          JSON.stringify(mergedMetadata),
+          existingRow.id,
+          userId,
+        ]);
+
+        if (!updateResult.rows || updateResult.rows.length === 0) {
+          throw new Error('Failed to update merged memory');
+        }
+
+        const updatedRow = updateResult.rows[0];
+        const memory: MemoryRecord = {
+          id: updatedRow.id,
+          user_id: updatedRow.user_id,
+          text: updatedRow.text,
+          embedding: averagedEmbedding,
+          metadata: updatedRow.metadata || {},
+          created_at: new Date(updatedRow.created_at),
+          updated_at: new Date(updatedRow.updated_at),
+        };
+
+        this.logger.info(`[insertOrMergeMemory] Memory merged successfully (id: ${memory.id})`);
+        return { memory, merged: true };
+      }
+
+      // No similar memory found, insert new row
+      this.logger.info(`[insertOrMergeMemory] No similar memory found - creating new row`);
+
+      // Detect language if not provided
+      const detectedLanguage = metadata.language || this.detectLanguage(newText);
+      const finalMetadata: MemoryMetadata = {
+        ...metadata,
+        language: detectedLanguage,
+      };
+
+      const vectorString = this.arrayToVectorString(embedding);
+
+      const insertSql = `
+        INSERT INTO second_brain_memory (user_id, text, embedding, metadata)
+        VALUES ($1, $2, $3::vector, $4::jsonb)
+        RETURNING 
+          id,
+          user_id,
+          text,
+          embedding,
+          metadata,
+          created_at,
+          updated_at
+      `;
+
+      const insertResult = await query(insertSql, [
+        userId,
+        newText.trim(),
+        vectorString,
+        JSON.stringify(finalMetadata),
+      ]);
+
+      if (!insertResult.rows || insertResult.rows.length === 0) {
+        throw new Error('Failed to insert memory');
+      }
+
+      const row = insertResult.rows[0];
+      const memory: MemoryRecord = {
+        id: row.id,
+        user_id: row.user_id,
+        text: row.text,
+        embedding: embedding, // Return the original embedding
+        metadata: row.metadata || {},
+        created_at: new Date(row.created_at),
+        updated_at: new Date(row.updated_at),
+      };
+
+      this.logger.info(`[insertOrMergeMemory] Memory inserted successfully (id: ${memory.id})`);
+      return { memory, merged: false };
+    } catch (error) {
+      this.logger.error('Error in insertOrMergeMemory:', error);
       throw error;
     }
   }

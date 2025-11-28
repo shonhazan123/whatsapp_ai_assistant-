@@ -33,3 +33,8 @@ export const DEFAULT_SEARCH_LIMIT = 5;
  */
 export const DEFAULT_GET_ALL_LIMIT = 20;
 
+/**
+ * Default threshold for merging memories
+ */
+export const DEFAULT_MERGE_THRESHOLD = 0.45;
+
