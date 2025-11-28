@@ -14,7 +14,9 @@ export class CalendarToolset implements IToolset {
   private calendarService: CalendarService;
 
   constructor(calendarId?: string) {
-    this.calendarService = new CalendarService(logger, calendarId);
+    // CalendarService constructor only accepts optional logger parameter
+    // calendarId is resolved internally via resolveCalendarId() method
+    this.calendarService = new CalendarService(logger);
   }
 
   async execute(operation: string, params: any): Promise<ToolResult> {
