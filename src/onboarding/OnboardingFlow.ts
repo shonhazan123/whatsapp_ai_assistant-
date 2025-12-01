@@ -243,7 +243,8 @@ export class OnboardingFlow {
       'success',
       'הצלחה',
       'stored',
-      'נשמר'
+      '.נשמר',
+      'דברים שאני צריך לעשות אבל דוחה'
     ];
 
     const hasSuccessIndicator = successIndicators.some(indicator => 

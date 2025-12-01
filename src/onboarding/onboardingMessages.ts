@@ -144,7 +144,8 @@ export const onboardingMessages = {
 
     memory_practice: `🎉 מזל טוב! סיימת את כל שלבי ההדרכה!
 
-עכשיו אתה מוכן להשתמש בכל היכולות שלי. אם תרצה עזרה, פשוט שאל אותי!`
+עכשיו אתה מוכן להשתמש בכל היכולות שלי. אם תרצה עזרה, פשוט שאל אותי! 
+אה כמעת שחכתי ! בנוסף להכל אני מחובר ל ChatGPT אז אוכל לעזור לך בדברים כלליים ובכל נושא אחר  🙂 `
   }
 };
 
