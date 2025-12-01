@@ -20,18 +20,9 @@ function initializeArchitecture() {
   }
 }
 
-
-
-
 // Export the new processMessage function with Advanced Orchestration
-export async function processMessageV2(
-  userPhone: string, 
-  messageText: string,
-  options?: {
-    whatsappMessageId?: string;
-    replyToMessageId?: string;
-  }
-): Promise<string> {
+export async function processMessageV2(userPhone: string, messageText: string, options?: { whatsappMessageId?: string; replyToMessageId?: string;}): Promise<string> 
+{
   try {
     // Initialize architecture if not already done
     if (!agentManager) {
