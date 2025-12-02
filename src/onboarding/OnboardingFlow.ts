@@ -69,6 +69,33 @@ export class OnboardingFlow {
   }
 
   /**
+   * Check if user is using iPhone Calendar (לוח שנה)
+   */
+  isUsingIPhoneCalendar(messageText: string): boolean {
+    const normalized = messageText.toLowerCase().trim();
+    const iphoneKeywords = ['לוח שנה', 'iphone calendar', 'apple calendar', 'יומן iphone', 'יומן אפל','אייפון','יומן אייפון','איפון','אייפון קלנדר'];
+    return iphoneKeywords.some(keyword => normalized.includes(keyword));
+  }
+
+  /**
+   * Check if user is using Google Calendar
+   */
+  isUsingGoogleCalendar(messageText: string): boolean {
+    const normalized = messageText.toLowerCase().trim();
+    const googleKeywords = ['google calendar', 'יומן גוגל', 'גוגל', 'google'];
+    return googleKeywords.some(keyword => normalized.includes(keyword));
+  }
+
+  /**
+   * Check if user confirmed iPhone calendar sync completion
+   */
+  isIPhoneCalendarSyncConfirmation(messageText: string): boolean {
+    const normalized = messageText.toLowerCase().trim();
+    const confirmations = ['סיימתי', 'סיימת', 'גמרתי', 'גמרתי את', 'סיימתי את', 'done', 'finished', 'all done', 'הכל מוכן', 'מוכן', 'הכל בסדר'];
+    return confirmations.some(conf => normalized.includes(conf));
+  }
+
+  /**
    * Detect if calendar practice step was completed
    */
   isUserCompletingCalendarPractice(
@@ -177,50 +204,6 @@ export class OnboardingFlow {
     return hasSuccessIndicator && mentionsReminder;
   }
 
-  /**
-   * Detect if list practice step was completed
-   */
-  isUserCompletingListPractice(
-    messageText: string,
-    agentResponse: string,
-    context?: any
-  ): boolean {
-    const responseLower = agentResponse.toLowerCase();
-    const successIndicators = [
-      'list',
-      'רשימה',
-      'רשימות',
-      'created',
-      'נוצר',
-      'נוצרה',
-      'הוסף',
-      'הוספתי',
-      'added',
-      'success',
-      'הצלחה',
-      'shopping',
-      'קניות'
-    ];
-
-    const hasSuccessIndicator = successIndicators.some(indicator => 
-      responseLower.includes(indicator)
-    );
-
-    const messageLower = messageText.toLowerCase();
-    const listKeywords = [
-      'רשימה',
-      'list',
-      'רשימת קניות',
-      'shopping list',
-      'תוסיף לרשימה',
-      'add to list'
-    ];
-    const mentionsList = listKeywords.some(keyword => 
-      messageLower.includes(keyword)
-    );
-
-    return hasSuccessIndicator && mentionsList;
-  }
 
   /**
    * Detect if memory practice step was completed
@@ -275,9 +258,9 @@ export class OnboardingFlow {
     const stepOrder: OnboardingStep[] = [
       'start',
       'google_connect',
+      'iphone_calendar_sync',
       'calendar_practice',
       'reminder_practice',
-      'list_practice',
       'memory_practice',
       'done'
     ];
@@ -361,6 +344,57 @@ export class OnboardingFlow {
       }
     }
 
+    // Handle iPhone Calendar Sync step
+    if (state.step === 'iphone_calendar_sync') {
+      // If user confirms sync completion (after seeing instructions)
+      if (this.isIPhoneCalendarSyncConfirmation(messageText)) {
+        const nextStep = this.getNextStep('iphone_calendar_sync');
+        if (nextStep) {
+          await this.onboardingService.updateOnboardingProgress(userId, nextStep, false);
+          const nextStepMessage = this.getNextStepMessage('iphone_calendar_sync');
+          return {
+            message: null,
+            stopProcessing: false,
+            stepCompleted: true,
+            nextStepMessage: nextStepMessage
+          };
+        }
+      }
+
+      // If user says they use iPhone Calendar, show sync instructions
+      if (this.isUsingIPhoneCalendar(messageText)) {
+        const syncMessage = onboardingMessages.iphone_calendar_sync_instructions;
+        return {
+          message: syncMessage,
+          stopProcessing: true,
+          stepCompleted: false,
+          nextStepMessage: null
+        };
+      }
+
+      // If user says they use Google Calendar, skip to calendar_practice
+      if (this.isUsingGoogleCalendar(messageText)) {
+        const nextStep = 'calendar_practice';
+        await this.onboardingService.updateOnboardingProgress(userId, nextStep, false);
+        const nextStepMessage = this.getCurrentStepMessage(nextStep, userPhone);
+        return {
+          message: nextStepMessage,
+          stopProcessing: true,
+          stepCompleted: true,
+          nextStepMessage: null
+        };
+      }
+
+      // If user hasn't answered yet, show the question (this handles first message and any non-matching responses)
+      const stepMessage = onboardingMessages.iphone_calendar_sync_question;
+      return {
+        message: stepMessage,
+        stopProcessing: true,
+        stepCompleted: false,
+        nextStepMessage: null
+      };
+    }
+
     // Handle step completion detection (only if we have agent response)
     if (agentResponse) {
       let stepCompleted = false;
@@ -381,13 +415,6 @@ export class OnboardingFlow {
           if (this.isUserCompletingReminderPractice(messageText, agentResponse, context)) {
             stepCompleted = true;
             completedStep = 'reminder_practice';
-          }
-          break;
-
-        case 'list_practice':
-          if (this.isUserCompletingListPractice(messageText, agentResponse, context)) {
-            stepCompleted = true;
-            completedStep = 'list_practice';
           }
           break;
 
@@ -424,7 +451,7 @@ export class OnboardingFlow {
     }
 
     // If we're in a practice step and user hasn't completed it, show the step message
-    if (['calendar_practice', 'reminder_practice', 'list_practice', 'memory_practice'].includes(state.step)) {
+    if (['calendar_practice', 'reminder_practice', 'memory_practice'].includes(state.step)) {
       // Don't stop processing - let agent handle the request
       // But we'll check completion after agent responds
       return {
@@ -504,12 +531,12 @@ export class OnboardingFlow {
       case 'google_connect':
         // This will be handled separately with OAuth URL
         return 'אנא התחבר לחשבון Google שלך';
+      case 'iphone_calendar_sync':
+        return onboardingMessages.iphone_calendar_sync_question;
       case 'calendar_practice':
         return onboardingMessages.calendar_practice;
       case 'reminder_practice':
         return onboardingMessages.reminder_practice;
-      case 'list_practice':
-        return onboardingMessages.list_practice;
       case 'memory_practice':
         return onboardingMessages.memory_practice;
       case 'done':

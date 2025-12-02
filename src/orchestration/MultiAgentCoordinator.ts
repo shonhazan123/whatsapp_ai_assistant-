@@ -1,3 +1,4 @@
+import { DEFAULT_MODEL } from '../config/openai';
 import { SystemPrompts } from '../config/system-prompts';
 import { ServiceContainer } from '../core/container/ServiceContainer';
 import { RequestContext } from '../core/context/RequestContext';
@@ -268,7 +269,7 @@ export class MultiAgentCoordinator {
       messages: messages as any,
       temperature: 0.2,
       maxTokens: 1000,
-      model: 'gpt-4o'
+      model: DEFAULT_MODEL
     });
 
     const rawResponse = completion.choices[0]?.message?.content?.trim() ?? '[]';
@@ -537,9 +538,9 @@ export class MultiAgentCoordinator {
             content: summaryContent
           }
         ],
-        temperature: 0.4,
-        maxTokens: 300,
-        model: 'gpt-4o'
+        // temperature: 0.4,
+        // maxTokens: 300,
+        model: DEFAULT_MODEL
       });
 
       const text = completion.choices[0]?.message?.content?.trim();

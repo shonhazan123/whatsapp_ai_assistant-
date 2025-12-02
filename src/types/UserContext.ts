@@ -13,5 +13,6 @@ export interface RequestUserContext {
   capabilities: UserCapabilities;
   googleTokens?: UserGoogleToken | null;
   googleConnected: boolean;
+  performanceRequestId?: string; // For performance tracking
 }
 

@@ -1,19 +1,38 @@
-import { openai } from '../../config/openai';
+import { DEFAULT_MODEL, openai } from '../../config/openai';
 import { SystemPrompts } from '../../config/system-prompts';
-import { AgentName } from '../../core/interfaces/IAgent';
 import { FunctionDefinition } from '../../core/types/AgentTypes';
 import { ImageAnalysisResult } from '../../types/imageAnalysis';
 import { ImageCache } from '../image/ImageCache';
 import { ImageProcessor } from '../image/ImageProcessor';
+import { PerformanceTracker } from '../performance/PerformanceTracker';
+import { OpenAIFunctionHelper, type IntentDecision } from './OpenAIFunctionHelper';
 
 export interface CompletionRequest {
   messages: Array<{
-    role: 'system' | 'user' | 'assistant' | 'function';
-    content: string;
+    role: 'system' | 'user' | 'assistant' | 'function' | 'tool';
+    content: string | null;
     name?: string;
+    tool_call_id?: string;
+    tool_calls?: Array<{
+      id: string;
+      type: 'function';
+      function: {
+        name: string;
+        arguments: string;
+      };
+    }>;
+    function_call?: {
+      name: string;
+      arguments: string;
+    };
   }>;
   functions?: FunctionDefinition[];
   functionCall?: 'auto' | 'none' | { name: string };
+  tools?: Array<{
+    type: 'function';
+    function: FunctionDefinition;
+  }>;
+  tool_choice?: 'auto' | 'none' | { type: 'function'; function: { name: string } };
   temperature?: number;
   maxTokens?: number;
   model?: string;
@@ -22,48 +41,177 @@ export interface CompletionRequest {
 export interface CompletionResponse {
   choices: Array<{
     message?: {
-      content?: string;
+      content?: string | null;
       function_call?: {
         name: string;
         arguments: string;
       };
+      tool_calls?: Array<{
+        id: string;
+        type: 'function';
+        function: {
+          name: string;
+          arguments: string;
+        };
+      }>;
     };
   }>;
 }
 
-export type IntentCategory = AgentName | 'general';
-
-export interface IntentDecision {
-  primaryIntent: IntentCategory;
-  requiresPlan: boolean;
-  involvedAgents: AgentName[];
-  confidence?: 'high' | 'medium' | 'low';
-}
+// Re-export types from helper for backward compatibility
+export type { IntentCategory, IntentDecision } from './OpenAIFunctionHelper';
 
 export class OpenAIService {
   private imageCache: ImageCache;
+  private performanceTracker: PerformanceTracker;
 
   constructor(private logger: any = logger) {
     this.imageCache = ImageCache.getInstance();
+    this.performanceTracker = PerformanceTracker.getInstance();
   }
 
-  async createCompletion(request: CompletionRequest): Promise<CompletionResponse> {
+  async createCompletion(request: CompletionRequest, requestId?: string): Promise<CompletionResponse> {
+    const startTime = Date.now();
+    let completion: any;
+    let error: Error | null = null;
+
     try {
-      const completion = await openai.chat.completions.create({
-        model: request.model || 'gpt-4o',
+      const model = request.model || DEFAULT_MODEL;
+      
+      // Determine if we should use tools format (for newer models) or functions format (for older models)
+      // Models that support tools: gpt-4o, gpt-4-turbo, gpt-3.5-turbo (newer versions), gpt-5.1
+      // Models that only support functions: older gpt-3.5-turbo versions
+      const useToolsFormat = request.tools !== undefined || 
+                            (request.functions && OpenAIFunctionHelper.shouldUseToolsFormat(model));
+      
+      // Build the API request
+      const apiRequest: any = {
+        model,
         messages: request.messages as any,
-        functions: request.functions as any,
-        function_call: request.functionCall as any,
-        // temperature: request.temperature || 0.7,
-        // max_tokens: request.maxTokens || 500
-      });
+      };
+
+      // Add functions or tools based on format
+      if (useToolsFormat) {
+        // Convert functions to tools format if needed
+        if (request.functions && !request.tools) {
+          apiRequest.tools = request.functions.map(fn => ({
+            type: 'function',
+            function: fn
+          }));
+        } else if (request.tools) {
+          apiRequest.tools = request.tools;
+        }
+        
+        // Convert functionCall to tool_choice
+        if (request.functionCall) {
+          if (request.functionCall === 'auto') {
+            apiRequest.tool_choice = 'auto';
+          } else if (request.functionCall === 'none') {
+            apiRequest.tool_choice = 'none';
+          } else if (typeof request.functionCall === 'object') {
+            apiRequest.tool_choice = {
+              type: 'function',
+              function: { name: request.functionCall.name }
+            };
+          }
+        } else if (request.tool_choice) {
+          apiRequest.tool_choice = request.tool_choice;
+        }
+      } else {
+        // Use legacy functions format
+        if (request.functions) {
+          apiRequest.functions = request.functions;
+        }
+        if (request.functionCall) {
+          apiRequest.function_call = request.functionCall;
+        }
+      }
+
+      // Add optional parameters
+      if (request.temperature !== undefined) {
+        apiRequest.temperature = request.temperature;
+      }
+      if (request.maxTokens !== undefined) {
+        // Newer models (gpt-5.x, newer gpt-4o versions) require max_completion_tokens instead of max_tokens
+        if (OpenAIFunctionHelper.requiresMaxCompletionTokens(model)) {
+          apiRequest.max_completion_tokens = request.maxTokens;
+        } else {
+          apiRequest.max_tokens = request.maxTokens;
+        }
+      }
+
+      completion = await openai.chat.completions.create(apiRequest);
+
+      // Track successful completion
+      if (requestId) {
+        const usage = (completion as any).usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+        const responseMessage = completion.choices[0]?.message;
+        const functionCall = responseMessage?.function_call;
+        const toolCalls = responseMessage?.tool_calls;
+
+        await this.performanceTracker.logAICall(requestId, {
+          callType: 'completion',
+          model: request.model || DEFAULT_MODEL,
+          requestTokens: usage.prompt_tokens || 0,
+          responseTokens: usage.completion_tokens || 0,
+          totalTokens: usage.total_tokens || 0,
+          startTime,
+          endTime: Date.now(),
+          messages: request.messages.map(msg => ({
+            role: msg.role,
+            content: msg.content || ''
+          })),
+          responseContent: responseMessage?.content || undefined,
+          functionCall: functionCall ? {
+            name: functionCall.name,
+            arguments: functionCall.arguments
+          } : (toolCalls && toolCalls.length > 0 ? {
+            name: toolCalls[0].function.name,
+            arguments: toolCalls[0].function.arguments
+          } : undefined),
+          success: true,
+          error: null,
+          metadata: {
+            method: 'createCompletion',
+            hasFunctions: !!request.functions || !!request.tools,
+            functionCall: request.functionCall || 'auto',
+            useToolsFormat,
+          },
+        });
+      }
 
       return completion as CompletionResponse;
-    } catch (error) {
+    } catch (err) {
+      error = err instanceof Error ? err : new Error('Unknown error');
       this.logger.error('OpenAI API error:', error);
-      throw new Error(`OpenAI API error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+
+      // Track failed completion
+      if (requestId) {
+        await this.performanceTracker.logAICall(requestId, {
+          callType: 'completion',
+          model: request.model || DEFAULT_MODEL,
+          requestTokens: 0,
+          responseTokens: 0,
+          totalTokens: 0,
+          startTime,
+          endTime: Date.now(),
+          messages: request.messages.map(msg => ({
+            role: msg.role,
+            content: msg.content || ''
+          })),
+          success: false,
+          error: error.message,
+          metadata: {
+            method: 'createCompletion',
+            hasFunctions: !!request.functions || !!request.tools,
+          },
+        });
+      }
+
+      throw new Error(`OpenAI API error: ${error.message}`);
     }
   }
+
 
   async generateResponse(message: string): Promise<string> {
     try {
@@ -113,13 +261,13 @@ export class OpenAIService {
         messages,
         temperature: 0.1,
         maxTokens: 200,
-        model: 'gpt-5'
+        model: DEFAULT_MODEL // Keep gpt-5 as is (not gpt-5.1, so not using DEFAULT_MODEL)
       });
 
       const rawContent = completion.choices[0]?.message?.content?.trim();
       if (!rawContent) {
         this.logger.warn('Intent detection returned empty content, defaulting to general.');
-        return this.defaultIntentDecision();
+        return OpenAIFunctionHelper.defaultIntentDecision();
       }
 
       let parsed: any;
@@ -127,17 +275,17 @@ export class OpenAIService {
         parsed = JSON.parse(rawContent);
       } catch (parseError) {
         this.logger.warn('Intent detection returned invalid JSON, attempting to coerce.', parseError);
-        parsed = this.tryFixJson(rawContent);
+        parsed = OpenAIFunctionHelper.tryFixJson(rawContent, this.logger);
       }
 
-      const decision = this.normalizeIntentDecision(parsed);
+      const decision = OpenAIFunctionHelper.normalizeIntentDecision(parsed);
       this.logger.info(
         `🎯 Intent detected: ${decision.primaryIntent} (plan: ${decision.requiresPlan}, agents: ${decision.involvedAgents.join(', ') || 'none'})`
       );
       return decision;
     } catch (error) {
       this.logger.error('Error detecting intent:', error);
-      return this.defaultIntentDecision();
+      return OpenAIFunctionHelper.defaultIntentDecision();
     }
   }
 
@@ -160,92 +308,6 @@ export class OpenAIService {
       this.logger.error('Error detecting language:', error);
       return 'other';
     }
-  }
-  private normalizeIntentDecision(candidate: any): IntentDecision {
-    const validIntents: IntentCategory[] = [
-      AgentName.CALENDAR,
-      AgentName.GMAIL,
-      AgentName.DATABASE,
-      AgentName.SECOND_BRAIN,
-      AgentName.MULTI_TASK,
-      'general'
-    ];
-
-    let primaryIntent: IntentCategory = this.defaultIntentDecision().primaryIntent;
-    if (candidate && typeof candidate === 'object' && typeof candidate.primaryIntent === 'string') {
-      const normalized = candidate.primaryIntent.toLowerCase();
-      if (validIntents.includes(normalized as IntentCategory)) {
-        primaryIntent = normalized as IntentCategory;
-      }
-    }
-
-    let requiresPlan = false;
-    if (candidate && typeof candidate.requiresPlan === 'boolean') {
-      requiresPlan = candidate.requiresPlan;
-    } else if (primaryIntent === AgentName.MULTI_TASK) {
-      requiresPlan = true;
-    }
-
-    let involvedAgents: AgentName[] = [];
-    if (Array.isArray(candidate?.involvedAgents)) {
-      involvedAgents = candidate.involvedAgents
-        .map((value: any) => (typeof value === 'string' ? value.toLowerCase() : ''))
-        .filter((value: string): value is AgentName =>
-          [AgentName.CALENDAR, AgentName.GMAIL, AgentName.DATABASE, AgentName.SECOND_BRAIN, AgentName.MULTI_TASK].includes(value as AgentName)
-        )
-        .filter((agent: AgentName) => agent !== AgentName.MULTI_TASK);
-    }
-
-    if (primaryIntent !== 'general' && involvedAgents.length === 0 && primaryIntent !== AgentName.MULTI_TASK) {
-      involvedAgents = [primaryIntent];
-    }
-
-    const confidence: 'high' | 'medium' | 'low' =
-      candidate && typeof candidate.confidence === 'string'
-        ? (['high', 'medium', 'low'].includes(candidate.confidence.toLowerCase())
-            ? candidate.confidence.toLowerCase()
-            : 'medium')
-        : 'medium';
-
-    return {
-      primaryIntent,
-      requiresPlan,
-      involvedAgents,
-      confidence
-    };
-  }
-
-  private defaultIntentDecision(): IntentDecision {
-    return {
-      primaryIntent: 'general',
-      requiresPlan: false,
-      involvedAgents: [],
-      confidence: 'medium'
-    };
-  }
-
-  private tryFixJson(raw: string): any {
-    const trimmed = raw.trim();
-    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-      try {
-        return JSON.parse(trimmed);
-      } catch (error) {
-        this.logger.error('Failed to coerce intent JSON.', error);
-        return {};
-      }
-    }
-
-    // Attempt to extract JSON from text
-    const match = trimmed.match(/\{[\s\S]*\}/);
-    if (match) {
-      try {
-        return JSON.parse(match[0]);
-      } catch (error) {
-        this.logger.error('Failed to parse extracted intent JSON.', error);
-      }
-    }
-
-    return {};
   }
 
   /**
@@ -387,7 +449,7 @@ export class OpenAIService {
       const responseContent = completion.choices[0]?.message?.content?.trim();
       if (!responseContent) {
         this.logger.warn('Image analysis returned empty content');
-        return this.getDefaultImageAnalysisResult();
+        return OpenAIFunctionHelper.getDefaultImageAnalysisResult();
       }
 
       // Parse JSON response
@@ -408,18 +470,18 @@ export class OpenAIService {
             imageType: 'random',
             description: responseContent,
             confidence: 'low',
-            language: this.detectLanguageFromText(responseContent),
+            language: OpenAIFunctionHelper.detectLanguageFromText(responseContent),
             formattedMessage: `I analyzed your image: ${responseContent}\n\nIs there anything you'd like me to help you with?`
           };
         }
       }
 
       // Validate and normalize the result
-      analysisResult = this.normalizeImageAnalysisResult(analysisResult);
+      analysisResult = OpenAIFunctionHelper.normalizeImageAnalysisResult(analysisResult);
       
       // Ensure formattedMessage exists
       if (!analysisResult.formattedMessage) {
-        analysisResult.formattedMessage = this.generateFallbackFormattedMessage(analysisResult);
+        analysisResult.formattedMessage = OpenAIFunctionHelper.generateFallbackFormattedMessage(analysisResult);
       }
       
       // Step 7: Cache the result
@@ -454,180 +516,6 @@ export class OpenAIService {
     }
   }
 
-  /**
-   * Normalize image analysis result to ensure it matches the expected format
-   */
-  private normalizeImageAnalysisResult(result: any): ImageAnalysisResult {
-    // Determine image type
-    const imageType: 'structured' | 'random' = 
-      result.imageType === 'structured' || result.structuredData ? 'structured' : 'random';
-
-    // Build normalized result
-    const normalized: ImageAnalysisResult = {
-      imageType,
-      confidence: this.normalizeConfidence(result.confidence),
-      language: result.language || 'other',
-      formattedMessage: result.formattedMessage || '' // Will be set by caller if missing
-    };
-
-    // Add structured data if present
-    if (result.structuredData && imageType === 'structured') {
-      normalized.structuredData = {
-        type: result.structuredData.type || 'other',
-        extractedData: {
-          events: result.structuredData.extractedData?.events || [],
-          tasks: result.structuredData.extractedData?.tasks || [],
-          contacts: result.structuredData.extractedData?.contacts || [],
-          notes: result.structuredData.extractedData?.notes || [],
-          dates: result.structuredData.extractedData?.dates || [],
-          locations: result.structuredData.extractedData?.locations || []
-        }
-      };
-      
-      // Generate suggested actions based on extracted data
-      normalized.suggestedActions = this.generateSuggestedActions(normalized.structuredData);
-    }
-
-    // Add description for random images
-    if (imageType === 'random' && result.description) {
-      normalized.description = result.description;
-    }
-
-    return normalized;
-  }
-
-  /**
-   * Generate suggested actions based on extracted structured data
-   */
-  private generateSuggestedActions(structuredData: any): string[] {
-    const actions: string[] = [];
-    
-    if (structuredData.extractedData.events?.length > 0) {
-      actions.push('Add event(s) to calendar');
-      actions.push('Set reminder for event(s)');
-    }
-    
-    if (structuredData.extractedData.tasks?.length > 0) {
-      actions.push('Create task(s) in my task list');
-      actions.push('Set reminder for task(s)');
-    }
-    
-    if (structuredData.extractedData.contacts?.length > 0) {
-      actions.push('Save contact(s) to my contact list');
-    }
-    
-    if (structuredData.type === 'wedding_invitation' || structuredData.type === 'event_poster') {
-      actions.push('Add to calendar');
-      actions.push('Set reminder');
-    }
-    
-    if (structuredData.type === 'calendar') {
-      actions.push('Extract tasks and add to my task list');
-      actions.push('Set reminders for tasks');
-    }
-    
-    if (structuredData.type === 'todo_list') {
-      actions.push('Add all items to my task list');
-      actions.push('Create tasks with due dates');
-    }
-    
-    return actions.length > 0 ? actions : ['Tell me more about this image'];
-  }
-
-  /**
-   * Normalize confidence value
-   */
-  private normalizeConfidence(confidence: any): 'high' | 'medium' | 'low' {
-    if (typeof confidence === 'string') {
-      const normalized = confidence.toLowerCase();
-      if (['high', 'medium', 'low'].includes(normalized)) {
-        return normalized as 'high' | 'medium' | 'low';
-      }
-    }
-    return 'medium';
-  }
-
-  /**
-   * Detect language from text (simple heuristic)
-   */
-  private detectLanguageFromText(text: string): 'hebrew' | 'english' | 'other' {
-    const hebrewRegex = /[\u0590-\u05FF]/;
-    const englishRegex = /[a-zA-Z]/;
-    
-    if (hebrewRegex.test(text)) {
-      return 'hebrew';
-    }
-
-    if (englishRegex.test(text)) {
-      return 'english';
-    }
-    return 'other';
-  }
-
-  /**
-   * Default image analysis result for fallback
-   */
-  private getDefaultImageAnalysisResult(): ImageAnalysisResult {
-    return {
-      imageType: 'random',
-      description: 'I was unable to analyze this image. Please describe what you see or what you would like me to do with it.',
-      confidence: 'low',
-      formattedMessage: 'I was unable to analyze this image. Please describe what you see or what you would like me to do with it.'
-    };
-  }
-
-  /**
-   * Generate fallback formatted message if LLM didn't provide one
-   */
-  private generateFallbackFormattedMessage(result: ImageAnalysisResult): string {
-    if (result.imageType === 'structured' && result.structuredData) {
-      const data = result.structuredData.extractedData;
-      const isHebrew = result.language === 'hebrew';
-      
-      let message = isHebrew 
-        ? 'מצאתי מידע מובנה בתמונה:\n\n'
-        : 'I found structured information in the image:\n\n';
-      
-      if (data.events && data.events.length > 0) {
-        message += isHebrew ? '📅 אירועים:\n' : '📅 Events:\n';
-        data.events.forEach(event => {
-          message += `- ${event.title}`;
-          if (event.date) message += ` (${event.date})`;
-          if (event.time) message += ` at ${event.time}`;
-          message += '\n';
-        });
-        message += '\n';
-      }
-      
-      if (data.tasks && data.tasks.length > 0) {
-        message += isHebrew ? '✅ משימות:\n' : '✅ Tasks:\n';
-        data.tasks.forEach(task => {
-          message += `- ${task.text}`;
-          if (task.dueDate) message += ` (${task.dueDate})`;
-          message += '\n';
-        });
-        message += '\n';
-      }
-      
-      if (data.contacts && data.contacts.length > 0) {
-        message += isHebrew ? '📞 אנשי קשר:\n' : '📞 Contacts:\n';
-        data.contacts.forEach(contact => {
-          message += `- ${contact.name}`;
-          if (contact.phone) message += ` (${contact.phone})`;
-          message += '\n';
-        });
-        message += '\n';
-      }
-      
-      message += isHebrew
-        ? 'תרצה שאוסיף את זה ליומן או לרשימת המשימות?'
-        : 'Would you like me to add this to your calendar or task list?';
-      
-      return message;
-    } else {
-      return result.description || 'I analyzed your image. Is there anything you\'d like me to help you with?';
-    }
-  }
 
   /**
    * Create embedding vector for text using OpenAI embeddings API

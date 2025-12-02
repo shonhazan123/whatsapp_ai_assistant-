@@ -1,7 +1,7 @@
 import { logger as defaultLogger } from '../../utils/logger';
 import { BaseService } from './BaseService';
 
-export type OnboardingStep = 'start' | 'google_connect' | 'calendar_practice' | 'reminder_practice' | 'list_practice' | 'memory_practice' | 'done';
+export type OnboardingStep = 'start' | 'google_connect' | 'iphone_calendar_sync' | 'calendar_practice' | 'reminder_practice' | 'memory_practice' | 'done';
 
 export interface OnboardingProgress {
   user_id: string;

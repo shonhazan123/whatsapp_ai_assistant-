@@ -6,6 +6,7 @@ import { processMessageV2 } from '../index-v2';
 import { OpenAIService } from '../services/ai/OpenAIService';
 import { UserService } from '../services/database/UserService';
 import { UserOnboardingHandler } from '../services/onboarding/UserOnboardingHandler';
+import { PerformanceTracker } from '../services/performance/PerformanceTracker';
 import { transcribeAudio } from '../services/transcription';
 import {
   downloadWhatsAppMedia,
@@ -23,6 +24,7 @@ const userService = new UserService();
 const openaiService = new OpenAIService(logger);
 const conversationWindow = ConversationWindow.getInstance();
 const onboardingHandler = new UserOnboardingHandler(logger);
+const performanceTracker = PerformanceTracker.getInstance();
 
 // Webhook verification (GET request from WhatsApp)
 whatsappWebhook.get('/whatsapp', (req: Request, res: Response) => {
@@ -73,10 +75,15 @@ async function handleIncomingMessage(message: WhatsAppMessage): Promise<void> {
   logger.info('📨 NEW MESSAGE RECEIVED');
   logger.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   
+  let performanceRequestId: string | undefined;
+  
   try {
     const rawNumber = message.from;
     const userPhone = normalizeWhatsAppNumber(rawNumber);
     let messageText = '';
+    
+    // Start performance tracking
+    performanceRequestId = performanceTracker.startRequest(userPhone);
 
     logger.info(`👤 From: ${userPhone}`);
     logger.info(`📋 Message ID: ${message.id}`);
@@ -194,6 +201,9 @@ async function handleIncomingMessage(message: WhatsAppMessage): Promise<void> {
 
     // If onboarding handler says not to process, return early
     if (!onboardingCheck.shouldProcess) {
+      if (performanceRequestId) {
+        await performanceTracker.endRequest(performanceRequestId);
+      }
       return;
     }
 
@@ -202,6 +212,9 @@ async function handleIncomingMessage(message: WhatsAppMessage): Promise<void> {
     
     // Use context from onboarding handler
     const context = onboardingCheck.context!;
+    
+    // Add performance requestId to context
+    context.performanceRequestId = performanceRequestId;
 
     logger.info(`🤖 AI Processing: "${messageText}"`);
     const response = await RequestContext.run(context, () => 
@@ -226,10 +239,21 @@ async function handleIncomingMessage(message: WhatsAppMessage): Promise<void> {
     
     const duration = Date.now() - startTime;
     logger.info(`✅ Message handled successfully in ${duration}ms`);
+    
+    // End performance tracking
+    if (performanceRequestId) {
+      await performanceTracker.endRequest(performanceRequestId);
+    }
+    
     logger.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
   } catch (error) {
     const duration = Date.now() - startTime;
     logger.error(`❌ Error handling message after ${duration}ms:`, error);
+    
+    // End performance tracking even on error
+    if (performanceRequestId) {
+      await performanceTracker.endRequest(performanceRequestId);
+    }
     
     try {
       await sendWhatsAppMessage(
