@@ -476,7 +476,16 @@ export class CalendarService {
       
       // Add UNTIL if provided, otherwise use COUNT
       if (request.until) {
-        rrule += `;UNTIL=${request.until}`;
+        // Convert until date to UTC and format as YYYYMMDDTHHMMSSZ (RRULE format)
+        const untilDate = new Date(request.until);
+        const year = untilDate.getUTCFullYear();
+        const month = String(untilDate.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(untilDate.getUTCDate()).padStart(2, '0');
+        const hours = String(untilDate.getUTCHours()).padStart(2, '0');
+        const minutes = String(untilDate.getUTCMinutes()).padStart(2, '0');
+        const seconds = String(untilDate.getUTCSeconds()).padStart(2, '0');
+        const untilFormatted = `${year}${month}${day}T${hours}${minutes}${seconds}Z`;
+        rrule += `;UNTIL=${untilFormatted}`;
       } else {
         rrule += ';COUNT=100';
       }

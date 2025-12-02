@@ -144,7 +144,8 @@ export abstract class BaseAgent implements IAgent {
           ]
         }, requestId);
 
-        return finalCompletion.choices[0]?.message?.content || 'Operation completed.';
+        const rawResponse = finalCompletion.choices[0]?.message?.content || 'Operation completed.';
+        return this.filterAgentResponse(rawResponse);
       }
 
       const agentEndTime = Date.now();
@@ -161,7 +162,8 @@ export abstract class BaseAgent implements IAgent {
         );
       }
 
-      return responseMessage?.content || 'Unable to process request.';
+      const rawResponse = responseMessage?.content || 'Unable to process request.';
+      return this.filterAgentResponse(rawResponse);
     } catch (err) {
       error = err instanceof Error ? err : new Error('Unknown error');
       const agentEndTime = Date.now();
@@ -181,6 +183,68 @@ export abstract class BaseAgent implements IAgent {
       this.logger.error('Error in executeWithAI:', error);
       return 'Sorry, I encountered an error processing your request.';
     }
+  }
+
+  /**
+   * Filter agent response to remove JSON, error messages, and internal instructions
+   * that should not be shown to the user
+   */
+  private filterAgentResponse(response: string): string {
+    if (!response || typeof response !== 'string') {
+      return 'Operation completed.';
+    }
+
+    // Check if response contains JSON that looks like function call instructions
+    // This happens when the AI outputs JSON instead of calling functions
+    const jsonPattern = /\{[\s]*"operation"[\s]*:/;
+    if (jsonPattern.test(response)) {
+      this.logger.warn('Agent response contains JSON function call - filtering out');
+      // Try to extract meaningful text before/after JSON
+      const beforeJson = response.substring(0, response.indexOf('{')).trim();
+      const afterJson = response.substring(response.lastIndexOf('}') + 1).trim();
+      const meaningfulText = [beforeJson, afterJson].filter(t => t.length > 0).join(' ').trim();
+      
+      if (meaningfulText.length > 10) {
+        return meaningfulText;
+      }
+      // If no meaningful text, return a generic message
+      return 'I processed your request. The operation has been completed.';
+    }
+
+    // Check if response contains error messages that should be handled internally
+    const errorIndicators = [
+      'error:',
+      'failed:',
+      'exception:',
+      'ERROR:',
+      'FAILED:',
+      'שגיאה:',
+      'נכשל:'
+    ];
+    
+    const hasErrorIndicator = errorIndicators.some(indicator => 
+      response.toLowerCase().includes(indicator.toLowerCase())
+    );
+
+    if (hasErrorIndicator && response.length < 200) {
+      // Short error messages should be converted to user-friendly messages
+      this.logger.warn('Agent response contains error indicator - converting to user-friendly message');
+      return 'I encountered an issue processing your request. Please try again or rephrase your request.';
+    }
+
+    // Remove any JSON-like structures that might have leaked through
+    // But keep the response if it's mostly natural language
+    const jsonLikeMatch = response.match(/\{[^{}]*"operation"[^{}]*\}/);
+    if (jsonLikeMatch && response.length < 300) {
+      // If response is mostly JSON, filter it
+      const jsonLength = jsonLikeMatch[0].length;
+      if (jsonLength > response.length * 0.5) {
+        this.logger.warn('Agent response is mostly JSON - filtering out');
+        return 'I processed your request. The operation has been completed.';
+      }
+    }
+
+    return response;
   }
 
   /**

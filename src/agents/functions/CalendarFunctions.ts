@@ -1,11 +1,15 @@
 import { IFunction, IResponse } from '../../core/interfaces/IAgent';
 import { QueryResolver } from '../../core/orchestrator/QueryResolver';
 import { CalendarReminders, CalendarService } from '../../services/calendar/CalendarService';
+import { FuzzyMatcher } from '../../utils/fuzzy';
 import { TimeParser } from '../../utils/time';
 
 export class CalendarFunction implements IFunction {
   name = 'calendarOperations';
   description = 'Handle all calendar operations including create, read, update, delete, and recurring event management';
+
+  // Threshold for fuzzy matching event summaries in delete operations (0-1, higher = stricter)
+  private static readonly DELETE_EVENT_SUMMARY_THRESHOLD = 0.6;
 
   parameters = {
     type: 'object',
@@ -250,10 +254,10 @@ Please specify the exact title or provide more details so I can update the corre
       if (eventsResp.success && eventsResp.data?.events?.length) {
         let events = eventsResp.data.events as any[];
         
-        // Filter by summary if provided
+        // Filter by summary if provided - use FuzzyMatcher for better matching
         if (criteria.summary) {
-          const lowered = criteria.summary.toLowerCase();
-          events = events.filter(event => event.summary?.toLowerCase().includes(lowered));
+          const matches = FuzzyMatcher.search<any>(criteria.summary, events, ['summary', 'description'], CalendarFunction.DELETE_EVENT_SUMMARY_THRESHOLD);
+          events = matches.map(m => m.item);
         }
         
         // Filter by time of day if provided
@@ -330,22 +334,37 @@ Please specify the exact title or provide more details so I can update the corre
 
     let events = (eventsResp.data.events || []) as any[];
     if (summary) {
-      const lowered = summary.toLowerCase();
-      events = events.filter(event => event.summary?.toLowerCase().includes(lowered));
+      // Use FuzzyMatcher for better matching (handles word order, name variations, etc.)
+      const matches = FuzzyMatcher.search<any>(summary, events, ['summary'], CalendarFunction.DELETE_EVENT_SUMMARY_THRESHOLD);
+      events = matches.map(m => m.item);
     }
 
     if (events.length === 0) {
       return { success: false, error: 'No matching events found in the requested window' };
     }
 
-    const uniqueIds = Array.from(new Set(events.map(event => event.recurringEventId || event.id).filter(Boolean)));
+    // Map events to their master IDs and store summaries for response
+    const eventMap = new Map<string, { id: string; summary: string }>();
+    events.forEach(event => {
+      const masterId = (event.recurringEventId || event.id) as string;
+      if (masterId && !eventMap.has(masterId)) {
+        eventMap.set(masterId, { id: masterId, summary: event.summary || 'Untitled Event' });
+      }
+    });
+
+    const uniqueIds = Array.from(eventMap.keys());
     const results: any[] = [];
     const errors: any[] = [];
+    const deletedSummaries: string[] = [];
 
     for (const id of uniqueIds) {
-      const deletion = await this.calendarService.deleteEvent(id as string);
+      const deletion = await this.calendarService.deleteEvent(id);
       if (deletion.success) {
         results.push(id);
+        const eventInfo = eventMap.get(id);
+        if (eventInfo) {
+          deletedSummaries.push(eventInfo.summary);
+        }
       } else {
         errors.push({ id, error: deletion.error });
       }
@@ -354,7 +373,11 @@ Please specify the exact title or provide more details so I can update the corre
     return {
       success: errors.length === 0,
       message: `Deleted ${results.length} events${errors.length ? ` (${errors.length} failed)` : ''}`,
-      data: { deletedIds: results, errors: errors.length ? errors : undefined }
+      data: { 
+        deletedIds: results, 
+        errors: errors.length ? errors : undefined,
+        deletedSummaries: deletedSummaries.length > 0 ? deletedSummaries : undefined
+      }
     };
   }
 
@@ -669,13 +692,20 @@ Please specify the exact title or provide more details so I can update the corre
           }
 
           const allEvents = eventsResult.data.events || [];
-          const masterIds: string[] = Array.from(
-            new Set(
-              allEvents
-                .filter((e: any) => e.summary?.toLowerCase().includes(params.summary.toLowerCase()))
-                .map((e: any) => e.recurringEventId || e.id)
-            )
-          );
+          // Use FuzzyMatcher for better matching (handles word order, name variations, etc.)
+          const matches = FuzzyMatcher.search<any>(params.summary, allEvents, ['summary', 'description'], CalendarFunction.DELETE_EVENT_SUMMARY_THRESHOLD);
+          
+          // Map events to their master IDs and store summaries for response
+          const eventMap = new Map<string, { id: string; summary: string }>();
+          matches.forEach(m => {
+            const event = m.item;
+            const masterId = event.recurringEventId || event.id;
+            if (masterId && !eventMap.has(masterId)) {
+              eventMap.set(masterId, { id: masterId, summary: event.summary || 'Untitled Event' });
+            }
+          });
+          
+          const masterIds: string[] = Array.from(eventMap.keys());
 
           if (masterIds.length === 0) {
             return { success: false, error: 'No matching events found' };
@@ -687,6 +717,7 @@ Please specify the exact title or provide more details so I can update the corre
           
           const results: any[] = [];
           const errors: any[] = [];
+          const deletedSummaries: string[] = [];
           
           for (let i = 0; i < masterIds.length; i += BATCH_SIZE) {
             const batch = masterIds.slice(i, i + BATCH_SIZE);
@@ -696,12 +727,17 @@ Please specify the exact title or provide more details so I can update the corre
               batch.map(id => this.calendarService.deleteEvent(id))
             );
             
-            // Collect results
+            // Collect results and summaries
             batchResults.forEach((result, index) => {
+              const masterId = batch[index];
+              const eventInfo = eventMap.get(masterId);
               if (result.status === 'fulfilled') {
-                results.push({ id: batch[index], success: true });
+                results.push({ id: masterId, success: true });
+                if (eventInfo) {
+                  deletedSummaries.push(eventInfo.summary);
+                }
               } else {
-                errors.push({ id: batch[index], error: result.reason });
+                errors.push({ id: masterId, error: result.reason });
               }
             });
             
@@ -717,7 +753,12 @@ Please specify the exact title or provide more details so I can update the corre
           return {
             success: failed === 0,
             message: `Deleted ${deleted} events (${failed} failed)`,
-            data: { deleted, failed, errors: failed > 0 ? errors : undefined }
+            data: { 
+              deleted, 
+              failed, 
+              errors: failed > 0 ? errors : undefined,
+              deletedSummaries: deletedSummaries.length > 0 ? deletedSummaries : undefined
+            }
           };
         }
 

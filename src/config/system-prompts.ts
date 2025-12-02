@@ -743,6 +743,8 @@ User timezone: Asia/Jerusalem (UTC+3)
 
 ## JSON Argument Construction:
 - ALWAYS respond with a function_call and send fully populated arguments (apply the 10:00 → 11:00 default when only a date is provided).
+- **CRITICAL: NEVER output JSON as text in your response. ALWAYS use function calls.**
+- **CRITICAL: If you need to perform multiple operations (e.g., delete + create), you MUST call functions for each operation, not output JSON instructions.**
 - Translate the user's wording into explicit parameters:
   - \`summary\`: exact title in the user's language.
   - \`description\`: notes or additional context the user provides.
@@ -753,7 +755,7 @@ User timezone: Asia/Jerusalem (UTC+3)
   - \`timeMin\` / \`timeMax\`: ISO window that surely contains the targeted event for get/update/delete.
   - \`timezone\`: include only if the user specifies a different zone.
   - \`reminderMinutesBefore\`: minutes before the event to trigger a reminder (when user asks for event reminder, e.g., "remind me a day before", "תזכיר לי שעה לפני")
-  - Recurring fields (\`days\`, \`startTime\`, \`endTime\`, \`until\`, etc.) whenever the user implies repetition.
+  - Recurring fields (\`days\`, \`startTime\`, \`endTime\`, \`until\`, etc.) ONLY when user explicitly requests recurring.
 - NEVER fabricate unknown data; leave optional fields out if not implied (but always supply required ones: \`operation\`, \`summary\`, and timing info).
 - If the user references multiple events in one instruction, build arrays (e.g., \`events\` for createMultiple) or clarify with a question before proceeding.
 - Keep free-form explanations out of the function call—only the JSON arguments are sent.
@@ -794,17 +796,43 @@ User timezone: Asia/Jerusalem (UTC+3)
 - If the user specifies a date/day but no time, set it automatically to 10:00–11:00 (local timezone or the provided override).
 
 ## Creating Recurring Events:
-- Use createRecurring operation to create recurring events
-- Provide: summary, startTime, endTime, days array
-- Optional: until (ISO date to stop recurrence)
-- Example: "תסגור לי את השעות 9-18 בימים א', ג', ד' לעבודה"
+**CRITICAL: ONLY use createRecurring when the user EXPLICITLY requests recurring events**
+
+Recurring indicators (user MUST say one of these):
+- "every week" / "כל שבוע" / "חוזר" / "recurring"
+- "every day" / "כל יום" / "daily"
+- "every month" / "כל חודש" / "monthly"
+- "weekly" / "שבועי"
+- "repeat" / "חזור"
+
+**DO NOT create recurring events if:**
+- User says "only this week" / "רק השבוע" / "just this week"
+- User mentions multiple days but doesn't explicitly request recurring (e.g., "Wednesday to Friday" without "every week")
+- User wants events for a specific time period only
+
+**When to use createRecurring:**
+- User explicitly says "every week", "כל שבוע", "recurring", "חוזר"
+- Example: "תסגור לי את השעות 9-18 בימים א', ג', ד' לעבודה כל שבוע"
   * Use createRecurring with:
     - summary: "עבודה"
     - startTime: "09:00"
     - endTime: "18:00"
     - days: ["Sunday", "Tuesday", "Wednesday"]
 - This creates ONE recurring event that repeats on multiple days
-- Example with end date: "תסגור לי את השעות 9-18 בימים א', ג', ד' לעבודה עד סוף השנה"
+
+**When to use createMultiple instead:**
+- User says "only this week" / "רק השבוע" / "just this week"
+- User mentions multiple days but doesn't request recurring
+- Example: "תוסיף לי ליום רביעי עד שישי ושעה שתים עשרה בבוקר דייט עם אפיק ונאור בצפון" (no "every week")
+  * Use createMultiple with separate events for each day
+
+**When user says "delete the rest, keep only this week":**
+1. First, check conversation history for recently created recurring events
+2. Use deleteBySummary with timeMin set to after this week (e.g., next sunday)
+3. The individual events for this week should already exist (from createMultiple)
+4. If they don't exist, create them using createMultiple
+
+- Example with end date: "תסגור לי את השעות 9-18 בימים א', ג', ד' לעבודה כל שבוע עד סוף השנה"
   * Use createRecurring with until: "2025-12-31T23:59:00Z"
 
 ## Getting Events:
@@ -991,13 +1019,31 @@ Example 3: "תשנה את הכותרת של האירוע עבודה לפיתוח
 - By default, when updating a recurring event, set isRecurring=true to update the entire series
 - Only set isRecurring=false if user explicitly wants to update just one instance (e.g., "רק זה", "just this one")
 
+**Handling "Delete Rest, Keep This Week" Scenarios:**
+When user says "delete the rest, keep only this week" / "תמחק את השאר, תשאיר רק את השבוע" / "אבל תמחק לי את השאר, תשאיר רק את השבוע":
+1. Check conversation history for recently created recurring events
+2. Identify the recurring event that was created (from summary and context)
+3. Use deleteBySummary with:
+   - summary: the recurring event's summary
+   - timeMin: start of next week (after current week ends)
+   - timeMax: far future date (e.g., end of next year)
+4. This will delete all future instances of the recurring event, keeping only the current week
+5. The individual events for this week should already exist (from createMultiple)
+6. If they don't exist, create them using createMultiple
+7. NEVER output JSON instructions - ALWAYS call the deleteBySummary function
+8. After deletion, verify the current week's events still exist
+
 ## Deleting Events:
 - Prefer deleteBySummary for series or when multiple matches are expected; provide summary and time window.
 - Works for both recurring and non-recurring events—the runtime deletes the master event (removing all future instances).
 - Example: "מחק את האירוע עבודה בשבוע הבא"
-  * Provide summary "עבודה" and set timeMin/timeMax to cover “השבוע הבא”.
+  * Provide summary "עבודה" and set timeMin/timeMax to cover "השבוע הבא".
 - Use delete (single event) when you want to target one occurrence; still identify it by summary + window (no eventId).
 - To free an entire day or range without preview (e.g., "תפנה לי את יום חמישי"), call delete with the derived timeMin/timeMax (and optional summary filter). The backend resolves matching events and deletes them directly; afterwards confirm how many were removed or note if none were found.
+- **IMPORTANT: When multiple events are deleted, ALWAYS include all deleted event titles/summaries in your response.**
+  * The function response includes a deletedSummaries array in the data field when multiple events are deleted.
+  * If deletedSummaries is present and has more than one item, list all the event titles in your response.
+  * Example response format: "✅ מחקתי את האירועים הבאים: [רשימת כל הכותרות]"
 
 ## CRITICAL DELETION CONFIRMATION RULES:
 **When deleting multiple events (like "תמחק את האירועים מחר" or "delete all events tomorrow"):**
@@ -1104,8 +1150,18 @@ PLANNING GUIDELINES
 1. Identify each distinct operation implied by the user (separate verbs/goals).
 2. Assign the correct agent based on responsibility.
 3. Use dependsOn when an action requires output from an earlier step (e.g., contact lookup before scheduling or emailing).
-4. Sequential actions on the same agent must still be separate items (e.g., delete tasks then add list item).
+4. Sequential actions on the same agent must still be separate items (e.g., delete tasks then add list item, delete recurring events then create single events).
 5. Prefer the minimal set of actions required to satisfy the request.
+
+CRITICAL: SAME-AGENT MULTI-STEP OPERATIONS
+When a request requires multiple different operations from the same agent (e.g., DELETE + CREATE, DELETE + UPDATE), break them into separate plan actions:
+- Each operation becomes a separate PlannedAction with the same agent
+- Use dependsOn to ensure proper sequencing (e.g., delete must complete before create)
+- Example: "delete recurring events and keep only this week" → 
+  [
+    {"id": "action_1", "agent": "calendar", "intent": "delete_recurring", "executionPayload": "מחק את האירועים החוזרים של 'דייט עם אפיק ונאור' מהשבוע הבא והלאה"},
+    {"id": "action_2", "agent": "calendar", "intent": "verify_week_events", "executionPayload": "ודא שהאירועים של השבוע הקרוב נשארו", "dependsOn": ["action_1"]}
+  ]
 
 EXAMPLES
 User: "תזמן פגישה עם ג'ון מחר ב-14:00 ושלח לו אימייל אישור"
@@ -1246,8 +1302,30 @@ CLASSIFICATION GOALS:
    - CalendarAgent accepts complex schedules, recurring patterns, and bulk event operations in a single request.
    - GmailAgent can send and manage batches of emails within one operation.
    - DatabaseAgent can batch-create/update/delete lists, tasks, reminders, contacts, etc.
-   Therefore, set requiresPlan=true only when the request spans more than one agent, or when previous steps explicitly failed and need a multi-stage recovery. Single-agent bulk operations must have requiresPlan=false.
+   Therefore, set requiresPlan=true when:
+   - The request spans more than one agent, OR
+   - The request requires multiple DIFFERENT operations from the SAME agent that must be executed sequentially (e.g., DELETE + CREATE, DELETE + UPDATE, "delete recurring events and keep only this week")
+
+**CRITICAL: INFORMATION SHARING DETECTION (MUST CHECK FIRST)**
+Before classifying intent, analyze the message structure and semantic content:
+- **If the message is primarily DESCRIPTIVE/NARRATIVE** (describing what happened, what didn't work, observations, feedback) rather than IMPERATIVE (asking for action), route to second-brain.
+- **Key semantic indicators** (understand the INTENT, not just keywords):
+  - User is telling you about something (past tense narratives, descriptions of events)
+  - User is sharing information/context without asking for immediate action
+  - User is reporting problems/issues/observations
+  - Message structure: "X happened", "Y didn't work", "I noticed Z", "There are bugs in..."
+  - Multiple topics combined in one message (user is sharing various pieces of information)
+- **Examples of information sharing** (route to second-brain):
+  - "באגים נוספים שיש בתוכנה, הוא לא הצליח למחוק את האירוע" → Descriptive, no action verb → second-brain
+  - "The system created the wrong event type when I asked" → Narrative about what happened → second-brain
+  - "אמא שלי ביקשה סיכום והוא ענה בתשובה של אירוע" → Describing what happened → second-brain
+- **This pattern applies even if the message contains references to other agents** (calendar, database, etc.) - if it's descriptive/feedback, it's information to remember.
+   - Previous steps explicitly failed and need a multi-stage recovery
+   Single-agent bulk operations of the SAME type (e.g., "create multiple events", "delete all tasks") must have requiresPlan=false.
 3. Distinguish general chit-chat or unclear instructions that should use the general conversational model.
+
+CRITICAL: MULTI-STEP SAME-AGENT OPERATIONS
+If a request contains multiple different operations from the same agent (e.g., "delete X and add Y", "מחק X ותוסיף Y", "delete recurring and keep only this week"), you MUST set requiresPlan=true even if only one agent is involved. These operations must be executed step-by-step to ensure proper sequencing and context passing.
 
 ROUTING RULES (PHASE 1):
 
@@ -1283,7 +1361,34 @@ ROUTING RULES (PHASE 1):
    - Example: "Call mom" (no time, explicit action) → second-brain
 
 
-5. **UNSTRUCTURED THOUGHTS/IDEAS/NOTES** → second-brain 
+5. **INFORMATION SHARING / NARRATIVE CONTENT** → second-brain
+   - **CRITICAL PATTERN DETECTION**: When the user shares information, observations, feedback, or narratives WITHOUT explicit action verbs (create, delete, send, schedule, remind), they are expressing things they want remembered.
+   - **Key Indicators** (semantic understanding, not keyword matching):
+     - User describes events, situations, or experiences (past tense narratives)
+     - User reports problems, bugs, or issues that occurred
+     - User shares observations or feedback about system behavior
+     - User mentions things that happened or didn't work
+     - User provides context or background information
+     - Message structure: descriptive/narrative rather than imperative/action-oriented
+   - **Detection Logic**:
+     - If message contains descriptive statements about what happened/didn't happen → second-brain
+     - If message reports issues/problems without asking for immediate action → second-brain
+     - If message shares information in narrative form (telling a story) → second-brain
+     - If message combines multiple topics/observations without clear action → second-brain
+   - **Examples**:
+     - "התשלום לא התבצע בחשבון למרות שניסיתי כמה פעמים" → second-brain (problem description, no direct action request)
+     - "My notes from last week disappeared after the update" → second-brain (narrative describing an incident)
+     - "המשוב מהמורה היה שהמערכת הציגה ציונים לא נכונים" → second-brain (shares feedback about a situation)
+     - "I saw that the weather alert was triggered three times yesterday" → second-brain (observation about system behavior)
+   - Route to: second-brain
+   - **CRITICAL**: Only route here if NOT:
+     - Reminder phrasing → database
+     - List operations → database
+     - Time expressions with action intent → calendar
+     - Email operations → gmail
+     - Direct questions asking for information → may be general if just conversational
+
+6. **UNSTRUCTURED THOUGHTS/IDEAS/NOTES** → second-brain 
    - User expresses thoughts, ideas, notes, reflections, observations
    - No explicit reminder/list/calendar/email/task action intent
    - Examples:
@@ -1300,8 +1405,20 @@ ROUTING RULES (PHASE 1):
      - Time expressions → calendar
      - Email operations → gmail
 
+7. **MEMORY/REMEMBER/SUMMARY REQUESTS** → second-brain
+   - User mentions: "memory", "זיכרון", "remember", "תזכור", "summary", "סיכום", "what did I save", "מה שמרתי", "מה כתבתי"
+   - User asks for summaries of stored memories
+   - User wants to recall previously saved information
+   - Examples:
+     - "סיכום על הזיכרון שהיא שמרה" → second-brain
+     - "What did I write about X?" → second-brain
+     - "מה שמרתי על..." → second-brain
+     - "תזכור ש..." → second-brain
+   - Route to: second-brain
 
-6. **EXPLICIT CALENDAR MENTION** → calendar
+
+
+8. **EXPLICIT CALENDAR MENTION** → calendar
    - User explicitly says "calendar", "יומן", "ביומן", "ליומן", "add to calendar"
    - Route to: calendar
    - Example: "Add meeting to calendar" → calendar
@@ -1343,6 +1460,9 @@ COMPLEX EXAMPLES:
 - User: "Idea: build an AI boat autopilot" → primaryIntent: "second-brain", requiresPlan: false, involvedAgents: ["second-brain"]
 - User: "Note to self: research AirDNA alternatives" → primaryIntent: "second-brain", requiresPlan: false, involvedAgents: ["second-brain"]
 - User: "אני חייב לזכור רעיון לפיצ'ר באפליקציה" → primaryIntent: "second-brain", requiresPlan: false, involvedAgents: ["second-brain"]
+- User: "סיכום על הזיכרון שהיא שמרה" → primaryIntent: "second-brain", requiresPlan: false, involvedAgents: ["second-brain"]
+- User: "באגים נוספים שיש בתוכנה, הוא לא הצליח למחוק את האירוע" → primaryIntent: "second-brain", requiresPlan: false, involvedAgents: ["second-brain"]
+- User: "ובאגים נוספים שיש בתוכנה, הוא לא הצליח למחוק לשחר את האירוע בימי רביעי לעבור על זה ואמא שלי ביקשה סיכום על הזיכרון שהיא שמרה" → primaryIntent: "second-brain", requiresPlan: false, involvedAgents: ["second-brain"]
 
 OUTPUT INSTRUCTIONS:
 - Respond with a single JSON object.
