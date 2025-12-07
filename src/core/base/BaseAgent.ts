@@ -1,5 +1,6 @@
 import { OpenAIService } from '../../services/ai/OpenAIService';
 import { PerformanceTracker } from '../../services/performance/PerformanceTracker';
+import { setAgentNameForTracking } from '../../services/performance/performanceUtils';
 import { RequestContext } from '../context/RequestContext';
 import { IFunctionHandler } from '../interfaces/IAgent';
 import { FunctionDefinition, IAgent } from '../types/AgentTypes';
@@ -29,15 +30,9 @@ export abstract class BaseAgent implements IAgent {
 
   protected async executeWithAI( message: string, userPhone: string, systemPrompt: string, functions: FunctionDefinition[], context: any[] = [] ): Promise<string> {
     const agentStartTime = Date.now();
-    const requestContext = RequestContext.get();
-    const requestId = requestContext?.performanceRequestId;
     const agentName = this.getAgentName();
+    const requestId = agentName ? setAgentNameForTracking(agentName) : undefined;
     let error: Error | null = null;
-
-    // Track agent execution start
-    if (requestId && agentName) {
-      // Agent execution will be tracked at the processRequest level
-    }
 
     try {
       const messages = [

@@ -31,6 +31,8 @@ export class FunctionHandler implements IFunctionHandler {
         
         // Track function failure
         if (requestId) {
+          const lastAICall = this.performanceTracker.getLastAICall(requestId);
+          
           await this.performanceTracker.logFunctionExecution(
             requestId,
             functionName,
@@ -39,7 +41,9 @@ export class FunctionHandler implements IFunctionHandler {
             Date.now(),
             false,
             error,
-            args
+            args,
+            undefined,
+            lastAICall
           );
         }
         
@@ -56,8 +60,10 @@ export class FunctionHandler implements IFunctionHandler {
       
       this.logger.info(`✅ Function ${functionName} executed successfully`);
       
-      // Track function execution
+      // Track function execution with parent AI call info
       if (requestId) {
+        const lastAICall = this.performanceTracker.getLastAICall(requestId);
+        
         await this.performanceTracker.logFunctionExecution(
           requestId,
           functionName,
@@ -67,7 +73,8 @@ export class FunctionHandler implements IFunctionHandler {
           result.success,
           result.error || null,
           args,
-          result
+          result,
+          lastAICall
         );
       }
       
@@ -80,6 +87,8 @@ export class FunctionHandler implements IFunctionHandler {
       
       // Track function failure
       if (requestId) {
+        const lastAICall = this.performanceTracker.getLastAICall(requestId);
+        
         await this.performanceTracker.logFunctionExecution(
           requestId,
           functionName,
@@ -88,7 +97,9 @@ export class FunctionHandler implements IFunctionHandler {
           endTime,
           false,
           errorMessage,
-          args
+          args,
+          undefined,
+          lastAICall
         );
       }
       

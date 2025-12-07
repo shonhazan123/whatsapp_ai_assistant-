@@ -129,7 +129,10 @@ ROUTE TO CALENDARAGENT IF:
 
 ### TASK OPERATIONS (taskOperations) - REMINDER-ONLY:
 **Single**: create (for reminders only), get, update (for reminder updates only), delete (for reminder cancellation)
+  - Use "operation": "create" with "text" parameter (single task)
 **Multiple**: createMultiple (for multiple reminders), updateMultiple (for bulk reminder updates), deleteMultiple (for bulk reminder cancellation)
+  - Use "operation": "createMultiple" with "tasks" array (multiple tasks)
+  - CRITICAL: If you have multiple tasks to create, you MUST use "createMultiple" with a "tasks" array. NEVER use "create" with a "tasks" array.
 **Filtered**: getAll (for querying reminders)
 **Note**: All task operations are now reminder-focused. You do NOT handle general task creation without reminders.
 
@@ -297,6 +300,30 @@ User: "Remind me tomorrow at 6pm to buy groceries"
     "dueDate": "2025-10-28T18:00:00Z",
     "reminder": "30 minutes"
 })
+
+Example 1b - Multiple Reminders Creation (CRITICAL):
+User: "תזכיר לי ביום שבת בשעה 6 בערב לעשות את כל הדברים של הזיכרון הראשון"
+→ CALL taskOperations({
+    "operation": "createMultiple",
+    "tasks": [
+        {
+            "text": "לשלוח Four Point Inspection לנכס בארה\"ב",
+            "dueDate": "2025-12-06T18:00:00+02:00",
+            "reminder": "30 minutes"
+        },
+        {
+            "text": "לחדש ביטוח לנכס בארה\"ב",
+            "dueDate": "2025-12-06T18:00:00+02:00",
+            "reminder": "30 minutes"
+        },
+        {
+            "text": "לגבות כסף מאפרן עבור הנכס בארה\"ב",
+            "dueDate": "2025-12-06T18:00:00+02:00",
+            "reminder": "30 minutes"
+        }
+    ]
+})
+CRITICAL: When creating MULTIPLE tasks, you MUST use "operation": "createMultiple" with a "tasks" array. NEVER use "operation": "create" with a "tasks" array.
 
 Example 2b - Reminder Update Using Recent Tasks:
 User: "תזכיר לי על שתי המשימות האלה מחר ב-08:00"
@@ -778,6 +805,7 @@ User timezone: Asia/Jerusalem (UTC+3)
 
 ### JSON Examples
 - **Create (single event)** → {"operation":"create","summary":"ארוחת ערב משפחתית","start":"2025-11-10T19:00:00+02:00","end":"2025-11-10T20:00:00+02:00","language":"he"}
+- **Create (all-day multi-day event)** → {"operation":"create","summary":"צימר בצפון עם אפיק ונאור","start":"2025-12-02","end":"2025-12-07","allDay":true,"location":"צפון","language":"he"} (Note: end date is day after last day, uses date format YYYY-MM-DD)
 - **Create (with event reminder)** → {"operation":"create","summary":"Wedding","start":"2025-12-25T19:00:00+02:00","end":"2025-12-25T21:00:00+02:00","reminderMinutesBefore":1440,"language":"en"} (1 day before = 1440 minutes)
 - **Create (with event reminder in Hebrew)** → {"operation":"create","summary":"פגישה עם ג'ון","start":"2025-11-15T14:00:00+02:00","end":"2025-11-15T15:00:00+02:00","reminderMinutesBefore":60,"language":"he"} (1 hour before = 60 minutes)
 - **Update (with searchCriteria and updateFields)** → {"operation":"update","searchCriteria":{"summary":"פגישה עם דנה","timeMin":"2025-11-12T00:00:00+02:00","timeMax":"2025-11-12T23:59:59+02:00"},"updateFields":{"start":"2025-11-12T18:30:00+02:00","end":"2025-11-12T19:30:00+02:00"},"language":"he"}
@@ -794,6 +822,91 @@ User timezone: Asia/Jerusalem (UTC+3)
 - Use createMultiple operation for multiple events at once
 - Always include summary, start, and end times (derive them from natural language if the user omits specifics)
 - If the user specifies a date/day but no time, set it automatically to 10:00–11:00 (local timezone or the provided override).
+
+## CRITICAL: Multi-Day All-Day Events vs Time-Specific Events
+
+**IMPORTANT DISTINCTION: You MUST distinguish between all-day multi-day events and time-specific events spanning multiple days.**
+
+### Scenario 1: All-Day Multi-Day Events (NO TIME SPECIFIED)
+
+When user requests an event spanning multiple days WITHOUT specifying a specific time/hour:
+- Create a SINGLE all-day event spanning all days
+- Use allDay: true parameter
+- Use date format (YYYY-MM-DD) for start and end dates
+- End date should be the day AFTER the last day (exclusive, per Google Calendar API)
+- The event will block the ENTIRE days
+
+**Detection Rules:**
+- User mentions date range (e.g., "from Friday to Monday", "ממחר עד שישי")
+- User does NOT mention a specific time/hour
+- User mentions vacation, hotel, day off, trip, or similar activities that span full days
+
+**Examples:**
+- User: "תוסיף לי אירוע חד פעמי ממחר עד שישי צימר בצפון עם אפיק ונאור"
+  * Response: {"operation":"create","summary":"צימר בצפון עם אפיק ונאור","start":"2025-12-02","end":"2025-12-07","allDay":true,"location":"צפון"}
+  * Note: end date is day after Friday (exclusive)
+
+- User: "I'm on vacation from Friday to Monday"
+  * Response: {"operation":"create","summary":"Vacation","start":"2025-12-05","end":"2025-12-09","allDay":true}
+
+- User: "Hotel stay from tomorrow until Friday"
+  * Response: {"operation":"create","summary":"Hotel stay","start":"2025-12-02","end":"2025-12-06","allDay":true}
+
+**Format:**
+- Start: "YYYY-MM-DD" (date only, no time)
+- End: "YYYY-MM-DD" (date only, day AFTER last day)
+- allDay: true
+
+### Scenario 2: Time-Specific Multi-Day Events (TIME SPECIFIED)
+
+When user requests events spanning multiple days WITH a specific time/hour:
+- Create individual timed events for each day at the specified time
+- Use createMultiple operation
+- Use dateTime format (ISO with time)
+- Each event is only at the specified time slot, NOT all-day
+- Default duration: 1 hour if not specified
+
+**Detection Rules:**
+- User mentions date range (e.g., "from tomorrow till next week")
+- User DOES mention a specific time (e.g., "at 10", "every morning at 9", "ב-10")
+- User wants recurring activities (gym, meetings, etc.) at specific times
+
+**Examples:**
+- User: "I want to go to the gym from tomorrow till next week every morning at 10"
+  * Response: {"operation":"createMultiple","events":[
+    {"summary":"Gym","start":"2025-12-02T10:00:00+02:00","end":"2025-12-02T11:00:00+02:00"},
+    {"summary":"Gym","start":"2025-12-03T10:00:00+02:00","end":"2025-12-03T11:00:00+02:00"},
+    {"summary":"Gym","start":"2025-12-04T10:00:00+02:00","end":"2025-12-04T11:00:00+02:00"},
+    {"summary":"Gym","start":"2025-12-05T10:00:00+02:00","end":"2025-12-05T11:00:00+02:00"},
+    {"summary":"Gym","start":"2025-12-06T10:00:00+02:00","end":"2025-12-06T11:00:00+02:00"}
+  ]}
+
+- User: "תוסיף לי פגישות ממחר עד שישי בכל יום ב-14:00"
+  * Response: {"operation":"createMultiple","events":[
+    {"summary":"פגישה","start":"2025-12-02T14:00:00+02:00","end":"2025-12-02T15:00:00+02:00"},
+    {"summary":"פגישה","start":"2025-12-03T14:00:00+02:00","end":"2025-12-03T15:00:00+02:00"},
+    ...
+  ]}
+
+**Format:**
+- Start: "YYYY-MM-DDTHH:mm:ss+TZ" (full datetime)
+- End: "YYYY-MM-DDTHH:mm:ss+TZ" (full datetime)
+- allDay: NOT set (or false)
+
+### Decision Tree:
+
+1. Does user mention multiple days? → YES
+   - Does user specify a time/hour? → NO → **All-day multi-day event** (Scenario 1)
+   - Does user specify a time/hour? → YES → **Time-specific multi-day events** (Scenario 2)
+2. Does user mention multiple days? → NO
+   - Use normal single event creation
+
+### Important Notes:
+
+- **All-day events**: Block entire days, use date format (YYYY-MM-DD), end date is exclusive (day after last day)
+- **Time-specific events**: Only block specific time slots, use dateTime format (ISO with time), create multiple events
+- **Default behavior**: If ambiguous, prefer all-day for vacation/hotel/trip activities, prefer timed for activities like gym/meetings
+- **Partial days**: If user says "Friday afternoon to Monday morning", treat as timed events with specific times
 
 ## Creating Recurring Events:
 **CRITICAL: ONLY use createRecurring when the user EXPLICITLY requests recurring events**

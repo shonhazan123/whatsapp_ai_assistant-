@@ -5,6 +5,7 @@ import { ImageAnalysisResult } from '../../types/imageAnalysis';
 import { ImageCache } from '../image/ImageCache';
 import { ImageProcessor } from '../image/ImageProcessor';
 import { PerformanceTracker } from '../performance/PerformanceTracker';
+import { setAgentNameForTracking } from '../performance/performanceUtils';
 import { OpenAIFunctionHelper, type IntentDecision } from './OpenAIFunctionHelper';
 
 export interface CompletionRequest {
@@ -149,12 +150,19 @@ export class OpenAIService {
         const functionCall = responseMessage?.function_call;
         const toolCalls = responseMessage?.tool_calls;
 
-        await this.performanceTracker.logAICall(requestId, {
-          callType: 'completion',
+        const aiCallInfo = {
           model: request.model || DEFAULT_MODEL,
           requestTokens: usage.prompt_tokens || 0,
           responseTokens: usage.completion_tokens || 0,
           totalTokens: usage.total_tokens || 0,
+        };
+
+        // Store last AI call info for function tracking
+        this.performanceTracker['requestContext'].setLastAICall(requestId, aiCallInfo);
+
+        await this.performanceTracker.logAICall(requestId, {
+          callType: 'completion',
+          ...aiCallInfo,
           startTime,
           endTime: Date.now(),
           messages: request.messages.map(msg => ({
@@ -213,8 +221,11 @@ export class OpenAIService {
   }
 
 
-  async generateResponse(message: string): Promise<string> {
+  async generateResponse(message: string, requestId?: string, agentName?: string): Promise<string> {
     try {
+      // Set agent name - use provided name or default to 'response-generator'
+      const trackingRequestId = requestId || setAgentNameForTracking(agentName || 'message-enhancer');
+
       const response = await this.createCompletion({
         messages: [
           { role: 'system', content: SystemPrompts.getMessageEnhancementPrompt() },
@@ -223,7 +234,7 @@ export class OpenAIService {
         temperature: 0.7,
         maxTokens: 500,
         model: 'gpt-4o-mini'
-      });
+      }, trackingRequestId);
 
       return response.choices[0]?.message?.content?.trim() || '';
     } catch (error) {
@@ -234,6 +245,8 @@ export class OpenAIService {
 
   async detectIntent(message: string, context: any[] = []): Promise<IntentDecision> {
     try {
+      const trackingRequestId = setAgentNameForTracking('intent');
+
       // Build context-aware messages for intent detection
       const messages: Array<{role: 'system' | 'user' | 'assistant'; content: string}> = [
         {
@@ -262,7 +275,7 @@ export class OpenAIService {
         temperature: 0.1,
         maxTokens: 200,
         model: DEFAULT_MODEL // Keep gpt-5 as is (not gpt-5.1, so not using DEFAULT_MODEL)
-      });
+      }, trackingRequestId);
 
       const rawContent = completion.choices[0]?.message?.content?.trim();
       if (!rawContent) {
@@ -314,7 +327,7 @@ export class OpenAIService {
    * Analyze an image using GPT-4 Vision
    * Extracts structured data from images (events, tasks, contacts, etc.)
    */
-  async analyzeImage(imageBuffer: Buffer, userCaption?: string): Promise<ImageAnalysisResult> {
+  async analyzeImage(imageBuffer: Buffer, userCaption?: string, requestId?: string): Promise<ImageAnalysisResult> {
     try {
       this.logger.info('🔍 Starting image analysis...');
       
@@ -371,6 +384,9 @@ export class OpenAIService {
       let completion;
       let retries = 2;
       let lastError: any;
+      const visionStartTime = Date.now();
+      
+      const trackingRequestId = requestId || setAgentNameForTracking('image-analyzer');
       
       for (let attempt = 0; attempt <= retries; attempt++) {
         try {
@@ -410,6 +426,43 @@ export class OpenAIService {
             }),
             timeoutPromise
           ]) as any;
+          
+          // Track successful vision call
+          if (trackingRequestId) {
+            const usage = (completion as any).usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+            const responseContent = completion.choices[0]?.message?.content?.trim() || '';
+            
+            const aiCallInfo = {
+              model: 'gpt-4o',
+              requestTokens: usage.prompt_tokens || 0,
+              responseTokens: usage.completion_tokens || 0,
+              totalTokens: usage.total_tokens || 0,
+            };
+            
+            // Store last AI call info
+            this.performanceTracker['requestContext'].setLastAICall(trackingRequestId, aiCallInfo);
+            
+            await this.performanceTracker.logAICall(trackingRequestId, {
+              callType: 'vision',
+              ...aiCallInfo,
+              startTime: visionStartTime,
+              endTime: Date.now(),
+              messages: [
+                { role: 'system', content: userPrompt },
+                { role: 'user', content: userCaption || '[Image]' }
+              ],
+              responseContent: responseContent.substring(0, 1000),
+              success: true,
+              error: null,
+              metadata: {
+                method: 'analyzeImage',
+                hasImage: true,
+                imageSize: imageBuffer.length,
+                retryAttempt: attempt,
+              },
+            });
+          }
+          
           break; // Success, exit retry loop
         } catch (apiError: any) {
           lastError = apiError;
@@ -443,6 +496,25 @@ export class OpenAIService {
       }
       
       if (!completion) {
+        // Track failed vision call
+        if (trackingRequestId) {
+          await this.performanceTracker.logAICall(trackingRequestId, {
+            callType: 'vision',
+            model: 'gpt-4o',
+            requestTokens: 0,
+            responseTokens: 0,
+            totalTokens: 0,
+            startTime: visionStartTime,
+            endTime: Date.now(),
+            success: false,
+            error: lastError?.message || 'Failed to get completion from OpenAI',
+            metadata: {
+              method: 'analyzeImage',
+              hasImage: true,
+              imageSize: imageBuffer.length,
+            },
+          });
+        }
         throw lastError || new Error('Failed to get completion from OpenAI');
       }
 
@@ -525,8 +597,14 @@ export class OpenAIService {
    */
   async createEmbedding(
     text: string,
-    model: string = 'text-embedding-3-small'
+    model: string = 'text-embedding-3-small',
+    requestId?: string,
+    agentName?: string
   ): Promise<number[]> {
+    const embeddingStartTime = Date.now();
+    
+    const trackingRequestId = requestId || setAgentNameForTracking('embedding');
+    
     try {
       if (!text || text.trim().length === 0) {
         throw new Error('Text cannot be empty');
@@ -550,10 +628,61 @@ export class OpenAIService {
         this.logger.warn(`Unexpected embedding dimension: ${embedding.length}, expected 1536`);
       }
 
+      // Track successful embedding call
+      if (trackingRequestId) {
+        // Embeddings API doesn't return usage in the same format, estimate tokens
+        // Rough estimate: ~1 token per 4 characters for embeddings
+        const estimatedTokens = Math.ceil(text.trim().length / 4);
+        
+        const aiCallInfo = {
+          model,
+          requestTokens: estimatedTokens,
+          responseTokens: 0, // Embeddings don't have response tokens
+          totalTokens: estimatedTokens,
+        };
+        
+        // Store last AI call info
+        this.performanceTracker['requestContext'].setLastAICall(trackingRequestId, aiCallInfo);
+        
+        await this.performanceTracker.logAICall(trackingRequestId, {
+          callType: 'embedding',
+          ...aiCallInfo,
+          startTime: embeddingStartTime,
+          endTime: Date.now(),
+          messages: [{ role: 'user', content: text.trim().substring(0, 1000) }],
+          success: true,
+          error: null,
+          metadata: {
+            method: 'createEmbedding',
+            textLength: text.length,
+            embeddingDimensions: embedding.length,
+          },
+        });
+      }
+
       this.logger.debug(`Embedding created successfully (dimensions: ${embedding.length})`);
       return embedding;
     } catch (error: any) {
       this.logger.error('Error creating embedding:', error);
+      
+      // Track failed embedding call
+      if (trackingRequestId) {
+        await this.performanceTracker.logAICall(trackingRequestId, {
+          callType: 'embedding',
+          model,
+          requestTokens: 0,
+          responseTokens: 0,
+          totalTokens: 0,
+          startTime: embeddingStartTime,
+          endTime: Date.now(),
+          success: false,
+          error: error.message || 'Unknown error',
+          metadata: {
+            method: 'createEmbedding',
+            textLength: text.length,
+          },
+        });
+      }
       
       // Handle rate limiting
       if (error.status === 429) {

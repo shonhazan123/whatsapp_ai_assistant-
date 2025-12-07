@@ -437,17 +437,9 @@ export class TaskService extends BaseService {
       const userId = await this.resolveUserId(request.userId, request.userPhone);
       
       const task = await this.executeSingleQuery<Task>(
-        `SELECT t.id, t.text, t.category, t.due_date, t.reminder, t.reminder_recurrence, t.next_reminder_at, t.completed, t.created_at,
-                COALESCE(
-                  json_agg(
-                    json_build_object('id', s.id, 'text', s.text, 'completed', s.completed, 'created_at', s.created_at)
-                  ) FILTER (WHERE s.id IS NOT NULL),
-                  '[]'
-                ) as subtasks
-         FROM tasks t
-         LEFT JOIN subtasks s ON s.task_id = t.id
-         WHERE t.user_id = $1 AND t.id = $2
-         GROUP BY t.id, t.reminder, t.reminder_recurrence, t.next_reminder_at`,
+        `SELECT id, text, category, due_date, reminder, reminder_recurrence, next_reminder_at, completed, created_at
+         FROM tasks
+         WHERE user_id = $1 AND id = $2`,
         [userId, request.id]
       );
 
@@ -472,16 +464,9 @@ export class TaskService extends BaseService {
       const userId = await this.resolveUserId(request.userId, request.userPhone);
       
       let query = `
-        SELECT t.id, t.text, t.category, t.due_date, t.reminder, t.reminder_recurrence, t.next_reminder_at, t.completed, t.created_at,
-               COALESCE(
-                 json_agg(
-                   json_build_object('id', s.id, 'text', s.text, 'completed', s.completed, 'created_at', s.created_at)
-                 ) FILTER (WHERE s.id IS NOT NULL),
-                 '[]'
-               ) as subtasks
-        FROM tasks t
-        LEFT JOIN subtasks s ON s.task_id = t.id
-        WHERE t.user_id = $1
+        SELECT id, text, category, due_date, reminder, reminder_recurrence, next_reminder_at, completed, created_at
+        FROM tasks
+        WHERE user_id = $1
       `;
 
       const params: any[] = [userId];
@@ -491,30 +476,30 @@ export class TaskService extends BaseService {
       if (request.filters) {
         if (request.filters.completed !== undefined) {
           paramCount++;
-          query += ` AND t.completed = $${paramCount}`;
+          query += ` AND completed = $${paramCount}`;
           params.push(request.filters.completed);
         }
 
         if (request.filters.category) {
           paramCount++;
-          query += ` AND t.category = $${paramCount}`;
+          query += ` AND category = $${paramCount}`;
           params.push(request.filters.category);
         }
 
         if (request.filters.dueDateFrom) {
           paramCount++;
-          query += ` AND t.due_date >= $${paramCount}`;
+          query += ` AND due_date >= $${paramCount}`;
           params.push(request.filters.dueDateFrom);
         }
 
         if (request.filters.dueDateTo) {
           paramCount++;
-          query += ` AND t.due_date <= $${paramCount}`;
+          query += ` AND due_date <= $${paramCount}`;
           params.push(request.filters.dueDateTo);
         }
       }
 
-      query += ` GROUP BY t.id, t.reminder, t.reminder_recurrence, t.next_reminder_at ORDER BY t.created_at DESC`;
+      query += ` ORDER BY created_at DESC`;
 
       if (request.limit) {
         paramCount++;

@@ -91,6 +91,34 @@ export class PerformanceRequestContext {
   }
 
   /**
+   * Set last AI call info (for function tracking)
+   */
+  setLastAICall(requestId: string, aiCall: {
+    model: string | null;
+    requestTokens: number;
+    responseTokens: number;
+    totalTokens: number;
+  }): void {
+    const context = this.contexts.get(requestId);
+    if (context) {
+      context.lastAICall = aiCall;
+    }
+  }
+
+  /**
+   * Get last AI call info
+   */
+  getLastAICall(requestId: string): {
+    model: string | null;
+    requestTokens: number;
+    responseTokens: number;
+    totalTokens: number;
+  } | undefined {
+    const context = this.contexts.get(requestId);
+    return context?.lastAICall;
+  }
+
+  /**
    * End request and clean up context
    */
   endRequest(requestId: string): void {

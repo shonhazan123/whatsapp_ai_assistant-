@@ -390,37 +390,44 @@ logs/
 
 ---
 
-### Phase 5: Data Retrieval API for Dashboard
+### Phase 5: Database Upload Service
 
-**Goal**: Create API/service for dashboard to retrieve performance data
+**Goal**: Upload performance logs to Supabase database for external dashboard consumption
 
 **Tasks**:
-1. Create `DataRetrievalService` with methods:
-   - `getCallLogs(date, filters)` - Get call logs for a date
-   - `getDailyStatistics(date)` - Get daily statistics
-   - `getRequestSummary(requestId)` - Get full request trace
-   - `getAgentStatistics(dateRange, agentName)` - Agent-specific stats
-   - `getFunctionStatistics(dateRange, functionName)` - Function-specific stats
-   - `getModelStatistics(dateRange, modelName)` - Model-specific stats
-   - `getTopExpensiveCalls(dateRange, limit)` - Most expensive calls
-   - `getSlowCalls(dateRange, threshold)` - Slow calls
-   - `getErrorRate(dateRange)` - Error statistics
-   - `getCostSummary(dateRange)` - Cost breakdown
-2. Implement filtering and pagination
-3. Add date range queries
-4. Add aggregation methods
-5. Create REST API endpoints (optional, for future)
-6. Document API interface
+1. Create SQL migration for `performance_logs` table:
+   - Each row represents one call/function within a session
+   - All fields from JSON logs stored as columns
+   - JSONB columns for complex data (messages, function_call, metadata)
+   - Indexes for efficient queries
+2. Create `PerformanceLogService`:
+   - Aggregate all calls and functions for a requestId
+   - Upload each call/function as a separate database row
+   - Transform data to match database schema
+   - Handle errors gracefully (don't break requests)
+3. Modify `PerformanceTracker`:
+   - Keep all calls and functions in memory during request
+   - Provide methods to retrieve all data for a requestId
+   - Clear in-memory data after successful upload
+4. Integrate upload into webhook handler:
+   - Upload logs after response is sent to user
+   - Upload even on errors (if data was collected)
+   - Non-blocking (errors don't fail the request)
 
-**Files to Create**:
-- `src/services/performance/DataRetrievalService.ts`
-- `src/routes/performance.ts` (optional REST API endpoints)
+**Files Created**:
+- `scripts/create-performance-logs-table.sql` - Database migration
+- `src/services/performance/PerformanceLogService.ts` - Upload service
+
+**Files Modified**:
+- `src/services/performance/PerformanceTracker.ts` - Added in-memory storage
+- `src/routes/webhook.ts` - Integrated upload after response
 
 **Success Criteria**:
-- Dashboard can retrieve all necessary data
-- Filtering and pagination work
-- Date range queries work
-- API is well-documented
+- All session data uploaded to database after each request
+- Each call/function becomes a separate row in database
+- Database schema matches Zod schema from external application
+- Upload failures don't break user requests
+- Data is queryable by requestId, sessionId, userPhone, agent, etc.
 
 ---
 
@@ -474,11 +481,73 @@ logs/
 
 ---
 
-## Data Retrieval API Interface
+## Database Schema
 
-### For Future Dashboard Integration
+### Performance Logs Table
 
-The `DataRetrievalService` will provide the following interface for dashboard consumption:
+The `performance_logs` table stores all performance data. Each row represents one call or function execution within a session.
+
+**Table Structure**:
+- `id` (UUID) - Primary key
+- `timestamp` (TIMESTAMP) - When the call occurred
+- `request_id` (TEXT) - Links all calls in one user request
+- `session_id` (TEXT) - Links all requests in one session
+- `user_phone` (TEXT) - User identifier
+- `agent` (TEXT) - Agent name (null/unknown → 'Unknown')
+- `function_name` (TEXT) - Function name if applicable
+- `call_type` (TEXT) - Type of call (completion, embedding, vision, transcription, function, agent)
+- `call_sequence` (INTEGER) - Order within request
+- `model` (TEXT) - AI model used
+- `request_tokens` (INTEGER) - Input tokens
+- `response_tokens` (INTEGER) - Output tokens
+- `total_tokens` (INTEGER) - Total tokens
+- `start_time` (TIMESTAMP) - Call start time
+- `end_time` (TIMESTAMP) - Call end time
+- `duration_ms` (INTEGER) - Execution duration
+- `messages` (JSONB) - Request messages (for completion calls)
+- `response_content` (TEXT) - Response content
+- `function_call` (JSONB) - Function call details
+- `success` (BOOLEAN) - Success status
+- `error` (TEXT) - Error message if failed
+- `metadata` (JSONB) - Additional metadata
+- `created_at` (TIMESTAMP) - Record creation time
+- `updated_at` (TIMESTAMP) - Last update time
+
+**Indexes**:
+- `request_id` - Fast lookup by request
+- `session_id` - Fast lookup by session
+- `user_phone` - Fast lookup by user
+- `timestamp` - Time-based queries
+- `agent` - Agent-based queries
+- `call_type` - Type-based queries
+- `model` - Model-based queries
+
+### Data Retrieval
+
+The external dashboard application can query the database directly using standard SQL. Example queries:
+
+```sql
+-- Get all calls for a request
+SELECT * FROM performance_logs WHERE request_id = '...';
+
+-- Get all calls for a session
+SELECT * FROM performance_logs WHERE session_id = '...' ORDER BY call_sequence;
+
+-- Get calls by agent
+SELECT * FROM performance_logs WHERE agent = 'calendar' AND timestamp > NOW() - INTERVAL '24 hours';
+
+-- Get token usage by model
+SELECT model, SUM(total_tokens) as total_tokens, COUNT(*) as calls
+FROM performance_logs
+WHERE timestamp > NOW() - INTERVAL '7 days'
+GROUP BY model;
+```
+
+## Legacy: Data Retrieval API Interface (Deprecated)
+
+**Note**: Phase 5 was changed to upload directly to database instead of creating an API service. The external dashboard queries the database directly.
+
+The following interface was planned but not implemented:
 
 ```typescript
 class DataRetrievalService {

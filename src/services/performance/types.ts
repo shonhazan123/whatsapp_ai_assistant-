@@ -52,20 +52,41 @@ export interface CallLogEntry {
 }
 
 export interface FunctionLogEntry {
+  // Identification (matching CallLogEntry)
   id: string;
   timestamp: string;
   requestId: string;
+  sessionId: string; // Added: Link to user session
   callType: 'function';
-  functionName: string;
+  callSequence: number; // Added: Order within request
+  
+  // Hierarchy Tracking
   agent: string;
+  functionName: string;
   operation?: string;
+  
+  // AI Call Details (inherited from parent call)
+  model: string | null; // Added: Model used in parent AI call
+  requestTokens: number; // Added: Tokens from parent AI call
+  responseTokens: number; // Added: Tokens from parent AI call
+  totalTokens: number; // Added: Total tokens from parent AI call
+  
+  // Timing
   startTime: string;
   endTime: string;
   durationMs: number;
+  
+  // Status
   success: boolean;
   error: string | null;
+  
+  // Metadata
+  userPhone: string; // Added: Required for user analytics
   arguments?: any;
   result?: any;
+  metadata?: {
+    [key: string]: any;
+  };
 }
 
 export interface RequestSummary {
@@ -103,5 +124,11 @@ export interface PerformanceContext {
   callSequence: number;
   currentAgent: string | null;
   currentFunction: string | null;
+  lastAICall?: {
+    model: string | null;
+    requestTokens: number;
+    responseTokens: number;
+    totalTokens: number;
+  };
 }
 

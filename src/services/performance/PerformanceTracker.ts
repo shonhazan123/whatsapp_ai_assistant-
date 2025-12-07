@@ -15,6 +15,9 @@ export class PerformanceTracker {
   private requestContext: PerformanceRequestContext;
   private logsDir: string;
   private requestSummaries: Map<string, RequestSummary> = new Map();
+  // In-memory storage for all calls and functions (for database upload)
+  private requestCalls: Map<string, CallLogEntry[]> = new Map();
+  private requestFunctions: Map<string, FunctionLogEntry[]> = new Map();
 
   private constructor() {
     this.requestContext = PerformanceRequestContext.getInstance();
@@ -149,6 +152,12 @@ export class PerformanceTracker {
 
     await this.appendToLogFile(this.getLogFilePath('calls'), entry);
     
+    // Store in memory for database upload
+    if (!this.requestCalls.has(requestId)) {
+      this.requestCalls.set(requestId, []);
+    }
+    this.requestCalls.get(requestId)!.push(entry);
+    
     // Update request summary
     this.updateRequestSummary(requestId, entry);
   }
@@ -197,10 +206,17 @@ export class PerformanceTracker {
     };
 
     await this.appendToLogFile(this.getLogFilePath('calls'), entry);
+    
+    // Store in memory for database upload
+    if (!this.requestCalls.has(requestId)) {
+      this.requestCalls.set(requestId, []);
+    }
+    this.requestCalls.get(requestId)!.push(entry);
   }
 
   /**
    * Log function execution
+   * Now includes all fields to match unified schema
    */
   async logFunctionExecution(
     requestId: string,
@@ -211,7 +227,13 @@ export class PerformanceTracker {
     success: boolean,
     error: string | null,
     args?: any,
-    result?: any
+    result?: any,
+    parentAICall?: {
+      model?: string | null;
+      requestTokens?: number;
+      responseTokens?: number;
+      totalTokens?: number;
+    }
   ): Promise<void> {
     const context = this.requestContext.getContext(requestId);
     if (!context) {
@@ -232,24 +254,43 @@ export class PerformanceTracker {
       : result
       : undefined;
 
+    // Get agent name - ensure it's not null
+    const agentName = context.currentAgent || 'unknown';
+
     const entry: FunctionLogEntry = {
       id: randomUUID(),
       timestamp: new Date().toISOString(),
       requestId,
+      sessionId: context.sessionId, // Added
       callType: 'function',
+      callSequence, // Added
+      agent: agentName,
       functionName,
-      agent: context.currentAgent || 'unknown',
       operation,
+      model: parentAICall?.model || null, // Inherited from parent AI call
+      requestTokens: parentAICall?.requestTokens || 0, // Inherited from parent AI call
+      responseTokens: parentAICall?.responseTokens || 0, // Inherited from parent AI call
+      totalTokens: parentAICall?.totalTokens || 0, // Inherited from parent AI call
       startTime: new Date(startTime).toISOString(),
       endTime: new Date(endTime).toISOString(),
       durationMs: endTime - startTime,
       success,
       error,
+      userPhone: context.userPhone, // Added
       arguments: truncatedArgs,
       result: truncatedResult,
+      metadata: {
+        method: 'functionExecution',
+      },
     };
 
     await this.appendToLogFile(this.getLogFilePath('functions'), entry);
+    
+    // Store in memory for database upload
+    if (!this.requestFunctions.has(requestId)) {
+      this.requestFunctions.set(requestId, []);
+    }
+    this.requestFunctions.get(requestId)!.push(entry);
     
     // Clear function context after logging
     this.requestContext.setCurrentFunction(requestId, null);
@@ -356,6 +397,40 @@ export class PerformanceTracker {
    */
   getCurrentContext(requestId: string): PerformanceContext | null {
     return this.requestContext.getContext(requestId);
+  }
+
+  /**
+   * Get last AI call info for a request (for function tracking)
+   */
+  getLastAICall(requestId: string): {
+    model: string | null;
+    requestTokens: number;
+    responseTokens: number;
+    totalTokens: number;
+  } | undefined {
+    return this.requestContext.getLastAICall(requestId);
+  }
+
+  /**
+   * Get all calls for a request (for database upload)
+   */
+  getRequestCalls(requestId: string): CallLogEntry[] {
+    return this.requestCalls.get(requestId) || [];
+  }
+
+  /**
+   * Get all functions for a request (for database upload)
+   */
+  getRequestFunctions(requestId: string): FunctionLogEntry[] {
+    return this.requestFunctions.get(requestId) || [];
+  }
+
+  /**
+   * Clear in-memory data for a request (after upload)
+   */
+  clearRequestData(requestId: string): void {
+    this.requestCalls.delete(requestId);
+    this.requestFunctions.delete(requestId);
   }
 }
 

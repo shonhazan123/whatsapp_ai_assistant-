@@ -34,6 +34,7 @@ export interface CreateEventRequest {
   location?: string;
   timeZone?: string;
   reminders?: CalendarReminders;
+  allDay?: boolean; // If true, use date format (YYYY-MM-DD) instead of dateTime
 }
 
 export interface UpdateEventRequest {
@@ -176,18 +177,33 @@ export class CalendarService {
 
       const event: calendar_v3.Schema$Event = {
         summary: request.summary,
-        start: {
-          dateTime: request.start,
-          timeZone
-        },
-        end: {
-          dateTime: request.end,
-          timeZone
-        },
         attendees: request.attendees?.map(email => ({ email })),
         description: request.description,
         location: request.location
       };
+
+      // Handle all-day events vs timed events
+      if (request.allDay) {
+        // All-day event: use date format (YYYY-MM-DD)
+        // For all-day events, end date should be exclusive (day after last day)
+        event.start = {
+          date: request.start
+        };
+        event.end = {
+          date: request.end
+        };
+        this.logger.info(`📅 Creating all-day event from ${request.start} to ${request.end}`);
+      } else {
+        // Timed event: use dateTime format
+        event.start = {
+          dateTime: request.start,
+          timeZone
+        };
+        event.end = {
+          dateTime: request.end,
+          timeZone
+        };
+      }
 
       if (request.reminders) {
         event.reminders = request.reminders;

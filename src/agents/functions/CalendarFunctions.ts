@@ -33,8 +33,9 @@ export class CalendarFunction implements IFunction {
       },
       eventId: { type: 'string', description: 'Event ID for get, update, delete operations' },
       summary: { type: 'string', description: 'Event title/summary (for create/get) or new title (for update)' },
-      start: { type: 'string', description: 'Start time in ISO format' },
-      end: { type: 'string', description: 'End time in ISO format' },
+      start: { type: 'string', description: 'Start time in ISO format (dateTime) or date format YYYY-MM-DD for all-day events' },
+      end: { type: 'string', description: 'End time in ISO format (dateTime) or date format YYYY-MM-DD for all-day events (exclusive end date)' },
+      allDay: { type: 'boolean', description: 'If true, event is all-day and start/end should be in YYYY-MM-DD format' },
       attendees: { type: 'array', items: { type: 'string' }, description: 'Email addresses of attendees' },
       description: { type: 'string', description: 'Event description' },
       location: { type: 'string', description: 'Event location' },
@@ -132,6 +133,34 @@ export class CalendarFunction implements IFunction {
       payload.timeZone = payload.timezone;
     }
     delete payload.timezone;
+  }
+
+  /**
+   * Detects if a date string is in date-only format (YYYY-MM-DD) vs datetime format
+   * @param dateStr - Date string to check
+   * @returns true if format is YYYY-MM-DD (all-day), false if datetime
+   */
+  private isDateOnlyFormat(dateStr: string): boolean {
+    if (!dateStr || typeof dateStr !== 'string') return false;
+    // Check if it matches YYYY-MM-DD format (exactly 10 characters, no time component)
+    const dateOnlyPattern = /^\d{4}-\d{2}-\d{2}$/;
+    return dateOnlyPattern.test(dateStr) && !dateStr.includes('T');
+  }
+
+  /**
+   * Automatically detects if event should be all-day based on date format
+   * @param start - Start date/time string
+   * @param end - End date/time string
+   * @param explicitAllDay - Explicit allDay flag from user
+   * @returns true if should be all-day event
+   */
+  private detectAllDay(start: string, end: string, explicitAllDay?: boolean): boolean {
+    // If explicitly set, use that
+    if (explicitAllDay !== undefined) {
+      return explicitAllDay;
+    }
+    // Auto-detect: if both start and end are in date-only format, it's all-day
+    return this.isDateOnlyFormat(start) && this.isDateOnlyFormat(end);
   }
 
   private buildReminder(minutes: number | null | undefined): CalendarReminders | undefined {
@@ -433,6 +462,14 @@ Please specify the exact title or provide more details so I can update the corre
           const createPayload: any = { ...restCreate };
           this.normalizeTimezone(createPayload);
 
+          // Detect if this should be an all-day event
+          const isAllDay = this.detectAllDay(createPayload.start, createPayload.end, createPayload.allDay);
+          createPayload.allDay = isAllDay;
+          
+          if (isAllDay) {
+            this.logger.info(`📅 Detected all-day event from ${createPayload.start} to ${createPayload.end}`);
+          }
+
           const reminders = this.buildReminder(reminderMinutesBefore);
           if (reminders) {
             createPayload.reminders = reminders;
@@ -474,6 +511,13 @@ Please specify the exact title or provide more details so I can update the corre
             const { reminderMinutesBefore, ...restEvent } = event;
             const payload: any = { ...restEvent };
             this.normalizeTimezone(payload);
+            
+            // Detect if this should be an all-day event
+            if (payload.start && payload.end) {
+              const isAllDay = this.detectAllDay(payload.start, payload.end, payload.allDay);
+              payload.allDay = isAllDay;
+            }
+            
             const reminders = this.buildReminder(reminderMinutesBefore);
             if (reminders) {
               payload.reminders = reminders;

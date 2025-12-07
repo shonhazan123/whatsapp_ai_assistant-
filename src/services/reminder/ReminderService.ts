@@ -6,6 +6,7 @@ import { OpenAIService } from '../ai/OpenAIService';
 import { CalendarService } from '../calendar/CalendarService';
 import { ReminderRecurrence, Task } from '../database/TaskService';
 import { UserService } from '../database/UserService';
+import { PerformanceTracker } from '../performance/PerformanceTracker';
 import { sendWhatsAppMessage } from '../whatsapp';
 
 interface User {
@@ -22,6 +23,7 @@ interface TaskWithUser extends Task {
 export class ReminderService {
   private calendarService: CalendarService;
   private userService: UserService;
+  private performanceTracker: PerformanceTracker;
 
   constructor(
     private loggerInstance: any = logger,
@@ -30,6 +32,7 @@ export class ReminderService {
     this.openaiService = openaiService || new OpenAIService(this.loggerInstance);
     this.calendarService = new CalendarService(this.loggerInstance);
     this.userService = new UserService(this.loggerInstance);
+    this.performanceTracker = PerformanceTracker.getInstance();
   }
 
   /**
@@ -45,7 +48,7 @@ export class ReminderService {
       for (const task of oneTimeReminders) {
         try {
           const rawData = this.buildOneTimeReminderData(task);
-          const message = await this.enhanceMessageWithAI(rawData);
+          const message = await this.enhanceMessageWithAI(rawData, task.phone);
           await sendWhatsAppMessage(task.phone, message);
           this.loggerInstance.info(`✅ Sent one-time reminder to ${task.phone}: ${task.text}`);
           
@@ -82,7 +85,7 @@ export class ReminderService {
 
           // Send reminder
           const rawData = this.buildRecurringReminderData(task);
-          const message = await this.enhanceMessageWithAI(rawData);
+          const message = await this.enhanceMessageWithAI(rawData, task.phone);
           await sendWhatsAppMessage(task.phone, message);
           this.loggerInstance.info(`✅ Sent recurring reminder to ${task.phone}: ${task.text}`);
 
@@ -129,12 +132,12 @@ export class ReminderService {
             let message: string;
             if (plannedTasks.length > 0 || unplannedTasks.length > 0 || calendarEvents.length > 0) {
               const rawData = this.buildDailyDigestData(plannedTasks, unplannedTasks, calendarEvents, user);
-              message = await this.enhanceMessageWithAI(rawData);
+              message = await this.enhanceMessageWithAI(rawData, user.phone);
               await sendWhatsAppMessage(user.phone, message);
             } else {
               // No tasks or events - send empty digest message
               const rawData = this.buildEmptyDigestData(user);
-              message = await this.enhanceMessageWithAI(rawData);
+              message = await this.enhanceMessageWithAI(rawData, user.phone);
               await sendWhatsAppMessage(user.phone, message);
             }
           }
@@ -349,9 +352,25 @@ export class ReminderService {
   /**
    * Enhance message using AI
    */
-  private async enhanceMessageWithAI(rawData: string): Promise<string> {
+  private async enhanceMessageWithAI(rawData: string, userPhone?: string): Promise<string> {
     try {
-      return await this.openaiService!.generateResponse(rawData);
+      // For background jobs (reminders), create a requestId if not in context
+      const requestContext = RequestContext.get();
+      let requestId = requestContext?.performanceRequestId;
+      
+      if (!requestId && userPhone) {
+        // Create a requestId for background job tracking
+        requestId = this.performanceTracker.startRequest(userPhone);
+      }
+      
+      const response = await this.openaiService!.generateResponse(rawData, requestId, 'reminder-service');
+      
+      // End request if we created it
+      if (requestId && !requestContext?.performanceRequestId) {
+        await this.performanceTracker.endRequest(requestId);
+      }
+      
+      return response;
     } catch (error) {
       this.loggerInstance.error('Failed to enhance message with AI, using fallback:', error);
       // Return raw data as fallback

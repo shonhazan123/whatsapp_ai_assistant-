@@ -6,6 +6,7 @@ import { processMessageV2 } from '../index-v2';
 import { OpenAIService } from '../services/ai/OpenAIService';
 import { UserService } from '../services/database/UserService';
 import { UserOnboardingHandler } from '../services/onboarding/UserOnboardingHandler';
+import { PerformanceLogService } from '../services/performance/PerformanceLogService';
 import { PerformanceTracker } from '../services/performance/PerformanceTracker';
 import { transcribeAudio } from '../services/transcription';
 import {
@@ -25,6 +26,7 @@ const openaiService = new OpenAIService(logger);
 const conversationWindow = ConversationWindow.getInstance();
 const onboardingHandler = new UserOnboardingHandler(logger);
 const performanceTracker = PerformanceTracker.getInstance();
+const performanceLogService = PerformanceLogService.getInstance();
 
 // Webhook verification (GET request from WhatsApp)
 whatsappWebhook.get('/whatsapp', (req: Request, res: Response) => {
@@ -137,7 +139,7 @@ async function handleIncomingMessage(message: WhatsAppMessage): Promise<void> {
       
       // Step 2: Analyze image using OpenAI Vision
       try {
-        const analysisResult = await openaiService.analyzeImage(imageBuffer, imageCaption);
+        const analysisResult = await openaiService.analyzeImage(imageBuffer, imageCaption, performanceRequestId);
         logger.info(`✅ Image analysis complete: ${analysisResult.imageType} (confidence: ${analysisResult.confidence})`);
         
         // Store image context in conversation memory for future reference
@@ -240,6 +242,23 @@ async function handleIncomingMessage(message: WhatsAppMessage): Promise<void> {
     const duration = Date.now() - startTime;
     logger.info(`✅ Message handled successfully in ${duration}ms`);
     
+    // Step 6: Upload performance logs to database (after response is sent)
+    if (performanceRequestId) {
+      try {
+        const calls = performanceTracker.getRequestCalls(performanceRequestId);
+        const functions = performanceTracker.getRequestFunctions(performanceRequestId);
+        
+        if (calls.length > 0 || functions.length > 0) {
+          await performanceLogService.uploadSessionLogs(calls, functions);
+          // Clear in-memory data after successful upload
+          performanceTracker.clearRequestData(performanceRequestId);
+        }
+      } catch (uploadError) {
+        logger.error('Error uploading performance logs to database:', uploadError);
+        // Don't fail the request if upload fails
+      }
+    }
+    
     // End performance tracking
     if (performanceRequestId) {
       await performanceTracker.endRequest(performanceRequestId);
@@ -250,8 +269,20 @@ async function handleIncomingMessage(message: WhatsAppMessage): Promise<void> {
     const duration = Date.now() - startTime;
     logger.error(`❌ Error handling message after ${duration}ms:`, error);
     
-    // End performance tracking even on error
+    // Upload performance logs even on error (if any were collected)
     if (performanceRequestId) {
+      try {
+        const calls = performanceTracker.getRequestCalls(performanceRequestId);
+        const functions = performanceTracker.getRequestFunctions(performanceRequestId);
+        
+        if (calls.length > 0 || functions.length > 0) {
+          await performanceLogService.uploadSessionLogs(calls, functions);
+          performanceTracker.clearRequestData(performanceRequestId);
+        }
+      } catch (uploadError) {
+        logger.error('Error uploading performance logs to database (error case):', uploadError);
+      }
+      
       await performanceTracker.endRequest(performanceRequestId);
     }
     
