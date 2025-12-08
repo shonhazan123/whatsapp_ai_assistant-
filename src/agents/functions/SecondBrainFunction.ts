@@ -1,4 +1,5 @@
 import { DEFAULT_MIN_SIMILARITY, DEFAULT_SEARCH_LIMIT, FALLBACK_SIMILARITY_THRESHOLDS, MIN_FALLBACK_THRESHOLD } from '../../config/secondBrain';
+import { RequestContext } from '../../core/context/RequestContext';
 import { IFunction, IResponse } from '../../core/interfaces/IAgent';
 import { SecondBrainService } from '../../services/memory/SecondBrainService';
 import { logger } from '../../utils/logger';
@@ -136,7 +137,9 @@ export class SecondBrainFunction implements IFunction {
 
       // Generate embedding first (required for insertOrMergeMemory)
       this.loggerInstance.debug(`   Generating embedding for new memory text`);
-      const embedding = await this.secondBrainService.embedText(params.text);
+      const requestContext = RequestContext.get();
+      const requestId = requestContext?.performanceRequestId;
+      const embedding = await this.secondBrainService.embedText(params.text, requestId);
 
       // Use insertOrMergeMemory to check for similar memories and merge if found
       const result = await this.secondBrainService.insertOrMergeMemory(

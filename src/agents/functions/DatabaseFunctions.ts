@@ -1,7 +1,6 @@
 import { IFunction, IResponse } from '../../core/interfaces/IAgent';
 import { ConversationWindow, RecentTaskSnapshot } from '../../core/memory/ConversationWindow';
 import { QueryResolver } from '../../core/orchestrator/QueryResolver';
-import { ContactService } from '../../services/database/ContactService';
 import { ListService } from '../../services/database/ListService';
 import { TaskService } from '../../services/database/TaskService';
 import { UserDataService } from '../../services/database/UserDataService';
@@ -45,12 +44,16 @@ export class TaskFunction implements IFunction {
         properties: {
           type: {
             type: 'string',
-            enum: ['daily', 'weekly', 'monthly'],
-            description: 'Recurrence type'
+            enum: ['daily', 'weekly', 'monthly', 'nudge'],
+            description: 'Recurrence type: daily/weekly/monthly for scheduled, nudge for interval-based (every X minutes/hours)'
           },
           time: {
             type: 'string',
-            description: 'Time of day in HH:mm format (e.g., "08:00", "14:30")'
+            description: 'Time of day in HH:mm format (e.g., "08:00", "14:30") - ONLY for daily/weekly/monthly, NOT for nudge'
+          },
+          interval: {
+            type: 'string',
+            description: 'Interval for nudge type ONLY (e.g., "5 minutes", "10 minutes", "1 hour") - NOT for daily/weekly/monthly'
           },
           days: {
             type: 'array',
@@ -70,7 +73,7 @@ export class TaskFunction implements IFunction {
             description: 'Optional timezone override (defaults to user timezone)'
           }
         },
-        required: ['type', 'time']
+        required: ['type']
       },
       reminderDetails: {
         type: 'object',
@@ -82,8 +85,9 @@ export class TaskFunction implements IFunction {
             type: 'object',
             description: 'Recurring reminder payload',
             properties: {
-              type: { type: 'string', enum: ['daily', 'weekly', 'monthly'] },
-              time: { type: 'string' },
+              type: { type: 'string', enum: ['daily', 'weekly', 'monthly', 'nudge'] },
+              time: { type: 'string', description: 'ONLY for daily/weekly/monthly' },
+              interval: { type: 'string', description: 'ONLY for nudge (e.g., "5 minutes", "1 hour")' },
               days: { type: 'array', items: { type: 'number' } },
               dayOfMonth: { type: 'number' },
               until: { type: 'string' },
@@ -127,8 +131,9 @@ export class TaskFunction implements IFunction {
                 reminderRecurrence: {
                   type: 'object',
                   properties: {
-                    type: { type: 'string', enum: ['daily', 'weekly', 'monthly'] },
-                    time: { type: 'string' },
+                    type: { type: 'string', enum: ['daily', 'weekly', 'monthly', 'nudge'] },
+                    time: { type: 'string', description: 'ONLY for daily/weekly/monthly' },
+                    interval: { type: 'string', description: 'ONLY for nudge (e.g., "5 minutes")' },
                     days: { type: 'array', items: { type: 'number' } },
                     dayOfMonth: { type: 'number' },
                     until: { type: 'string' },
@@ -140,14 +145,15 @@ export class TaskFunction implements IFunction {
             reminderRecurrence: {
               type: 'object',
               properties: {
-                type: { type: 'string', enum: ['daily', 'weekly', 'monthly'] },
-                time: { type: 'string' },
+                type: { type: 'string', enum: ['daily', 'weekly', 'monthly', 'nudge'] },
+                time: { type: 'string', description: 'ONLY for daily/weekly/monthly' },
+                interval: { type: 'string', description: 'ONLY for nudge' },
                 days: { type: 'array', items: { type: 'number' } },
                 dayOfMonth: { type: 'number' },
                 until: { type: 'string' },
                 timezone: { type: 'string' }
               },
-              required: ['type', 'time']
+              required: ['type']
             }
           },
           required: ['text']
@@ -177,8 +183,9 @@ export class TaskFunction implements IFunction {
                 reminderRecurrence: {
                   type: 'object',
                   properties: {
-                    type: { type: 'string', enum: ['daily', 'weekly', 'monthly'] },
-                    time: { type: 'string' },
+                    type: { type: 'string', enum: ['daily', 'weekly', 'monthly', 'nudge'] },
+                    time: { type: 'string', description: 'ONLY for daily/weekly/monthly' },
+                    interval: { type: 'string', description: 'ONLY for nudge (e.g., "5 minutes")' },
                     days: { type: 'array', items: { type: 'number' } },
                     dayOfMonth: { type: 'number' },
                     until: { type: 'string' },
@@ -190,14 +197,15 @@ export class TaskFunction implements IFunction {
             reminderRecurrence: {
               type: 'object',
               properties: {
-                type: { type: 'string', enum: ['daily', 'weekly', 'monthly'] },
-                time: { type: 'string' },
+                type: { type: 'string', enum: ['daily', 'weekly', 'monthly', 'nudge'] },
+                time: { type: 'string', description: 'ONLY for daily/weekly/monthly' },
+                interval: { type: 'string', description: 'ONLY for nudge' },
                 days: { type: 'array', items: { type: 'number' } },
                 dayOfMonth: { type: 'number' },
                 until: { type: 'string' },
                 timezone: { type: 'string' }
               },
-              required: ['type', 'time']
+              required: ['type']
             },
             completed: { type: 'boolean' }
           },
@@ -550,338 +558,6 @@ export class TaskFunction implements IFunction {
   }
 }
 
-// Contact Functions
-export class ContactFunction implements IFunction {
-  name = 'contactOperations';
-  description = 'Handle all contact-related operations including create, read, update, delete, and search contacts';
-
-  parameters = {
-    type: 'object',
-    properties: {
-      operation: {
-        type: 'string',
-        enum: ['create', 'createMultiple', 'get', 'getAll', 'update', 'updateMultiple', 'delete', 'deleteMultiple', 'search'],
-        description: 'The operation to perform on contacts'
-      },
-      contactId: {
-        type: 'string',
-        description: 'Contact ID for get, update, delete operations'
-      },
-      name: {
-        type: 'string',
-        description: 'Contact name (for create, update, or search operations)'
-      },
-      phone: {
-        type: 'string',
-        description: 'Contact phone number'
-      },
-      email: {
-        type: 'string',
-        description: 'Contact email address'
-      },
-      address: {
-        type: 'string',
-        description: 'Contact physical address'
-      },
-      selectedIndex: {
-        type: 'number',
-        description: 'Selected index from disambiguation (when user responds with a number like "2")'
-      },
-      filters: {
-        type: 'object',
-        properties: {
-          name: { type: 'string' },
-          phone: { type: 'string' },
-          email: { type: 'string' }
-        }
-      },
-      contacts: {
-        type: 'array',
-        description: 'Array of contacts for createMultiple operation',
-        items: {
-          type: 'object',
-          properties: {
-            name: { type: 'string' },
-            phone: { type: 'string' },
-            email: { type: 'string' },
-            address: { type: 'string' }
-          },
-          required: ['name']
-        }
-      },
-      contactIds: {
-        type: 'array',
-        description: 'Array of contact IDs for deleteMultiple or updateMultiple operations',
-        items: { type: 'string' }
-      },
-      updates: {
-        type: 'array',
-        description: 'Array of updates for updateMultiple operation',
-        items: {
-          type: 'object',
-          properties: {
-            contactId: { type: 'string' },
-            name: { type: 'string' },
-            phone: { type: 'string' },
-            email: { type: 'string' },
-            address: { type: 'string' }
-          },
-          required: ['contactId']
-        }
-      }
-    },
-    required: ['operation']
-  };
-
-  constructor(
-    private contactService: ContactService,
-    private logger: any = logger
-  ) {}
-
-  async execute(args: any, userId: string): Promise<IResponse> {
-    try {
-      const { operation, ...params } = args;
-      const resolver = new QueryResolver();
-      const resolveContactId = async (): Promise<{ id: string | null; disambiguation?: string }> => {
-        return await resolver.resolveWithDisambiguationHandling(params, userId, 'contact');
-      };
-
-      switch (operation) {
-        case 'create':
-          return await this.contactService.create({
-            userPhone: userId,
-            data: params
-          });
-
-        case 'createMultiple':
-          if (!params.contacts || !Array.isArray(params.contacts) || params.contacts.length === 0) {
-            return { success: false, error: 'Contacts array is required for createMultiple operation' };
-          }
-          return await this.contactService.createMultiple({
-            userPhone: userId,
-            items: params.contacts
-          });
-
-        case 'get':
-          {
-            const resolved = await resolveContactId();
-            if (resolved.disambiguation) {
-              return { success: false, error: resolved.disambiguation };
-            }
-            if (!resolved.id) return { success: false, error: 'Contact not found (provide name/email/phone)' };
-            return await this.contactService.getById({ userPhone: userId, id: resolved.id });
-          }
-
-        case 'getAll':
-          return await this.contactService.getAll({
-            userPhone: userId,
-            filters: params.filters,
-            limit: params.limit,
-            offset: params.offset
-          });
-
-        case 'search':
-          if (!params.name) {
-            return { success: false, error: 'Name is required for search operation' };
-          }
-          
-          this.logger.info(`🔍 Searching for contact: "${params.name}" for user: ${userId}`);
-          
-          // Search for contacts by name
-          const allContacts = await this.contactService.getAll({
-            userPhone: userId
-          });
-          
-          this.logger.info(`📋 ContactService response:`, allContacts);
-          
-          if (!allContacts.success || !allContacts.data) {
-            return { success: false, error: 'No contacts found' };
-          }
-          
-          // Handle the response structure from ContactService.getAll()
-          // It returns { contacts: [...], count: number }
-          let contacts: any[] = [];
-          if (allContacts.data.contacts && Array.isArray(allContacts.data.contacts)) {
-            contacts = allContacts.data.contacts;
-          } else if (Array.isArray(allContacts.data)) {
-            contacts = allContacts.data;
-          }
-          
-          this.logger.info(`📋 Found ${contacts.length} total contacts:`, contacts);
-          const searchName = params.name.toLowerCase().trim();
-          
-          // More flexible search - check if search name is contained in contact name
-          const matchingContacts = contacts.filter((contact: any) => {
-            if (!contact.name) return false;
-            const contactName = contact.name.toLowerCase().trim();
-            
-            // Exact match
-            if (contactName === searchName) return true;
-            
-            // Partial match - search name is contained in contact name
-            if (contactName.includes(searchName)) return true;
-            
-            // Reverse partial match - contact name is contained in search name
-            if (searchName.includes(contactName)) return true;
-            
-            // Word-by-word match for Hebrew names
-            const searchWords = searchName.split(/\s+/);
-            const contactWords = contactName.split(/\s+/);
-            
-            // Check if any search word matches any contact word
-            return searchWords.some((searchWord: string) => 
-              contactWords.some((contactWord: string) => 
-                contactWord.includes(searchWord) || searchWord.includes(contactWord)
-              )
-            );
-          });
-          
-          if (matchingContacts.length === 0) {
-            return { success: false, error: `No contact found with name "${params.name}"` };
-          }
-          
-          // Return the first matching contact with proper format
-          const foundContact = matchingContacts[0];
-          const responseMessage = `מצאתי איש קשר: שם: ${foundContact.name}, מייל: ${foundContact.email || 'לא זמין'}, טלפון: ${foundContact.phone || 'לא זמין'}`;
-          
-          this.logger.info(`✅ Contact search successful: ${foundContact.name} - ${foundContact.email}`);
-          
-          return {
-            success: true,
-            data: foundContact,
-            message: responseMessage
-          };
-
-        case 'update':
-          {
-            const resolved = await resolveContactId();
-            if (resolved.disambiguation) {
-              return { success: false, error: resolved.disambiguation };
-            }
-            if (!resolved.id) return { success: false, error: 'Contact not found (provide name/email/phone)' };
-            return await this.contactService.update({ userPhone: userId, id: resolved.id, data: params });
-          }
-
-        case 'updateMultiple':
-          if (!params.updates || !Array.isArray(params.updates) || params.updates.length === 0) {
-            return { success: false, error: 'Updates array is required for updateMultiple operation' };
-          }
-          const updateResults = [];
-          const updateErrors = [];
-          for (const update of params.updates) {
-            try {
-              let resolvedId = update.contactId;
-              if (!resolvedId) {
-                const q = update.name || update.email || update.phone;
-                if (q) {
-                  const one = await resolver.resolveOneOrAsk(q, userId, 'contact');
-                  if (one.disambiguation) {
-                    updateErrors.push({ contactText: q, error: one.disambiguation });
-                    continue;
-                  }
-                  resolvedId = one.entity?.id || null;
-                }
-              }
-              if (!resolvedId) {
-                updateErrors.push({ contactText: update.name || update.email || update.phone, error: 'Contact not found' });
-                continue;
-              }
-              const result = await this.contactService.update({
-                userPhone: userId,
-                id: resolvedId,
-                data: update
-              });
-              if (result.success) {
-                updateResults.push(result.data);
-              } else {
-                updateErrors.push({ contactId: resolvedId, error: result.error });
-              }
-            } catch (error) {
-              updateErrors.push({ contactId: update.contactId, error: error instanceof Error ? error.message : 'Unknown error' });
-            }
-          }
-          return {
-            success: updateErrors.length === 0,
-            data: {
-              updated: updateResults,
-              errors: updateErrors.length > 0 ? updateErrors : undefined,
-              count: updateResults.length
-            }
-          };
-
-        case 'delete':
-          {
-            const resolved = await resolveContactId();
-            if (resolved.disambiguation) {
-              return { success: false, error: resolved.disambiguation };
-            }
-            if (!resolved.id) return { success: false, error: 'Contact not found (provide name/email/phone)' };
-            return await this.contactService.delete({ userPhone: userId, id: resolved.id });
-          }
-
-        case 'deleteMultiple':
-          {
-            const deleteResults = [];
-            const deleteErrors = [];
-            let ids: string[] = Array.isArray(params.contactIds) ? params.contactIds : [];
-            if ((!ids || ids.length === 0) && Array.isArray(params.contacts)) {
-              for (const c of params.contacts) {
-                const q = c?.name || c?.email || c?.phone;
-                if (!q) continue;
-                const one = await resolver.resolveOneOrAsk(q, userId, 'contact');
-                if (one.disambiguation) {
-                  deleteErrors.push({ contactText: q, error: one.disambiguation });
-                  continue;
-                }
-                if (one.entity?.id) ids.push(one.entity.id);
-              }
-            }
-            if (!ids || ids.length === 0) {
-              return { success: false, error: 'Provide contactIds or contacts with name/email/phone to delete' };
-            }
-            for (const contactId of ids) {
-            try {
-              const result = await this.contactService.delete({
-                userPhone: userId,
-                id: contactId
-              });
-              if (result.success) {
-                deleteResults.push(result.data);
-              } else {
-                deleteErrors.push({ contactId, error: result.error });
-              }
-            } catch (error) {
-              deleteErrors.push({ contactId, error: error instanceof Error ? error.message : 'Unknown error' });
-            }
-            }
-            return {
-              success: deleteErrors.length === 0,
-              data: {
-                deleted: deleteResults,
-                errors: deleteErrors.length > 0 ? deleteErrors : undefined,
-                count: deleteResults.length
-              }
-            };
-          }
-
-        case 'search':
-          return await this.contactService.search({
-            userPhone: userId,
-            filters: params.filters,
-            limit: params.limit,
-            offset: params.offset
-          });
-
-        default:
-          return { success: false, error: `Unknown operation: ${operation}` };
-      }
-    } catch (error) {
-      this.logger.error('Error in ContactFunction:', error);
-      return { success: false, error: 'Failed to execute contact operation' };
-    }
-  }
-}
-
 // List Functions
 export class ListFunction implements IFunction {
   name = 'listOperations';
@@ -1147,7 +823,7 @@ export class ListFunction implements IFunction {
 // User Data Functions
 export class UserDataFunction implements IFunction {
   name = 'userDataOperations';
-  description = 'Get comprehensive user data including tasks, contacts, lists, and statistics';
+  description = 'Get comprehensive user data including tasks , lists, and statistics';
 
   parameters = {
     type: 'object',
@@ -1160,10 +836,6 @@ export class UserDataFunction implements IFunction {
       includeTasks: {
         type: 'boolean',
         description: 'Include tasks in the response'
-      },
-      includeContacts: {
-        type: 'boolean',
-        description: 'Include contacts in the response'
       },
       includeLists: {
         type: 'boolean',
@@ -1178,14 +850,6 @@ export class UserDataFunction implements IFunction {
         properties: {
           completed: { type: 'boolean' },
           category: { type: 'string' }
-        }
-      },
-      contactFilters: {
-        type: 'object',
-        properties: {
-          name: { type: 'string' },
-          phone: { type: 'string' },
-          email: { type: 'string' }
         }
       },
       listFilters: {
@@ -1218,10 +882,8 @@ export class UserDataFunction implements IFunction {
           return await this.userDataService.getAllData({
             userPhone: userId,
             includeTasks: params.includeTasks,
-            includeContacts: params.includeContacts,
             includeLists: params.includeLists,
             taskFilters: params.taskFilters,
-            contactFilters: params.contactFilters,
             listFilters: params.listFilters
           });
 

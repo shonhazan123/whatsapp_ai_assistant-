@@ -43,7 +43,7 @@ export interface FunctionDefinition {
 }
 
 // Phase 2: Shared types for QueryResolver
-export type EntityDomain = 'task' | 'event' | 'contact' | 'list' | 'email';
+export type EntityDomain = 'task' | 'event' | 'list' | 'email';
 
 export interface EntityReference {
   id?: string; // when available

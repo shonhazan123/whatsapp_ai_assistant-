@@ -1,13 +1,11 @@
 import { ServiceContainer } from '../../core/container/ServiceContainer';
 import { logger } from '../../utils/logger';
 import { OpenAIService } from '../ai/OpenAIService';
-import { ContactLookupService } from '../contact/ContactLookupService';
 
 export interface Task {
   type: string;
   agent: string;
   message: string;
-  requiresContactLookup?: boolean;
   priority?: number;
 }
 
@@ -19,13 +17,11 @@ export interface MultiTaskResult {
 
 export class MultiTaskService {
   private openaiService: OpenAIService;
-  private contactLookupService: ContactLookupService;
   private container: ServiceContainer;
 
   constructor(container: ServiceContainer) {
     this.container = container;
     this.openaiService = container.getOpenAIService();
-    this.contactLookupService = container.getContactLookupService();
   }
 
   /**
@@ -63,25 +59,16 @@ For meeting requests with attendees, ALWAYS:
 Return ONLY a JSON array of tasks in this format:
 [
   {
-    "type": "contact_lookup",
-    "agent": "database", 
-    "message": "Search for contact: [name]",
-    "requiresContactLookup": true,
-    "priority": 1
-  },
-  {
     "type": "calendar_event",
     "agent": "calendar",
     "message": "Create calendar event: [details]",
-    "requiresContactLookup": true,
-    "priority": 2
+    "priority": 1
   },
   {
-    "type": "email_invitation",
+    "type": "email_send",
     "agent": "gmail",
-    "message": "Send email invitation: [details]",
-    "requiresContactLookup": true,
-    "priority": 3
+    "message": "Send email: [details]",
+    "priority": 2
   }
 ]`
           },
@@ -131,7 +118,6 @@ Return ONLY a JSON array of tasks in this format:
 
       const tasks = parseResult.tasks;
       const results = [];
-      let contactDetails: any = null;
       let meetingLink: string | null = null;
 
       // Execute tasks in order
@@ -139,34 +125,7 @@ Return ONLY a JSON array of tasks in this format:
         const task = tasks[i];
         logger.info(`🔧 Executing task ${i + 1}/${tasks.length}: ${task.type}`);
 
-        // Special handling for contact lookup
-        if (task.type === 'contact_lookup') {
-          const contactResult = await this.handleContactLookup(task.message, userPhone);
-          if (contactResult.success) {
-            contactDetails = contactResult.contact;
-            results.push({
-              task: task.type,
-              success: true,
-              result: `מצאתי איש קשר: ${contactDetails.name} (${contactDetails.email})`
-            });
-          } else {
-            results.push({
-              task: task.type,
-              success: false,
-              result: contactResult.error || 'לא נמצא איש קשר'
-            });
-            // STOP the process if contact lookup fails
-            logger.info('❌ Stopping multi-task process - contact not found');
-            break;
-          }
-          continue;
-        }
-
-        // Update task message with contact details and meeting link
         let taskMessage = task.message;
-        if (contactDetails && task.requiresContactLookup) {
-          taskMessage = this.updateTaskWithContactDetails(task, contactDetails, meetingLink);
-        }
 
         // Execute task with appropriate agent
         const agent = this.getAgent(task.agent);
@@ -240,157 +199,6 @@ Return ONLY a JSON array of tasks in this format:
       logger.error('Error in executeMultiTask:', error);
       return 'מצטער, אירעה שגיאה בעיבוד הבקשה המורכבת. נסה שוב.';
     }
-  }
-
-  /**
-   * Handle contact lookup using real database
-   */
-  private async handleContactLookup(searchMessage: string, userPhone: string): Promise<{success: boolean, contact?: any, error?: string}> {
-    try {
-      // Extract name from search message
-      const nameMatch = searchMessage.match(/Search for contact:\s*(.+)/);
-      if (!nameMatch) {
-        return { success: false, error: 'לא ניתן לזהות שם לחיפוש' };
-      }
-
-      const searchName = nameMatch[1].trim();
-      logger.info(`🔍 Searching for contact: "${searchName}" in database`);
-      
-      // Use database agent to search for contacts
-      const databaseAgent = this.getAgent('database');
-      const searchResult = await databaseAgent.processRequest(`חפש איש קשר בשם: ${searchName}`, userPhone);
-      
-      logger.info(`📋 Database search result: ${searchResult}`);
-      
-      // Parse the result to extract actual contact information from database
-      if (searchResult.includes('מצאתי') || searchResult.includes('נמצא')) {
-        // Extract actual contact data from database response
-        const contactData = this.extractContactFromResponse(searchResult);
-        if (contactData && contactData.email) {
-          logger.info(`✅ Found contact: ${contactData.name} (${contactData.email})`);
-          return {
-            success: true,
-            contact: contactData
-          };
-        } else {
-          logger.info(`❌ Contact found but no email address: ${searchName}`);
-          return { success: false, error: `נמצא איש קשר "${searchName}" אבל אין כתובת מייל` };
-        }
-      } else {
-        logger.info(`❌ No contact found for: ${searchName}`);
-        return { success: false, error: `לא נמצא איש קשר בשם "${searchName}"` };
-      }
-
-    } catch (error) {
-      logger.error('Error in handleContactLookup:', error);
-      return { success: false, error: 'שגיאה בחיפוש איש קשר' };
-    }
-  }
-
-  /**
-   * Extract contact data from database response
-   */
-  private extractContactFromResponse(response: string): any {
-    try {
-      // Parse the database response to extract contact information
-      // Look for patterns like: "Name: שון חזן, Email: shaon@example.com"
-      
-      const nameMatch = response.match(/שם[:\s]*([^,\n]+)/);
-      const emailMatch = response.match(/מייל[:\s]*([^,\n\s]+)/);
-      const phoneMatch = response.match(/טלפון[:\s]*([^,\n\s]+)/);
-      
-      if (nameMatch && emailMatch) {
-        return {
-          name: nameMatch[1].trim(),
-          email: emailMatch[1].trim(),
-          phone: phoneMatch ? phoneMatch[1].trim() : undefined
-        };
-      }
-      
-      // Alternative pattern matching
-      const altEmailMatch = response.match(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
-      if (altEmailMatch) {
-        return {
-          name: 'Contact',
-          email: altEmailMatch[1],
-          phone: undefined
-        };
-      }
-      
-      return null;
-    } catch (error) {
-      logger.error('Error extracting contact from response:', error);
-      return null;
-    }
-  }
-
-  /**
-   * Update task message with contact details and meeting link
-   */
-  private updateTaskWithContactDetails(task: Task, contactDetails: any, meetingLink?: string | null): string {
-    if (task.type === 'calendar_event' && contactDetails.email) {
-      // Create proper calendar event with attendees
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      const dateStr = tomorrow.toISOString().split('T')[0];
-      
-      return `Create calendar event:
-summary: Meeting with ${contactDetails.name}
-start: ${dateStr}T10:00:00+03:00
-end: ${dateStr}T11:00:00+03:00
-description: Meeting with ${contactDetails.name}
-attendees: ${contactDetails.email}`;
-    }
-    
-    if (task.type === 'email_invitation' && contactDetails.email) {
-      // Get meeting details from calendar event
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      const dateStr = tomorrow.toLocaleDateString('he-IL', { 
-        weekday: 'long', 
-        year: 'numeric', 
-        month: 'long', 
-        day: 'numeric' 
-      });
-      
-      if (meetingLink) {
-        return `שלח מייל ל-${contactDetails.email} עם הכותרת "הזמנה לפגישה" והתוכן הבא:
-        
-שלום ${contactDetails.name},
-
-אני מזמין אותך לפגישה:
-
-📅 שם הפגישה: פגישה עם ${contactDetails.name}
-📆 תאריך: ${dateStr}
-🕙 שעה: 10:00 - 11:00
-👤 משתתפים: ${contactDetails.name} ואני
-
-🔗 קישור לפגישה: ${meetingLink}
-
-אנא הודע לי אם אתה זמין בשעה זו.
-
-בברכה,
-[שמך]`;
-      } else {
-        return `שלח מייל ל-${contactDetails.email} עם הכותרת "הזמנה לפגישה" והתוכן:
-        
-שלום ${contactDetails.name},
-
-אני מזמין אותך לפגישה:
-
-📅 שם הפגישה: פגישה עם ${contactDetails.name}
-📆 תאריך: ${dateStr}
-🕙 שעה: 10:00 - 11:00
-👤 משתתפים: ${contactDetails.name} ואני
-
-אנא הודע לי אם אתה זמין בשעה זו.
-
-בברכה,
-[שמך]`;
-      }
-    }
-
-    return task.message;
   }
 
   /**

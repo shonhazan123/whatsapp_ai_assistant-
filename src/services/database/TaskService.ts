@@ -5,10 +5,11 @@ import { logger } from '../../utils/logger';
 import { BaseService, DuplicateEntryError, InvalidIdentifierError } from './BaseService';
 
 export interface ReminderRecurrence {
-  type: 'daily' | 'weekly' | 'monthly';
-  time: string; // "08:00" format HH:mm
+  type: 'daily' | 'weekly' | 'monthly' | 'nudge';
+  time?: string; // "08:00" format HH:mm (not used for nudge)
   days?: number[]; // For weekly: [0-6] where 0=Sunday, 6=Saturday
   dayOfMonth?: number; // For monthly: 1-31
+  interval?: string; // For nudge: "10 minutes", "1 hour", "2 hours"
   until?: string; // Optional ISO date string
   timezone?: string; // Optional timezone override
 }
@@ -127,7 +128,7 @@ export class TaskService extends BaseService {
     }
 
     try {
-      if (result.dueDate && result.reminder && !hasRecurringReminder) {
+      if (result.dueDate && result.reminder && typeof result.reminder === 'string' && !hasRecurringReminder) {
         result.nextReminderAt = this.calculateOneTimeReminderAt(result.dueDate, result.reminder);
       } else if (result.reminderRecurrence) {
         result.nextReminderAt = this.calculateNextReminderAt(result.reminderRecurrence);
@@ -220,16 +221,34 @@ export class TaskService extends BaseService {
     const now = currentTime || new Date();
     const timezone = recurrence.timezone || 'Asia/Jerusalem';
     
-    // Parse time string (HH:mm)
-    const [hours, minutes] = recurrence.time.split(':').map(Number);
-    
     let nextDate = new Date(now);
     
-    // Set time
-    nextDate.setHours(hours, minutes, 0, 0);
-    
     switch (recurrence.type) {
+      case 'nudge': {
+        // Nudge: repeat after specified interval (default 10 minutes)
+        const interval = recurrence.interval || '10 minutes';
+        const minutes = this.parseIntervalToMinutes(interval);
+        
+        if (minutes < 1) {
+          throw new Error('Nudge interval must be at least 1 minute');
+        }
+        
+        // Round to start of current minute (strip seconds/milliseconds)
+        now.setSeconds(0, 0);
+        nextDate.setSeconds(0, 0);
+        
+        // Add interval to current time
+        nextDate.setMinutes(now.getMinutes() + minutes);
+        break;
+      }
+      
       case 'daily': {
+        // Parse time string (HH:mm) - required for daily/weekly/monthly
+        if (!recurrence.time) {
+          throw new Error('Daily recurrence requires time');
+        }
+        const [hours, minutes] = recurrence.time.split(':').map(Number);
+        nextDate.setHours(hours, minutes, 0, 0);
         // If time has passed today, set for tomorrow
         if (nextDate <= now) {
           nextDate.setDate(nextDate.getDate() + 1);
@@ -238,9 +257,15 @@ export class TaskService extends BaseService {
       }
       
       case 'weekly': {
+        if (!recurrence.time) {
+          throw new Error('Weekly recurrence requires time');
+        }
         if (!recurrence.days || recurrence.days.length === 0) {
           throw new Error('Weekly recurrence requires days array');
         }
+        
+        const [hours, minutes] = recurrence.time.split(':').map(Number);
+        nextDate.setHours(hours, minutes, 0, 0);
         
         // Find next occurrence day
         const currentDay = now.getDay(); // 0=Sunday, 6=Saturday
@@ -274,9 +299,15 @@ export class TaskService extends BaseService {
       }
       
       case 'monthly': {
+        if (!recurrence.time) {
+          throw new Error('Monthly recurrence requires time');
+        }
         if (!recurrence.dayOfMonth) {
           throw new Error('Monthly recurrence requires dayOfMonth');
         }
+        
+        const [hours, minutes] = recurrence.time.split(':').map(Number);
+        nextDate.setHours(hours, minutes, 0, 0);
         
         // Set day of month
         const maxDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
@@ -305,6 +336,33 @@ export class TaskService extends BaseService {
     }
     
     return nextDate.toISOString();
+  }
+
+  /**
+   * Parse interval string to minutes
+   * Examples: "10 minutes" → 10, "1 hour" → 60, "2 hours" → 120
+   */
+  private parseIntervalToMinutes(interval: string): number {
+    const normalizedInterval = interval.toLowerCase().trim();
+    
+    // Match patterns like "10 minutes", "1 hour", "2 hours"
+    const minuteMatch = normalizedInterval.match(/^(\d+)\s*(minute|minutes|min|mins|דקות|דקה)$/);
+    if (minuteMatch) {
+      return parseInt(minuteMatch[1], 10);
+    }
+    
+    const hourMatch = normalizedInterval.match(/^(\d+)\s*(hour|hours|hr|hrs|שעות|שעה)$/);
+    if (hourMatch) {
+      return parseInt(hourMatch[1], 10) * 60;
+    }
+    
+    // If no match, try to extract just the number and assume minutes
+    const numberMatch = normalizedInterval.match(/^(\d+)$/);
+    if (numberMatch) {
+      return parseInt(numberMatch[1], 10);
+    }
+    
+    throw new Error(`Invalid interval format: ${interval}. Use format like "10 minutes" or "1 hour"`);
   }
 
   async create(request: CreateRequest): Promise<IResponse> {
@@ -437,17 +495,9 @@ export class TaskService extends BaseService {
       const userId = await this.resolveUserId(request.userId, request.userPhone);
       
       const task = await this.executeSingleQuery<Task>(
-        `SELECT t.id, t.text, t.category, t.due_date, t.reminder, t.reminder_recurrence, t.next_reminder_at, t.completed, t.created_at,
-                COALESCE(
-                  json_agg(
-                    json_build_object('id', s.id, 'text', s.text, 'completed', s.completed, 'created_at', s.created_at)
-                  ) FILTER (WHERE s.id IS NOT NULL),
-                  '[]'
-                ) as subtasks
-         FROM tasks t
-         LEFT JOIN subtasks s ON s.task_id = t.id
-         WHERE t.user_id = $1 AND t.id = $2
-         GROUP BY t.id, t.reminder, t.reminder_recurrence, t.next_reminder_at`,
+        `SELECT id, text, category, due_date, reminder, reminder_recurrence, next_reminder_at, completed, created_at
+         FROM tasks
+         WHERE user_id = $1 AND id = $2`,
         [userId, request.id]
       );
 
@@ -472,16 +522,9 @@ export class TaskService extends BaseService {
       const userId = await this.resolveUserId(request.userId, request.userPhone);
       
       let query = `
-        SELECT t.id, t.text, t.category, t.due_date, t.reminder, t.reminder_recurrence, t.next_reminder_at, t.completed, t.created_at,
-               COALESCE(
-                 json_agg(
-                   json_build_object('id', s.id, 'text', s.text, 'completed', s.completed, 'created_at', s.created_at)
-                 ) FILTER (WHERE s.id IS NOT NULL),
-                 '[]'
-               ) as subtasks
-        FROM tasks t
-        LEFT JOIN subtasks s ON s.task_id = t.id
-        WHERE t.user_id = $1
+        SELECT id, text, category, due_date, reminder, reminder_recurrence, next_reminder_at, completed, created_at
+        FROM tasks
+        WHERE user_id = $1
       `;
 
       const params: any[] = [userId];
@@ -491,30 +534,30 @@ export class TaskService extends BaseService {
       if (request.filters) {
         if (request.filters.completed !== undefined) {
           paramCount++;
-          query += ` AND t.completed = $${paramCount}`;
+          query += ` AND completed = $${paramCount}`;
           params.push(request.filters.completed);
         }
 
         if (request.filters.category) {
           paramCount++;
-          query += ` AND t.category = $${paramCount}`;
+          query += ` AND category = $${paramCount}`;
           params.push(request.filters.category);
         }
 
         if (request.filters.dueDateFrom) {
           paramCount++;
-          query += ` AND t.due_date >= $${paramCount}`;
+          query += ` AND due_date >= $${paramCount}`;
           params.push(request.filters.dueDateFrom);
         }
 
         if (request.filters.dueDateTo) {
           paramCount++;
-          query += ` AND t.due_date <= $${paramCount}`;
+          query += ` AND due_date <= $${paramCount}`;
           params.push(request.filters.dueDateTo);
         }
       }
 
-      query += ` GROUP BY t.id, t.reminder, t.reminder_recurrence, t.next_reminder_at ORDER BY t.created_at DESC`;
+      query += ` ORDER BY created_at DESC`;
 
       if (request.limit) {
         paramCount++;

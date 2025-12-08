@@ -4,9 +4,10 @@ import { RequestContext } from '../core/context/RequestContext';
 import { ConversationWindow } from '../core/memory/ConversationWindow';
 import { processMessageV2 } from '../index-v2';
 import { OpenAIService } from '../services/ai/OpenAIService';
-import { googleOAuthService } from '../services/auth/GoogleOAuthService';
-import { GoogleTokenManager } from '../services/auth/GoogleTokenManager';
-import { UserGoogleToken, UserRecord, UserService } from '../services/database/UserService';
+import { UserService } from '../services/database/UserService';
+import { UserOnboardingHandler } from '../services/onboarding/UserOnboardingHandler';
+import { PerformanceLogService } from '../services/performance/PerformanceLogService';
+import { PerformanceTracker } from '../services/performance/PerformanceTracker';
 import { transcribeAudio } from '../services/transcription';
 import {
   downloadWhatsAppMedia,
@@ -14,7 +15,6 @@ import {
   sendWhatsAppMessage
 } from '../services/whatsapp';
 import { WhatsAppMessage, WhatsAppWebhookPayload } from '../types';
-import { RequestUserContext, UserCapabilities } from '../types/UserContext';
 import { logger } from '../utils/logger';
 dotenv.config();
 
@@ -22,9 +22,11 @@ dotenv.config();
 export const whatsappWebhook = express.Router();
 
 const userService = new UserService();
-const googleTokenManager = new GoogleTokenManager();
 const openaiService = new OpenAIService(logger);
 const conversationWindow = ConversationWindow.getInstance();
+const onboardingHandler = new UserOnboardingHandler(logger);
+const performanceTracker = PerformanceTracker.getInstance();
+const performanceLogService = PerformanceLogService.getInstance();
 
 // Webhook verification (GET request from WhatsApp)
 whatsappWebhook.get('/whatsapp', (req: Request, res: Response) => {
@@ -75,10 +77,15 @@ async function handleIncomingMessage(message: WhatsAppMessage): Promise<void> {
   logger.info('📨 NEW MESSAGE RECEIVED');
   logger.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   
+  let performanceRequestId: string | undefined;
+  
   try {
     const rawNumber = message.from;
     const userPhone = normalizeWhatsAppNumber(rawNumber);
     let messageText = '';
+    
+    // Start performance tracking
+    performanceRequestId = performanceTracker.startRequest(userPhone);
 
     logger.info(`👤 From: ${userPhone}`);
     logger.info(`📋 Message ID: ${message.id}`);
@@ -132,7 +139,7 @@ async function handleIncomingMessage(message: WhatsAppMessage): Promise<void> {
       
       // Step 2: Analyze image using OpenAI Vision
       try {
-        const analysisResult = await openaiService.analyzeImage(imageBuffer, imageCaption);
+        const analysisResult = await openaiService.analyzeImage(imageBuffer, imageCaption, performanceRequestId);
         logger.info(`✅ Image analysis complete: ${analysisResult.imageType} (confidence: ${analysisResult.confidence})`);
         
         // Store image context in conversation memory for future reference
@@ -184,48 +191,32 @@ async function handleIncomingMessage(message: WhatsAppMessage): Promise<void> {
       return;
     }
 
+    // Get or create user record
     let userRecord = await userService.findOrCreateByWhatsappNumber(userPhone);
-    if (userRecord.plan_type !== 'pro') {
-      userRecord = await userService.updatePlanType(userRecord.id, 'pro') ?? userRecord;
-    }
-    let tokens = await userService.getGoogleTokens(userRecord.id);
-    const capabilities = determineCapabilities(userRecord.plan_type);
+    
+    // Handle onboarding, OAuth, and plan logic in correct order
+    const onboardingCheck = await onboardingHandler.handleUserMessage(
+      userRecord,
+      userPhone,
+      messageText
+    );
 
-    let googleConnected = false;
-    if (hasGoogleIntegrations(capabilities)) {
-      try {
-        const tokenResult = await googleTokenManager.ensureFreshTokens(userRecord, tokens, { forceRefresh: true });
-        tokens = tokenResult.tokens;
-        googleConnected = tokenResult.googleConnected;
-
-        if (tokenResult.needsReauth) {
-          await promptGoogleReconnect(userRecord, userPhone, capabilities);
-          return;
-        }
-      } catch (tokenError) {
-        logger.error('Error ensuring Google tokens are fresh:', tokenError);
-        await promptGoogleReconnect(userRecord, userPhone, capabilities);
-        return;
+    // If onboarding handler says not to process, return early
+    if (!onboardingCheck.shouldProcess) {
+      if (performanceRequestId) {
+        await performanceTracker.endRequest(performanceRequestId);
       }
-    }
-
-    const onboardingSent = await maybeSendOnboarding(userRecord, userPhone, capabilities, googleConnected);
-    if (!googleConnected && hasGoogleIntegrations(capabilities)) {
-      if (!onboardingSent) {
-        await promptGoogleReconnect(userRecord, userPhone, capabilities);
-      }
-      logger.info(`Waiting for Google connection from ${userPhone}, stopping processing`);
       return;
     }
 
-    const context: RequestUserContext = {
-      user: userRecord,
-      planType: userRecord.plan_type,
-      whatsappNumber: userRecord.whatsapp_number,
-      capabilities,
-      googleTokens: tokens,
-      googleConnected
-    };
+    // Get updated user record (plan might have been updated)
+    userRecord = await userService.findByWhatsappNumber(userPhone) ?? userRecord;
+    
+    // Use context from onboarding handler
+    const context = onboardingCheck.context!;
+    
+    // Add performance requestId to context
+    context.performanceRequestId = performanceRequestId;
 
     logger.info(`🤖 AI Processing: "${messageText}"`);
     const response = await RequestContext.run(context, () => 
@@ -236,15 +227,64 @@ async function handleIncomingMessage(message: WhatsAppMessage): Promise<void> {
     );
     logger.info(`💡 AI Response: "${response}"`);
 
-    // Step 4: Send response back to user
+    // Step 4: Send agent response back to user first
     await sendWhatsAppMessage(userPhone, response);
+
+    // Step 5: Check onboarding step completion after agent response
+    await onboardingHandler.handlePostAgentResponse(
+      userRecord.id,
+      userPhone,
+      messageText,
+      response,
+      context
+    );
     
     const duration = Date.now() - startTime;
     logger.info(`✅ Message handled successfully in ${duration}ms`);
+    
+    // Step 6: Upload performance logs to database (after response is sent)
+    if (performanceRequestId) {
+      try {
+        const calls = performanceTracker.getRequestCalls(performanceRequestId);
+        const functions = performanceTracker.getRequestFunctions(performanceRequestId);
+        
+        if (calls.length > 0 || functions.length > 0) {
+          await performanceLogService.uploadSessionLogs(calls, functions);
+          // Clear in-memory data after successful upload
+          performanceTracker.clearRequestData(performanceRequestId);
+        }
+      } catch (uploadError) {
+        logger.error('Error uploading performance logs to database:', uploadError);
+        // Don't fail the request if upload fails
+      }
+    }
+    
+    // End performance tracking
+    if (performanceRequestId) {
+      await performanceTracker.endRequest(performanceRequestId);
+    }
+    
     logger.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
   } catch (error) {
     const duration = Date.now() - startTime;
     logger.error(`❌ Error handling message after ${duration}ms:`, error);
+    
+    // Upload performance logs even on error (if any were collected)
+    if (performanceRequestId) {
+      try {
+        const calls = performanceTracker.getRequestCalls(performanceRequestId);
+        const functions = performanceTracker.getRequestFunctions(performanceRequestId);
+        
+        if (calls.length > 0 || functions.length > 0) {
+          await performanceLogService.uploadSessionLogs(calls, functions);
+          performanceTracker.clearRequestData(performanceRequestId);
+        }
+      } catch (uploadError) {
+        logger.error('Error uploading performance logs to database (error case):', uploadError);
+      }
+      
+      await performanceTracker.endRequest(performanceRequestId);
+    }
     
     try {
       await sendWhatsAppMessage(
@@ -269,106 +309,4 @@ function normalizeWhatsAppNumber(number: string): string {
     return `+${cleaned.slice(2)}`;
   }
   return cleaned.startsWith('+') ? cleaned : `+${cleaned}`;
-}
-
-function determineCapabilities(planType: string): UserCapabilities {
-  switch (planType) {
-    case 'pro':
-      return { database: true, calendar: true, gmail: true };
-    case 'standard':
-      return { database: true, calendar: true, gmail: false };
-    default:
-      return { database: true, calendar: false, gmail: false };
-  }
-}
-
-function hasGoogleIntegrations(capabilities: UserCapabilities): boolean {
-  return capabilities.calendar || capabilities.gmail;
-}
-
-function isTokenValid(tokens?: UserGoogleToken | null): boolean {
-  if (!tokens) return false;
-  const hasCredential = Boolean(tokens.refresh_token || tokens.access_token);
-  if (!hasCredential) return false;
-  if (!tokens.expires_at) return true;
-  const expiry = new Date(tokens.expires_at);
-  const bufferMs = 2 * 60 * 1000; // 2 minutes buffer
-  return expiry.getTime() > Date.now() + bufferMs;
-}
-
-async function maybeSendOnboarding(
-  user: UserRecord,
-  whatsappNumber: string,
-  capabilities: UserCapabilities,
-  googleConnected: boolean
-): Promise<boolean> {
-  if (!hasGoogleIntegrations(capabilities)) {
-    return false;
-  }
-
-  if (googleConnected) {
-    return false;
-  }
-
-  const appUrl = process.env.APP_PUBLIC_URL;
-  if (!appUrl) {
-    logger.error('APP_PUBLIC_URL is not configured; cannot send onboarding link');
-    return false;
-  }
-
-  const state = googleOAuthService.createStateToken({
-    userId: user.id,
-    planType: user.plan_type
-  });
-  const authUrl = `${appUrl.replace(/\/$/, '')}/auth/google?state=${encodeURIComponent(state)}`;
-
-  const message = buildOnboardingMessage(capabilities, authUrl);
-
-  await sendWhatsAppMessage(whatsappNumber, message);
-  await userService.markOnboardingPrompted(user.id);
-  logger.info(`Sent onboarding prompt to ${whatsappNumber}`);
-  return true;
-}
-
-async function promptGoogleReconnect(
-  user: UserRecord,
-  whatsappNumber: string,
-  capabilities: UserCapabilities
-): Promise<void> {
-  const appUrl = process.env.APP_PUBLIC_URL;
-  if (!appUrl) {
-    logger.error('APP_PUBLIC_URL is not configured; cannot send reconnect link');
-    return;
-  }
-
-  const state = googleOAuthService.createStateToken({
-    userId: user.id,
-    planType: user.plan_type
-  });
-  const authUrl = `${appUrl.replace(/\/$/, '')}/auth/google?state=${encodeURIComponent(state)}`;
-  const message = buildOnboardingMessage(capabilities, authUrl);
-
-  await sendWhatsAppMessage(whatsappNumber, message);
-  await userService.markOnboardingPrompted(user.id);
-  logger.info(`Prompted ${whatsappNumber} to reconnect Google account`);
-}
-
-function buildOnboardingMessage(capabilities: UserCapabilities, authUrl: string): string {
-  return [
-    'כדי לפתוח את כל היכולות המלאות שלי אני צריך שתתחבר לחשבון Google שלך.',
-    '',
-    'מה אפשר לעשות אחרי החיבור:',
-    
-    '• ניהול יומן – כשאתה רוצה שהבקשה תתועד ביומן, ציין את המילה "יומן" או כתוב במפורש "תוסיף ליומן...".',
-    
-    '• תזכורות ומשימות – אני שומר עבורך את המשימות בזיכרון האישי שלי.',
-    ...(capabilities.gmail
-      ? ['• דואר אלקטרוני – אני יכול להכין טיוטות, לשלוח מיילים ולהמשיך שיחות מתוך Gmail עבורך.']
-      : []),
-    '• סוכן כללי – אפשר לשאול אותי כל שאלה כללית או לבקש עזרה בכל נושא אחר.',
-    '',
-    `🔗 התחבר כאן: ${authUrl}`,
-    '',
-    'אחרי שסיימת את ההתחברות, כתוב לי "התחברתי" או "סיימתי" ונמשיך!'
-  ].join('\n');
 }

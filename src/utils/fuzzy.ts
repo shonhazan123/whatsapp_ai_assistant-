@@ -1,4 +1,5 @@
 import Fuse from 'fuse.js';
+import { FuzzyConfig, toFuseThreshold } from '../config/fuzzy';
 
 /**
  * Fuzzy matching utilities for entity resolution
@@ -23,18 +24,18 @@ export class FuzzyMatcher {
     query: string,
     items: T[],
     keys: string[],
-    threshold: number = 0.6
+    threshold: number = FuzzyConfig.DEFAULT_SIMILARITY_THRESHOLD
   ): FuzzyMatch<T>[] {
     console.log(`🔍 [FuzzyMatcher] Search - Query: "${query}", Keys: ${keys.join(', ')}, Threshold: ${threshold}`);
     console.log(`🔍 [FuzzyMatcher] Items to search: ${items.length}`);
     
     const fuse = new Fuse(items, {
       keys,
-      threshold: 1 - threshold, // Fuse uses distance, we use similarity
-      includeScore: true,
-      includeMatches: true,
-      ignoreLocation: true,
-      minMatchCharLength: 2
+      threshold: toFuseThreshold(threshold), // Fuse uses distance, we use similarity
+      includeScore: FuzzyConfig.FUSE_CONFIG.INCLUDE_SCORE,
+      includeMatches: FuzzyConfig.FUSE_CONFIG.INCLUDE_MATCHES,
+      ignoreLocation: FuzzyConfig.FUSE_CONFIG.IGNORE_LOCATION,
+      minMatchCharLength: FuzzyConfig.MIN_MATCH_CHARACTER_LENGTH
     });
 
     const results = fuse.search(query);
@@ -72,7 +73,7 @@ export class FuzzyMatcher {
     query: string,
     items: T[],
     keys: string[],
-    threshold: number = 0.6
+    threshold: number = FuzzyConfig.DEFAULT_SIMILARITY_THRESHOLD
   ): FuzzyMatch<T> | null {
     const matches = this.search(query, items, keys, threshold);
     return matches.length > 0 ? matches[0] : null;
@@ -121,7 +122,7 @@ export class FuzzyMatcher {
   /**
    * Check if two strings are similar enough
    */
-  static isSimilar(str1: string, str2: string, threshold: number = 0.6): boolean {
+  static isSimilar(str1: string, str2: string, threshold: number = FuzzyConfig.DEFAULT_SIMILARITY_THRESHOLD): boolean {
     return this.similarity(str1, str2) >= threshold;
   }
 
@@ -138,7 +139,7 @@ export class FuzzyMatcher {
     return text
       .toLowerCase()
       .split(/\s+/)
-      .filter(word => word.length > 2 && !stopWords.includes(word));
+      .filter(word => word.length > FuzzyConfig.MIN_KEYWORD_LENGTH && !stopWords.includes(word));
   }
 
   /**

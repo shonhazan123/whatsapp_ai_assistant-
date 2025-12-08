@@ -24,19 +24,18 @@ export class SQLCompiler {
 	// Entity-specific allowed columns registry
 	private static readonly ALLOWED_COLUMNS = {
 		tasks: ['text', 'category', 'due_date', 'completed', 'reminder', 'reminder_recurrence', 'next_reminder_at'],
-		contacts: ['name', 'phone_number', 'email', 'address'],
 		lists: ['list_name', 'content', 'is_checklist', 'items']
 	};
 
 	/**
 	 * Compile WHERE clause from filter object
-	 * @param entity - 'tasks' | 'contacts' | 'lists'
+	 * @param entity - 'tasks' | 'lists'
 	 * @param userId - User UUID (always $1)
 	 * @param filter - Filter object from intent JSON
 	 * @returns Object with WHERE SQL and parameters
 	 */
 	static compileWhere(
-		entity: 'tasks' | 'contacts' | 'lists',
+		entity: 'tasks' | 'lists',
 		userId: string,
 		filter: Record<string, any>
 	): CompileWhereResult {
@@ -146,33 +145,6 @@ export class SQLCompiler {
 						} else {
 							conditions.push(`${tableAlias}.reminder IS NULL`);
 						}
-					}
-					break;
-
-				case 'name':
-					// Contact name filter
-					if (entity === 'contacts') {
-						paramIndex++;
-						conditions.push(`${tableAlias}.name ILIKE $${paramIndex}`);
-						params.push(`%${value}%`);
-					}
-					break;
-
-				case 'phone':
-					// Contact phone filter
-					if (entity === 'contacts') {
-						paramIndex++;
-						conditions.push(`${tableAlias}.phone_number ILIKE $${paramIndex}`);
-						params.push(`%${value}%`);
-					}
-					break;
-
-				case 'email':
-					// Contact email filter
-					if (entity === 'contacts') {
-						paramIndex++;
-						conditions.push(`${tableAlias}.email ILIKE $${paramIndex}`);
-						params.push(`%${value}%`);
 					}
 					break;
 
@@ -366,10 +338,9 @@ export class SQLCompiler {
 	/**
 	 * Get table alias for entity
 	 */
-	private static getTableAlias(entity: 'tasks' | 'contacts' | 'lists'): string {
+	private static getTableAlias(entity: 'tasks' | 'lists'): string {
 		const aliases = {
 			tasks: 't',
-			contacts: 'c',
 			lists: 'l'
 		};
 		return aliases[entity];
@@ -378,10 +349,9 @@ export class SQLCompiler {
 	/**
 	 * Get user ID column name for entity
 	 */
-	private static getUserIdColumn(entity: 'tasks' | 'contacts' | 'lists'): string {
+	private static getUserIdColumn(entity: 'tasks' | 'lists'): string {
 		const columns = {
 			tasks: 'user_id',
-			contacts: 'user_id',
 			lists: 'user_id'
 		};
 		return columns[entity];
@@ -390,10 +360,9 @@ export class SQLCompiler {
 	/**
 	 * Get columns to search for 'q' filter
 	 */
-	private static getSearchColumns(entity: 'tasks' | 'contacts' | 'lists'): string[] {
+	private static getSearchColumns(entity: 'tasks' | 'lists'): string[] {
 		const searchColumns = {
 			tasks: ['text'],
-			contacts: ['name', 'phone_number', 'email'],
 			lists: ['list_name', 'content'] // Search in both title and content
 		};
 		return searchColumns[entity];
@@ -402,7 +371,7 @@ export class SQLCompiler {
 	/**
 	 * Get allowed columns for entity
 	 */
-	static getAllowedColumns(entity: 'tasks' | 'contacts' | 'lists'): string[] {
+	static getAllowedColumns(entity: 'tasks' | 'lists'): string[] {
 		return this.ALLOWED_COLUMNS[entity];
 	}
 } 

@@ -1,11 +1,15 @@
 import { IFunction, IResponse } from '../../core/interfaces/IAgent';
 import { QueryResolver } from '../../core/orchestrator/QueryResolver';
 import { CalendarReminders, CalendarService } from '../../services/calendar/CalendarService';
+import { FuzzyMatcher } from '../../utils/fuzzy';
 import { TimeParser } from '../../utils/time';
 
 export class CalendarFunction implements IFunction {
   name = 'calendarOperations';
   description = 'Handle all calendar operations including create, read, update, delete, and recurring event management';
+
+  // Threshold for fuzzy matching event summaries in delete operations (0-1, higher = stricter)
+  private static readonly DELETE_EVENT_SUMMARY_THRESHOLD = 0.6;
 
   parameters = {
     type: 'object',
@@ -29,8 +33,19 @@ export class CalendarFunction implements IFunction {
       },
       eventId: { type: 'string', description: 'Event ID for get, update, delete operations' },
       summary: { type: 'string', description: 'Event title/summary (for create/get) or new title (for update)' },
-      start: { type: 'string', description: 'Start time in ISO format' },
-      end: { type: 'string', description: 'End time in ISO format' },
+      excludeSummaries: { 
+        type: 'array', 
+        items: { type: 'string' },
+        description: 'For getEvents operation: array of summary keywords to EXCLUDE from results. Events matching these terms will be filtered out. For delete operations: array of summary keywords to EXCLUDE from deletion. Example: ["ultrasound", "doctor"] will exclude any event with "ultrasound" or "doctor" in the title.'
+      },
+      excludeDays: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'For getEvents operation: array of day names to EXCLUDE from results (e.g., ["Monday", "Tuesday"]). Events on these days will be filtered out.'
+      },
+      start: { type: 'string', description: 'Start time in ISO format (dateTime) or date format YYYY-MM-DD for all-day events' },
+      end: { type: 'string', description: 'End time in ISO format (dateTime) or date format YYYY-MM-DD for all-day events (exclusive end date)' },
+      allDay: { type: 'boolean', description: 'If true, event is all-day and start/end should be in YYYY-MM-DD format' },
       attendees: { type: 'array', items: { type: 'string' }, description: 'Email addresses of attendees' },
       description: { type: 'string', description: 'Event description' },
       location: { type: 'string', description: 'Event location' },
@@ -91,7 +106,7 @@ export class CalendarFunction implements IFunction {
       days: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Days of week for recurring events (e.g., ["Sunday", "Tuesday", "Wednesday"])'
+        description: 'For WEEKLY recurrence: day names (e.g., ["Monday"], ["Tuesday", "Thursday"]). For MONTHLY recurrence: day numbers as strings 1-31 (e.g., ["10"], ["20"] for 10th or 20th of month). The system auto-detects weekly vs monthly based on whether values are day names or numbers.'
       },
       until: {
         type: 'string',
@@ -128,6 +143,34 @@ export class CalendarFunction implements IFunction {
       payload.timeZone = payload.timezone;
     }
     delete payload.timezone;
+  }
+
+  /**
+   * Detects if a date string is in date-only format (YYYY-MM-DD) vs datetime format
+   * @param dateStr - Date string to check
+   * @returns true if format is YYYY-MM-DD (all-day), false if datetime
+   */
+  private isDateOnlyFormat(dateStr: string): boolean {
+    if (!dateStr || typeof dateStr !== 'string') return false;
+    // Check if it matches YYYY-MM-DD format (exactly 10 characters, no time component)
+    const dateOnlyPattern = /^\d{4}-\d{2}-\d{2}$/;
+    return dateOnlyPattern.test(dateStr) && !dateStr.includes('T');
+  }
+
+  /**
+   * Automatically detects if event should be all-day based on date format
+   * @param start - Start date/time string
+   * @param end - End date/time string
+   * @param explicitAllDay - Explicit allDay flag from user
+   * @returns true if should be all-day event
+   */
+  private detectAllDay(start: string, end: string, explicitAllDay?: boolean): boolean {
+    // If explicitly set, use that
+    if (explicitAllDay !== undefined) {
+      return explicitAllDay;
+    }
+    // Auto-detect: if both start and end are in date-only format, it's all-day
+    return this.isDateOnlyFormat(start) && this.isDateOnlyFormat(end);
   }
 
   private buildReminder(minutes: number | null | undefined): CalendarReminders | undefined {
@@ -250,10 +293,10 @@ Please specify the exact title or provide more details so I can update the corre
       if (eventsResp.success && eventsResp.data?.events?.length) {
         let events = eventsResp.data.events as any[];
         
-        // Filter by summary if provided
+        // Filter by summary if provided - use FuzzyMatcher for better matching
         if (criteria.summary) {
-          const lowered = criteria.summary.toLowerCase();
-          events = events.filter(event => event.summary?.toLowerCase().includes(lowered));
+          const matches = FuzzyMatcher.search<any>(criteria.summary, events, ['summary', 'description'], CalendarFunction.DELETE_EVENT_SUMMARY_THRESHOLD);
+          events = matches.map(m => m.item);
         }
         
         // Filter by time of day if provided
@@ -322,30 +365,68 @@ Please specify the exact title or provide more details so I can update the corre
     return {};
   }
 
-  private async deleteByWindow(summary: string | undefined, timeMin: string, timeMax: string): Promise<IResponse> {
+  private async deleteByWindow(summary: string | undefined, timeMin: string, timeMax: string, excludeSummaries?: string[]): Promise<IResponse> {
     const eventsResp = await this.calendarService.getEvents({ timeMin, timeMax });
     if (!eventsResp.success || !eventsResp.data) {
       return { success: false, error: 'Failed to fetch events for deletion window' };
     }
 
     let events = (eventsResp.data.events || []) as any[];
+    
+    // First, filter OUT any events that match the exclusion terms
+    if (excludeSummaries && excludeSummaries.length > 0) {
+      const beforeCount = events.length;
+      events = events.filter(event => {
+        const eventSummary = (event.summary || '').toLowerCase().trim();
+        // Keep the event if it doesn't match any exclusion term
+        const shouldExclude = excludeSummaries.some((excludeTerm: string) => {
+          const normalizedTerm = excludeTerm.toLowerCase().trim();
+          return eventSummary.includes(normalizedTerm);
+        });
+        
+        if (shouldExclude) {
+          this.logger.info(`🚫 Excluding from deletion: "${event.summary}" (matched exclusion term)`);
+        }
+        
+        return !shouldExclude;
+      });
+      const afterCount = events.length;
+      this.logger.info(`📊 Delete filter: ${beforeCount} total → ${afterCount} to delete (excluded ${beforeCount - afterCount})`);
+    }
+    
+    // Then, filter IN events matching the summary (if provided)
     if (summary) {
-      const lowered = summary.toLowerCase();
-      events = events.filter(event => event.summary?.toLowerCase().includes(lowered));
+      // Use FuzzyMatcher for better matching (handles word order, name variations, etc.)
+      const matches = FuzzyMatcher.search<any>(summary, events, ['summary'], CalendarFunction.DELETE_EVENT_SUMMARY_THRESHOLD);
+      events = matches.map(m => m.item);
     }
 
     if (events.length === 0) {
       return { success: false, error: 'No matching events found in the requested window' };
     }
 
-    const uniqueIds = Array.from(new Set(events.map(event => event.recurringEventId || event.id).filter(Boolean)));
+    // Map events to their master IDs and store summaries for response
+    const eventMap = new Map<string, { id: string; summary: string }>();
+    events.forEach(event => {
+      const masterId = (event.recurringEventId || event.id) as string;
+      if (masterId && !eventMap.has(masterId)) {
+        eventMap.set(masterId, { id: masterId, summary: event.summary || 'Untitled Event' });
+      }
+    });
+
+    const uniqueIds = Array.from(eventMap.keys());
     const results: any[] = [];
     const errors: any[] = [];
+    const deletedSummaries: string[] = [];
 
     for (const id of uniqueIds) {
-      const deletion = await this.calendarService.deleteEvent(id as string);
+      const deletion = await this.calendarService.deleteEvent(id);
       if (deletion.success) {
         results.push(id);
+        const eventInfo = eventMap.get(id);
+        if (eventInfo) {
+          deletedSummaries.push(eventInfo.summary);
+        }
       } else {
         errors.push({ id, error: deletion.error });
       }
@@ -354,7 +435,11 @@ Please specify the exact title or provide more details so I can update the corre
     return {
       success: errors.length === 0,
       message: `Deleted ${results.length} events${errors.length ? ` (${errors.length} failed)` : ''}`,
-      data: { deletedIds: results, errors: errors.length ? errors : undefined }
+      data: { 
+        deletedIds: results, 
+        errors: errors.length ? errors : undefined,
+        deletedSummaries: deletedSummaries.length > 0 ? deletedSummaries : undefined
+      }
     };
   }
 
@@ -410,6 +495,14 @@ Please specify the exact title or provide more details so I can update the corre
           const createPayload: any = { ...restCreate };
           this.normalizeTimezone(createPayload);
 
+          // Detect if this should be an all-day event
+          const isAllDay = this.detectAllDay(createPayload.start, createPayload.end, createPayload.allDay);
+          createPayload.allDay = isAllDay;
+          
+          if (isAllDay) {
+            this.logger.info(`📅 Detected all-day event from ${createPayload.start} to ${createPayload.end}`);
+          }
+
           const reminders = this.buildReminder(reminderMinutesBefore);
           if (reminders) {
             createPayload.reminders = reminders;
@@ -451,6 +544,13 @@ Please specify the exact title or provide more details so I can update the corre
             const { reminderMinutesBefore, ...restEvent } = event;
             const payload: any = { ...restEvent };
             this.normalizeTimezone(payload);
+            
+            // Detect if this should be an all-day event
+            if (payload.start && payload.end) {
+              const isAllDay = this.detectAllDay(payload.start, payload.end, payload.allDay);
+              payload.allDay = isAllDay;
+            }
+            
             const reminders = this.buildReminder(reminderMinutesBefore);
             if (reminders) {
               payload.reminders = reminders;
@@ -464,16 +564,33 @@ Please specify the exact title or provide more details so I can update the corre
           if (!params.summary || !params.startTime || !params.endTime || !params.days) {
             return { success: false, error: 'Summary, startTime, endTime, and days are required for createRecurring operation' };
           }
+          
+          // Detect recurrence type: if days are numeric (1-31), it's monthly; if day names, it's weekly
+          let recurrence: 'weekly' | 'daily' | 'monthly' = 'weekly';
+          
+          if (params.days && params.days.length > 0) {
+            const firstDay = params.days[0];
+            // Check if it's a numeric day of month (1-31)
+            const dayNum = parseInt(firstDay, 10);
+            if (!isNaN(dayNum) && dayNum >= 1 && dayNum <= 31) {
+              recurrence = 'monthly';
+            } else if (params.recurrence) {
+              // Use explicit recurrence if provided
+              recurrence = params.recurrence;
+            }
+            // Otherwise default to weekly (day names like "Monday", "Tuesday", etc.)
+          }
+          
           const reminders = this.buildReminder(params.reminderMinutesBefore);
           return await this.calendarService.createRecurringEvent({
             summary: params.summary,
             startTime: params.startTime,
             endTime: params.endTime,
             days: params.days,
-            recurrence: 'weekly',
+            recurrence: recurrence,
             description: params.description,
             location: params.location,
-            until: params.until, // 👈 supports end date now
+            until: params.until,
             reminders
           });
 
@@ -513,7 +630,54 @@ Please specify the exact title or provide more details so I can update the corre
           if (!params.timeMin || !params.timeMax) {
             return { success: false, error: 'timeMin and timeMax are required for getEvents' };
           }
-          return await this.calendarService.getEvents({ timeMin: params.timeMin, timeMax: params.timeMax });
+          const getEventsResult = await this.calendarService.getEvents({ timeMin: params.timeMin, timeMax: params.timeMax });
+          
+          // If excludeSummaries is provided, filter OUT those events from results
+          // This allows orchestrator to get "events to delete" (excluding exceptions)
+          if (getEventsResult.success && getEventsResult.data?.events && params.excludeSummaries && params.excludeSummaries.length > 0) {
+            const allEvents = getEventsResult.data.events as any[];
+            const beforeCount = allEvents.length;
+            
+            const filteredEvents = allEvents.filter(event => {
+              const eventSummary = (event.summary || '').toLowerCase();
+              // Keep the event if it doesn't match any exclusion term
+              const shouldExclude = params.excludeSummaries!.some((excludeTerm: string) => {
+                const normalizedTerm = excludeTerm.toLowerCase().trim();
+                const normalizedSummary = eventSummary.trim();
+                return normalizedSummary.includes(normalizedTerm);
+              });
+              
+              if (shouldExclude) {
+                this.logger.info(`🚫 Excluding event from results: "${event.summary}" (matched exclusion term)`);
+              }
+              
+              return !shouldExclude;
+            });
+            
+            const afterCount = filteredEvents.length;
+            this.logger.info(`📊 Filtered events: ${beforeCount} total → ${afterCount} after excluding (removed ${beforeCount - afterCount})`);
+            
+            getEventsResult.data.events = filteredEvents;
+            getEventsResult.data.count = filteredEvents.length;
+          }
+          
+          // If excludeDays is provided, filter OUT events on those days
+          if (getEventsResult.success && getEventsResult.data?.events && params.excludeDays && params.excludeDays.length > 0) {
+            const allEvents = getEventsResult.data.events as any[];
+            const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+            const excludeDayIndices = params.excludeDays.map((d: string) => dayNames.indexOf(d.toLowerCase()));
+            
+            const filteredEvents = allEvents.filter(event => {
+              if (!event.start) return true;
+              const eventDate = new Date(event.start.dateTime || event.start.date);
+              const eventDay = eventDate.getDay();
+              return !excludeDayIndices.includes(eventDay);
+            });
+            getEventsResult.data.events = filteredEvents;
+            getEventsResult.data.count = filteredEvents.length;
+          }
+          
+          return getEventsResult;
 
         // ✅ Update event
         case 'update': {
@@ -627,14 +791,15 @@ Please specify the exact title or provide more details so I can update the corre
         case 'delete': {
           if (!params.eventId) {
             const phrase = params.summary || '';
+            const excludeSummaries = params.excludeSummaries;
 
             if (params.timeMin && params.timeMax) {
-              return await this.deleteByWindow(phrase || undefined, params.timeMin, params.timeMax);
+              return await this.deleteByWindow(phrase || undefined, params.timeMin, params.timeMax, excludeSummaries);
             }
 
             const inferredWindow = this.deriveWindow(params, phrase);
             if (inferredWindow) {
-              return await this.deleteByWindow(phrase || undefined, inferredWindow.timeMin, inferredWindow.timeMax);
+              return await this.deleteByWindow(phrase || undefined, inferredWindow.timeMin, inferredWindow.timeMax, excludeSummaries);
             }
 
             const result = await resolver.resolveOneOrAsk(phrase, userId, 'event');
@@ -669,13 +834,20 @@ Please specify the exact title or provide more details so I can update the corre
           }
 
           const allEvents = eventsResult.data.events || [];
-          const masterIds: string[] = Array.from(
-            new Set(
-              allEvents
-                .filter((e: any) => e.summary?.toLowerCase().includes(params.summary.toLowerCase()))
-                .map((e: any) => e.recurringEventId || e.id)
-            )
-          );
+          // Use FuzzyMatcher for better matching (handles word order, name variations, etc.)
+          const matches = FuzzyMatcher.search<any>(params.summary, allEvents, ['summary', 'description'], CalendarFunction.DELETE_EVENT_SUMMARY_THRESHOLD);
+          
+          // Map events to their master IDs and store summaries for response
+          const eventMap = new Map<string, { id: string; summary: string }>();
+          matches.forEach(m => {
+            const event = m.item;
+            const masterId = event.recurringEventId || event.id;
+            if (masterId && !eventMap.has(masterId)) {
+              eventMap.set(masterId, { id: masterId, summary: event.summary || 'Untitled Event' });
+            }
+          });
+          
+          const masterIds: string[] = Array.from(eventMap.keys());
 
           if (masterIds.length === 0) {
             return { success: false, error: 'No matching events found' };
@@ -687,6 +859,7 @@ Please specify the exact title or provide more details so I can update the corre
           
           const results: any[] = [];
           const errors: any[] = [];
+          const deletedSummaries: string[] = [];
           
           for (let i = 0; i < masterIds.length; i += BATCH_SIZE) {
             const batch = masterIds.slice(i, i + BATCH_SIZE);
@@ -696,12 +869,17 @@ Please specify the exact title or provide more details so I can update the corre
               batch.map(id => this.calendarService.deleteEvent(id))
             );
             
-            // Collect results
+            // Collect results and summaries
             batchResults.forEach((result, index) => {
+              const masterId = batch[index];
+              const eventInfo = eventMap.get(masterId);
               if (result.status === 'fulfilled') {
-                results.push({ id: batch[index], success: true });
+                results.push({ id: masterId, success: true });
+                if (eventInfo) {
+                  deletedSummaries.push(eventInfo.summary);
+                }
               } else {
-                errors.push({ id: batch[index], error: result.reason });
+                errors.push({ id: masterId, error: result.reason });
               }
             });
             
@@ -717,7 +895,12 @@ Please specify the exact title or provide more details so I can update the corre
           return {
             success: failed === 0,
             message: `Deleted ${deleted} events (${failed} failed)`,
-            data: { deleted, failed, errors: failed > 0 ? errors : undefined }
+            data: { 
+              deleted, 
+              failed, 
+              errors: failed > 0 ? errors : undefined,
+              deletedSummaries: deletedSummaries.length > 0 ? deletedSummaries : undefined
+            }
           };
         }
 

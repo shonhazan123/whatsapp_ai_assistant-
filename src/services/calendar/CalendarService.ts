@@ -34,6 +34,7 @@ export interface CreateEventRequest {
   location?: string;
   timeZone?: string;
   reminders?: CalendarReminders;
+  allDay?: boolean; // If true, use date format (YYYY-MM-DD) instead of dateTime
 }
 
 export interface UpdateEventRequest {
@@ -176,18 +177,33 @@ export class CalendarService {
 
       const event: calendar_v3.Schema$Event = {
         summary: request.summary,
-        start: {
-          dateTime: request.start,
-          timeZone
-        },
-        end: {
-          dateTime: request.end,
-          timeZone
-        },
         attendees: request.attendees?.map(email => ({ email })),
         description: request.description,
         location: request.location
       };
+
+      // Handle all-day events vs timed events
+      if (request.allDay) {
+        // All-day event: use date format (YYYY-MM-DD)
+        // For all-day events, end date should be exclusive (day after last day)
+        event.start = {
+          date: request.start
+        };
+        event.end = {
+          date: request.end
+        };
+        this.logger.info(`📅 Creating all-day event from ${request.start} to ${request.end}`);
+      } else {
+        // Timed event: use dateTime format
+        event.start = {
+          dateTime: request.start,
+          timeZone
+        };
+        event.end = {
+          dateTime: request.end,
+          timeZone
+        };
+      }
 
       if (request.reminders) {
         event.reminders = request.reminders;
@@ -451,34 +467,101 @@ export class CalendarService {
    */
   async createRecurringEvent(request: RecurringEventRequest): Promise<IResponse> {
     try {
-      this.logger.info(`📅 Creating recurring event: ${request.summary} on ${request.days.join(', ')}`);
+      this.logger.info(`📅 Creating recurring event: ${request.summary} on ${request.days.join(', ')} (${request.recurrence})`);
 
-      // Find the next occurrence of the first day
       const startDate = new Date();
-      const firstDayIndex = this.getDayIndex(request.days[0]);
-      
-      while (startDate.getDay() !== firstDayIndex) {
-        startDate.setDate(startDate.getDate() + 1);
-      }
+      let rrule: string;
 
-      // Set the start time
-      const [startHour, startMinute] = request.startTime.split(':').map(Number);
-      startDate.setHours(startHour, startMinute, 0, 0);
+      // Handle different recurrence types
+      if (request.recurrence === 'monthly') {
+        // Monthly recurrence: days are day of month (1-31)
+        const dayOfMonth = parseInt(request.days[0], 10);
+        if (isNaN(dayOfMonth) || dayOfMonth < 1 || dayOfMonth > 31) {
+          return {
+            success: false,
+            error: 'Invalid day of month. Must be between 1 and 31.'
+          };
+        }
+
+        // Find the next occurrence of this day of month
+        const today = new Date();
+        const currentDay = today.getDate();
+        
+        if (currentDay < dayOfMonth) {
+          // This month, set to the day
+          startDate.setDate(dayOfMonth);
+        } else {
+          // Next month, set to the day
+          startDate.setMonth(today.getMonth() + 1);
+          startDate.setDate(dayOfMonth);
+        }
+
+        // Handle months with fewer days (e.g., Feb 30 -> Feb 28/29)
+        const maxDayInMonth = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0).getDate();
+        if (dayOfMonth > maxDayInMonth) {
+          startDate.setDate(maxDayInMonth);
+        }
+
+        // Set the start time
+        const [startHour, startMinute] = request.startTime.split(':').map(Number);
+        startDate.setHours(startHour, startMinute, 0, 0);
+
+        // Build RRULE for monthly recurrence
+        const monthDays = request.days.map(day => parseInt(day, 10)).filter(day => !isNaN(day) && day >= 1 && day <= 31);
+        rrule = `RRULE:FREQ=MONTHLY;BYMONTHDAY=${monthDays.join(',')}`;
+
+      } else if (request.recurrence === 'daily') {
+        // Daily recurrence
+        const [startHour, startMinute] = request.startTime.split(':').map(Number);
+        startDate.setHours(startHour, startMinute, 0, 0);
+        rrule = 'RRULE:FREQ=DAILY';
+
+      } else {
+        // Weekly recurrence (default): days are day names
+        const firstDayIndex = this.getDayIndex(request.days[0]);
+        
+        while (startDate.getDay() !== firstDayIndex) {
+          startDate.setDate(startDate.getDate() + 1);
+        }
+
+        // Set the start time
+        const [startHour, startMinute] = request.startTime.split(':').map(Number);
+        startDate.setHours(startHour, startMinute, 0, 0);
+
+        // Build RRULE for weekly recurrence
+        const dayAbbreviations = request.days.map(day => this.getDayAbbreviation(day));
+        rrule = `RRULE:FREQ=WEEKLY;BYDAY=${dayAbbreviations.join(',')}`;
+      }
 
       // Set the end time
       const endDate = new Date(startDate);
       const [endHour, endMinute] = request.endTime.split(':').map(Number);
       endDate.setHours(endHour, endMinute, 0, 0);
-
-      // Build RRULE with all days
-      const dayAbbreviations = request.days.map(day => this.getDayAbbreviation(day));
-      let rrule = `RRULE:FREQ=WEEKLY;BYDAY=${dayAbbreviations.join(',')}`;
       
-      // Add UNTIL if provided, otherwise use COUNT
+      // Add UNTIL if provided, otherwise default to 1 year from start date
       if (request.until) {
-        rrule += `;UNTIL=${request.until}`;
+        // Convert until date to UTC and format as YYYYMMDDTHHMMSSZ (RRULE format)
+        const untilDate = new Date(request.until);
+        const year = untilDate.getUTCFullYear();
+        const month = String(untilDate.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(untilDate.getUTCDate()).padStart(2, '0');
+        const hours = String(untilDate.getUTCHours()).padStart(2, '0');
+        const minutes = String(untilDate.getUTCMinutes()).padStart(2, '0');
+        const seconds = String(untilDate.getUTCSeconds()).padStart(2, '0');
+        const untilFormatted = `${year}${month}${day}T${hours}${minutes}${seconds}Z`;
+        rrule += `;UNTIL=${untilFormatted}`;
       } else {
-        rrule += ';COUNT=100';
+        // Default to 1 year from start date
+        const oneYearLater = new Date(startDate);
+        oneYearLater.setFullYear(oneYearLater.getFullYear() + 1);
+        const year = oneYearLater.getUTCFullYear();
+        const month = String(oneYearLater.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(oneYearLater.getUTCDate()).padStart(2, '0');
+        const hours = String(oneYearLater.getUTCHours()).padStart(2, '0');
+        const minutes = String(oneYearLater.getUTCMinutes()).padStart(2, '0');
+        const seconds = String(oneYearLater.getUTCSeconds()).padStart(2, '0');
+        const untilFormatted = `${year}${month}${day}T${hours}${minutes}${seconds}Z`;
+        rrule += `;UNTIL=${untilFormatted}`;
       }
 
       // Create the recurring event

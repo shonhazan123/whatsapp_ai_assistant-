@@ -1,10 +1,10 @@
 import { query } from '../../config/database';
-import { DEFAULT_MIN_SIMILARITY } from '../../config/secondBrain';
+import { DEFAULT_MERGE_THRESHOLD, DEFAULT_MIN_SIMILARITY } from '../../config/secondBrain';
+import { RequestContext } from '../../core/context/RequestContext';
 import { MemoryMetadata, MemoryRecord, SearchResult } from '../../types/memory';
 import { logger } from '../../utils/logger';
 import { OpenAIService } from '../ai/OpenAIService';
 import { BaseService } from '../database/BaseService';
-import { DEFAULT_MERGE_THRESHOLD } from '../../config/secondBrain';
 
 export class SecondBrainService extends BaseService {
   private openaiService: OpenAIService;
@@ -73,10 +73,16 @@ export class SecondBrainService extends BaseService {
    * @param text Text to embed
    * @returns 1536-dimensional embedding vector
    */
-  async embedText(text: string): Promise<number[]> {
+  async embedText(text: string, requestId?: string): Promise<number[]> {
     try {
+      // Get requestId from context if not provided
+      if (!requestId) {
+        const requestContext = RequestContext.get();
+        requestId = requestContext?.performanceRequestId;
+      }
+      
       this.logger.info('Creating embedding for text');
-      const embedding = await this.openaiService.createEmbedding(text);
+      const embedding = await this.openaiService.createEmbedding(text, 'text-embedding-3-small', requestId, 'second-brain');
       return embedding;
     } catch (error) {
       this.logger.error('Error in embedText:', error);
@@ -377,7 +383,9 @@ export class SecondBrainService extends BaseService {
         finalEmbedding = embedding;
       } else {
         this.logger.info('Generating embedding for new memory');
-        finalEmbedding = await this.embedText(text);
+        const requestContext = RequestContext.get();
+        const requestId = requestContext?.performanceRequestId;
+        finalEmbedding = await this.embedText(text, requestId);
       }
 
       // Detect language if not provided
@@ -467,7 +475,9 @@ export class SecondBrainService extends BaseService {
 
       // Generate embedding for query
       this.logger.info(`[searchMemory] Generating embedding for query: "${queryText.substring(0, 100)}${queryText.length > 100 ? '...' : ''}"`);
-      const queryEmbedding = await this.embedText(queryText);
+      const requestContext = RequestContext.get();
+      const requestId = requestContext?.performanceRequestId;
+      const queryEmbedding = await this.embedText(queryText, requestId);
       const queryVectorString = this.arrayToVectorString(queryEmbedding);
       this.logger.debug(`[searchMemory] Query embedding generated (${queryEmbedding.length} dimensions)`);
 
@@ -635,7 +645,9 @@ export class SecondBrainService extends BaseService {
         finalEmbedding = newEmbedding;
       } else {
         this.logger.info('Generating embedding for updated memory');
-        finalEmbedding = await this.embedText(newText);
+        const requestContext = RequestContext.get();
+        const requestId = requestContext?.performanceRequestId;
+        finalEmbedding = await this.embedText(newText, requestId);
       }
 
       // Update language in metadata if changed

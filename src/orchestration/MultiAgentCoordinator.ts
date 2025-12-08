@@ -1,9 +1,11 @@
+import { DEFAULT_MODEL } from '../config/openai';
 import { SystemPrompts } from '../config/system-prompts';
 import { ServiceContainer } from '../core/container/ServiceContainer';
 import { RequestContext } from '../core/context/RequestContext';
 import { AgentFactory } from '../core/factory/AgentFactory';
 import { AgentName, IAgent } from '../core/interfaces/IAgent';
 import { IntentDecision, OpenAIService } from '../services/ai/OpenAIService';
+import { setAgentNameForTracking } from '../services/performance/performanceUtils';
 import { logger } from '../utils/logger';
 import { CoordinatorAgent, ExecutionResult, PlannedAction } from './types/MultiAgentPlan';
 
@@ -47,6 +49,7 @@ export class MultiAgentCoordinator {
 
   async handleRequest(messageText: string, userPhone: string, context: any[] = []): Promise<string> {
     try {
+      const requestContext = RequestContext.get();
       const intentDecision = await this.openaiService.detectIntent(messageText, context);
       logger.info(
         `🧭 Orchestrator intent: ${intentDecision.primaryIntent} (plan: ${intentDecision.requiresPlan}, agents: ${
@@ -59,6 +62,9 @@ export class MultiAgentCoordinator {
       }
 
       const involvedAgents = this.resolveInvolvedAgents(intentDecision);
+      
+      // Route directly to single agent if no planning needed
+      // Intent detection now handles both multi-agent and single-agent multi-step scenarios
       if (!intentDecision.requiresPlan && involvedAgents.length === 1) {
         return await this.executeSingleAgent(involvedAgents[0], messageText, userPhone, context);
       }
@@ -69,7 +75,6 @@ export class MultiAgentCoordinator {
         return this.buildNoActionResponse(intentDecision.primaryIntent);
       }
 
-      const requestContext = RequestContext.get();
       const filteredPlan = plan.filter(action => this.isAgentAllowed(action.agent as AgentName, requestContext));
 
       if (filteredPlan.length === 0) {
@@ -264,12 +269,14 @@ export class MultiAgentCoordinator {
     messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
     attempt = 1
   ): Promise<PlannedAction[]> {
+    const requestId = setAgentNameForTracking('planner-creator-agent');
+
     const completion = await this.openaiService.createCompletion({
       messages: messages as any,
       temperature: 0.2,
       maxTokens: 1000,
-      model: 'gpt-4o'
-    });
+      model: DEFAULT_MODEL
+    }, requestId);
 
     const rawResponse = completion.choices[0]?.message?.content?.trim() ?? '[]';
 
@@ -377,6 +384,8 @@ export class MultiAgentCoordinator {
   }
 
   private async generateGeneralResponse(context: any[], messageText: string): Promise<string> {
+    const requestId = setAgentNameForTracking('orchestrator');
+
     const messages: any[] = [
       {
         role: 'system',
@@ -393,7 +402,7 @@ export class MultiAgentCoordinator {
       messages: messages as any,
       temperature: 0.7,
       maxTokens: 500
-    });
+    }, requestId);
 
     return completion.choices[0]?.message?.content?.trim() || 'I could not generate a response.';
   }
@@ -526,6 +535,8 @@ export class MultiAgentCoordinator {
         }))
       });
 
+      const requestId = setAgentNameForTracking('orchistrator-response-generator');
+
       const completion = await this.openaiService.createCompletion({
         messages: [
           {
@@ -537,10 +548,10 @@ export class MultiAgentCoordinator {
             content: summaryContent
           }
         ],
-        temperature: 0.4,
-        maxTokens: 300,
-        model: 'gpt-4o'
-      });
+        // temperature: 0.4,
+        // maxTokens: 300,
+        model: DEFAULT_MODEL
+      }, requestId);
 
       const text = completion.choices[0]?.message?.content?.trim();
       if (!text) {
@@ -584,4 +595,13 @@ export class MultiAgentCoordinator {
     }
     return `הושלמו ${successes}/${total} פעולות. ${failed} נכשלו ו-${blocked} נחסמו.`;
   }
+
+  /**
+   * Check if request requires multi-step plan even for single agent
+   * Uses LLM to detect if request contains multiple operations (e.g., delete + add)
+   */
+  // REMOVED: requiresMultiStepPlan function
+  // Logic consolidated into intent detection (OpenAIService.detectIntent)
+  // Intent detection now handles both multi-agent and single-agent multi-step scenarios
+  // This eliminates redundant AI calls and simplifies the codebase
 }

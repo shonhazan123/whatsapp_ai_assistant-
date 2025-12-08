@@ -1,7 +1,6 @@
 import { GetRequest, IResponse } from '../../core/types/AgentTypes';
 import { logger } from '../../utils/logger';
 import { BaseService } from './BaseService';
-import { ContactFilters, ContactService } from './ContactService';
 import { ListFilters, ListService } from './ListService';
 import { TaskFilters, TaskService } from './TaskService';
 
@@ -10,10 +9,6 @@ export interface UserDataOverview {
     total: number;
     completed: number;
     pending: number;
-    recent: any[];
-  };
-  contacts: {
-    total: number;
     recent: any[];
   };
   lists: {
@@ -26,10 +21,8 @@ export interface UserDataOverview {
 
 export interface UserDataRequest extends GetRequest {
   includeTasks?: boolean;
-  includeContacts?: boolean;
   includeLists?: boolean;
   taskFilters?: TaskFilters;
-  contactFilters?: ContactFilters;
   listFilters?: ListFilters;
   limit?: number;
 }
@@ -37,7 +30,6 @@ export interface UserDataRequest extends GetRequest {
 export class UserDataService extends BaseService {
   constructor(
     private taskService: TaskService,
-    private contactService: ContactService,
     private listService: ListService,
     loggerInstance: any = logger
   ) {
@@ -58,14 +50,6 @@ export class UserDataService extends BaseService {
       const completedTasks = tasks.filter((task: any) => task.completed);
       const pendingTasks = tasks.filter((task: any) => !task.completed);
 
-      // Get contacts summary
-      const contactsResponse = await this.contactService.getAll({
-        ...request,
-        limit: 10
-      });
-
-      const contacts = contactsResponse.success ? contactsResponse.data?.contacts || [] : [];
-
       // Get lists summary
       const listsResponse = await this.listService.getAll({
         ...request,
@@ -82,10 +66,6 @@ export class UserDataService extends BaseService {
           completed: completedTasks.length,
           pending: pendingTasks.length,
           recent: tasks.slice(0, 5)
-        },
-        contacts: {
-          total: contacts.length,
-          recent: contacts.slice(0, 5)
         },
         lists: {
           total: lists.length,
@@ -119,16 +99,6 @@ export class UserDataService extends BaseService {
         results.tasksError = tasksResponse.success ? null : tasksResponse.error;
       }
 
-      // Get contacts if requested
-      if (request.includeContacts !== false) {
-        const contactsResponse = await this.contactService.getAll({
-          ...request,
-          filters: request.contactFilters
-        });
-        results.contacts = contactsResponse.success ? contactsResponse.data : null;
-        results.contactsError = contactsResponse.success ? null : contactsResponse.error;
-      }
-
       // Get lists if requested
       if (request.includeLists !== false) {
         const listsResponse = await this.listService.getAll({
@@ -142,7 +112,6 @@ export class UserDataService extends BaseService {
       // Calculate totals
       const totals = {
         tasks: results.tasks?.count || 0,
-        contacts: results.contacts?.count || 0,
         lists: results.lists?.count || 0
       };
 
@@ -171,13 +140,6 @@ export class UserDataService extends BaseService {
       });
       results.tasks = tasksResponse.success ? tasksResponse.data : null;
 
-      // Search contacts
-      const contactsResponse = await this.contactService.search({
-        ...request,
-        filters: { name: request.query }
-      });
-      results.contacts = contactsResponse.success ? contactsResponse.data : null;
-
       // Search lists
       const listsResponse = await this.listService.getAll({
         ...request,
@@ -202,10 +164,6 @@ export class UserDataService extends BaseService {
       const tasksResponse = await this.taskService.getAll(request);
       const tasks = tasksResponse.success ? tasksResponse.data?.tasks || [] : [];
 
-      // Get all contacts for statistics
-      const contactsResponse = await this.contactService.getAll(request);
-      const contacts = contactsResponse.success ? contactsResponse.data?.contacts || [] : [];
-
       // Get all lists for statistics
       const listsResponse = await this.listService.getAll(request);
       const lists = listsResponse.success ? listsResponse.data?.lists || [] : [];
@@ -218,11 +176,6 @@ export class UserDataService extends BaseService {
           pending: tasks.filter((task: any) => !task.completed).length,
           byCategory: this.groupBy(tasks, 'category'),
           completionRate: tasks.length > 0 ? (tasks.filter((task: any) => task.completed).length / tasks.length) * 100 : 0
-        },
-        contacts: {
-          total: contacts.length,
-          withEmail: contacts.filter((contact: any) => contact.email).length,
-          withPhone: contacts.filter((contact: any) => contact.phone_number).length
         },
         lists: {
           total: lists.length,

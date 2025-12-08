@@ -13,8 +13,6 @@ export class QueryResolver {
     switch (domain) {
       case 'task':
         return this.resolveTasks(query, userPhone);
-      case 'contact':
-        return this.resolveContacts(query, userPhone);
       case 'list':
         return this.resolveLists(query, userPhone);
       case 'event':
@@ -51,8 +49,6 @@ export class QueryResolver {
     switch (domain) {
       case 'task':
         return entity?.text || ref?.canonical || 'Task';
-      case 'contact':
-        return `${entity?.name || ref?.canonical || 'Contact'}${entity?.email ? ` <${entity.email}>` : ''}`;
       case 'list':
         return entity?.list_name || ref?.canonical || 'List';
       case 'event':
@@ -74,20 +70,6 @@ export class QueryResolver {
       reference: this.toRef('task', m.item.id, m.item.text),
       score: m.score,
       reason: 'text/category match'
-    }));
-    return this.result(candidates);
-  }
-
-  private async resolveContacts(query: string, userPhone: string): Promise<ResolutionResult> {
-    const contactService = this.container.getContactService();
-    const resp = await contactService.getAll({ userPhone, filters: { name: query } });
-    const contacts = (resp.success && resp.data?.contacts ? resp.data.contacts : []) as any[];
-    const matches = FuzzyMatcher.search<any>(query, contacts, ['name', 'email', 'phone_number'], 0.6);
-    const candidates: ResolutionCandidate[] = matches.map(m => ({
-      entity: m.item,
-      reference: this.toRef('contact', m.item.id, m.item.name),
-      score: m.score,
-      reason: 'name/email/phone match'
     }));
     return this.result(candidates);
   }
@@ -257,7 +239,6 @@ export class QueryResolver {
   private getIdFieldForDomain(domain: EntityDomain): string {
     switch (domain) {
       case 'task': return 'taskId';
-      case 'contact': return 'contactId';
       case 'list': return 'listId';
       default: return 'id';
     }
@@ -270,8 +251,6 @@ export class QueryResolver {
     switch (domain) {
       case 'task':
         return params.text || params.taskId || null;
-      case 'contact':
-        return params.name || params.email || params.phone || params.contactId || null;
       case 'list':
         return params.title || params.listName || params.listId || null;
       default:
@@ -286,8 +265,6 @@ export class QueryResolver {
     switch (domain) {
       case 'task':
         return entity.text || 'Task';
-      case 'contact':
-        return `${entity.name || 'Contact'}${entity.email ? ` (${entity.email})` : ''}`;
       case 'list':
         const itemCount = entity.items?.length || 0;
         if (entity.is_checklist && itemCount > 0) {

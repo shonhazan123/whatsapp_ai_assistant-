@@ -1,14 +1,12 @@
-import { logger } from '../../utils/logger';
 import { OpenAIService } from '../../services/ai/OpenAIService';
-import { FunctionHandler } from '../base/FunctionHandler';
-import { TaskService } from '../../services/database/TaskService';
-import { ContactService } from '../../services/database/ContactService';
-import { ListService } from '../../services/database/ListService';
-import { UserDataService } from '../../services/database/UserDataService';
 import { CalendarService } from '../../services/calendar/CalendarService';
+import { ListService } from '../../services/database/ListService';
+import { TaskService } from '../../services/database/TaskService';
+import { UserDataService } from '../../services/database/UserDataService';
 import { GmailService } from '../../services/email/GmailService';
-import { ContactLookupService } from '../../services/contact/ContactLookupService';
 import { MultiTaskService } from '../../services/multi-task/MultiTaskService';
+import { logger } from '../../utils/logger';
+import { FunctionHandler } from '../base/FunctionHandler';
 
 export class ServiceContainer {
   private static instance: ServiceContainer;
@@ -35,13 +33,11 @@ export class ServiceContainer {
 
     // Database services
     this.services.set('taskService', new TaskService(this.logger));
-    this.services.set('contactService', new ContactService(this.logger));
     this.services.set('listService', new ListService(this.logger));
     
     // User data service with dependencies
     this.services.set('userDataService', new UserDataService(
       this.services.get('taskService'),
-      this.services.get('contactService'),
       this.services.get('listService'),
       this.logger
     ));
@@ -49,9 +45,6 @@ export class ServiceContainer {
     // External services
     this.services.set('calendarService', new CalendarService(this.logger));
     this.services.set('gmailService', new GmailService(this.logger));
-    
-    // Contact lookup service
-    this.services.set('contactLookupService', new ContactLookupService(this));
     
     // Multi-task service
     this.services.set('multiTaskService', new MultiTaskService(this));
@@ -97,10 +90,6 @@ export class ServiceContainer {
     return this.get<TaskService>('taskService');
   }
 
-  getContactService(): ContactService {
-    return this.get<ContactService>('contactService');
-  }
-
   getListService(): ListService {
     return this.get<ListService>('listService');
   }
@@ -115,10 +104,6 @@ export class ServiceContainer {
 
   getGmailService(): GmailService {
     return this.get<GmailService>('gmailService');
-  }
-
-  getContactLookupService(): ContactLookupService {
-    return this.get<ContactLookupService>('contactLookupService');
   }
 
   getMultiTaskService(): MultiTaskService {

@@ -20,18 +20,9 @@ function initializeArchitecture() {
   }
 }
 
-
-
-
 // Export the new processMessage function with Advanced Orchestration
-export async function processMessageV2(
-  userPhone: string, 
-  messageText: string,
-  options?: {
-    whatsappMessageId?: string;
-    replyToMessageId?: string;
-  }
-): Promise<string> {
+export async function processMessageV2(userPhone: string, messageText: string, options?: { whatsappMessageId?: string; replyToMessageId?: string;}): Promise<string> 
+{
   try {
     // Initialize architecture if not already done
     if (!agentManager) {
@@ -56,7 +47,6 @@ export async function processMessageV2(
 // Export services for external use
 export * from './core/types/AgentTypes';
 export * from './services/calendar/CalendarService';
-export * from './services/database/ContactService';
 export * from './services/database/ListService';
 export * from './services/database/TaskService';
 export * from './services/database/UserDataService';

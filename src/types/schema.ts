@@ -70,17 +70,6 @@ export const RecurringEventSchema = z.object({
   location: z.string().optional()
 });
 
-// Contact schemas
-export const ContactSchema = z.object({
-  id: z.string().uuid().optional(),
-  user_id: z.string().uuid().optional(),
-  name: z.string().min(1),
-  email: z.string().email().optional(),
-  phone_number: z.string().optional(),
-  notes: z.string().optional(),
-  created_at: z.string().datetime().optional()
-});
-
 // List schemas
 export const ListSchema = z.object({
   id: z.string().uuid().optional(),
@@ -122,7 +111,7 @@ export const QuerySchema = z.object({
 // Candidate schemas (for HITL)
 export const CandidateSchema = z.object({
   id: z.string(),
-  type: z.enum(['task', 'event', 'contact', 'list', 'email']),
+  type: z.enum(['task', 'event', 'list', 'email']),
   label: z.string(),
   data: z.any(),
   confidence: z.number().min(0).max(1),
@@ -167,7 +156,6 @@ export type Task = z.infer<typeof TaskSchema>;
 export type Subtask = z.infer<typeof SubtaskSchema>;
 export type Event = z.infer<typeof EventSchema>;
 export type RecurringEvent = z.infer<typeof RecurringEventSchema>;
-export type Contact = z.infer<typeof ContactSchema>;
 export type List = z.infer<typeof ListSchema>;
 export type Email = z.infer<typeof EmailSchema>;
 export type Query = z.infer<typeof QuerySchema>;

@@ -6,6 +6,7 @@ import { OpenAIService } from '../ai/OpenAIService';
 import { CalendarService } from '../calendar/CalendarService';
 import { ReminderRecurrence, Task } from '../database/TaskService';
 import { UserService } from '../database/UserService';
+import { PerformanceTracker } from '../performance/PerformanceTracker';
 import { sendWhatsAppMessage } from '../whatsapp';
 
 interface User {
@@ -22,6 +23,7 @@ interface TaskWithUser extends Task {
 export class ReminderService {
   private calendarService: CalendarService;
   private userService: UserService;
+  private performanceTracker: PerformanceTracker;
 
   constructor(
     private loggerInstance: any = logger,
@@ -30,6 +32,7 @@ export class ReminderService {
     this.openaiService = openaiService || new OpenAIService(this.loggerInstance);
     this.calendarService = new CalendarService(this.loggerInstance);
     this.userService = new UserService(this.loggerInstance);
+    this.performanceTracker = PerformanceTracker.getInstance();
   }
 
   /**
@@ -45,7 +48,7 @@ export class ReminderService {
       for (const task of oneTimeReminders) {
         try {
           const rawData = this.buildOneTimeReminderData(task);
-          const message = await this.enhanceMessageWithAI(rawData);
+          const message = await this.enhanceMessageWithAI(rawData, task.phone);
           await sendWhatsAppMessage(task.phone, message);
           this.loggerInstance.info(`✅ Sent one-time reminder to ${task.phone}: ${task.text}`);
           
@@ -82,7 +85,7 @@ export class ReminderService {
 
           // Send reminder
           const rawData = this.buildRecurringReminderData(task);
-          const message = await this.enhanceMessageWithAI(rawData);
+          const message = await this.enhanceMessageWithAI(rawData, task.phone);
           await sendWhatsAppMessage(task.phone, message);
           this.loggerInstance.info(`✅ Sent recurring reminder to ${task.phone}: ${task.text}`);
 
@@ -129,12 +132,12 @@ export class ReminderService {
             let message: string;
             if (plannedTasks.length > 0 || unplannedTasks.length > 0 || calendarEvents.length > 0) {
               const rawData = this.buildDailyDigestData(plannedTasks, unplannedTasks, calendarEvents, user);
-              message = await this.enhanceMessageWithAI(rawData);
+              message = await this.enhanceMessageWithAI(rawData, user.phone);
               await sendWhatsAppMessage(user.phone, message);
             } else {
               // No tasks or events - send empty digest message
               const rawData = this.buildEmptyDigestData(user);
-              message = await this.enhanceMessageWithAI(rawData);
+              message = await this.enhanceMessageWithAI(rawData, user.phone);
               await sendWhatsAppMessage(user.phone, message);
             }
           }
@@ -247,16 +250,34 @@ export class ReminderService {
   private calculateNextRecurrence(recurrence: ReminderRecurrence, currentTime: Date): Date {
     const timezone = recurrence.timezone || 'Asia/Jerusalem';
     
-    // Parse time string (HH:mm)
-    const [hours, minutes] = recurrence.time.split(':').map(Number);
-    
     let nextDate = new Date(currentTime);
     
-    // Set time
-    nextDate.setHours(hours, minutes, 0, 0);
-    
     switch (recurrence.type) {
+      case 'nudge': {
+        // Nudge: repeat after specified interval (default 10 minutes)
+        const interval = recurrence.interval || '10 minutes';
+        const minutes = this.parseIntervalToMinutes(interval);
+        
+        if (minutes < 1) {
+          throw new Error('Nudge interval must be at least 1 minute');
+        }
+        
+        // Round to start of current minute (strip seconds/milliseconds)
+        currentTime.setSeconds(0, 0);
+        nextDate.setSeconds(0, 0);
+        
+        // Add interval to current time
+        nextDate.setMinutes(currentTime.getMinutes() + minutes);
+        break;
+      }
+      
       case 'daily': {
+        // Parse time string (HH:mm) - required for daily/weekly/monthly
+        if (!recurrence.time) {
+          throw new Error('Daily recurrence requires time');
+        }
+        const [hours, minutes] = recurrence.time.split(':').map(Number);
+        nextDate.setHours(hours, minutes, 0, 0);
         // If time has passed today, set for tomorrow
         if (nextDate <= currentTime) {
           nextDate.setDate(nextDate.getDate() + 1);
@@ -265,9 +286,15 @@ export class ReminderService {
       }
       
       case 'weekly': {
+        if (!recurrence.time) {
+          throw new Error('Weekly recurrence requires time');
+        }
         if (!recurrence.days || recurrence.days.length === 0) {
           throw new Error('Weekly recurrence requires days array');
         }
+        
+        const [hours, minutes] = recurrence.time.split(':').map(Number);
+        nextDate.setHours(hours, minutes, 0, 0);
         
         // Find next occurrence day
         const currentDay = currentTime.getDay(); // 0=Sunday, 6=Saturday
@@ -301,9 +328,15 @@ export class ReminderService {
       }
       
       case 'monthly': {
+        if (!recurrence.time) {
+          throw new Error('Monthly recurrence requires time');
+        }
         if (!recurrence.dayOfMonth) {
           throw new Error('Monthly recurrence requires dayOfMonth');
         }
+        
+        const [hours, minutes] = recurrence.time.split(':').map(Number);
+        nextDate.setHours(hours, minutes, 0, 0);
         
         // Set day of month
         const maxDay = new Date(currentTime.getFullYear(), currentTime.getMonth() + 1, 0).getDate();
@@ -335,6 +368,33 @@ export class ReminderService {
   }
 
   /**
+   * Parse interval string to minutes
+   * Examples: "10 minutes" → 10, "1 hour" → 60, "2 hours" → 120
+   */
+  private parseIntervalToMinutes(interval: string): number {
+    const normalizedInterval = interval.toLowerCase().trim();
+    
+    // Match patterns like "10 minutes", "1 hour", "2 hours"
+    const minuteMatch = normalizedInterval.match(/^(\d+)\s*(minute|minutes|min|mins|דקות|דקה)$/);
+    if (minuteMatch) {
+      return parseInt(minuteMatch[1], 10);
+    }
+    
+    const hourMatch = normalizedInterval.match(/^(\d+)\s*(hour|hours|hr|hrs|שעות|שעה)$/);
+    if (hourMatch) {
+      return parseInt(hourMatch[1], 10) * 60;
+    }
+    
+    // If no match, try to extract just the number and assume minutes
+    const numberMatch = normalizedInterval.match(/^(\d+)$/);
+    if (numberMatch) {
+      return parseInt(numberMatch[1], 10);
+    }
+    
+    throw new Error(`Invalid interval format: ${interval}. Use format like "10 minutes" or "1 hour"`);
+  }
+
+  /**
    * Check if recurrence has ended (until date reached)
    */
   private hasRecurrenceEnded(recurrence: ReminderRecurrence): boolean {
@@ -349,9 +409,25 @@ export class ReminderService {
   /**
    * Enhance message using AI
    */
-  private async enhanceMessageWithAI(rawData: string): Promise<string> {
+  private async enhanceMessageWithAI(rawData: string, userPhone?: string): Promise<string> {
     try {
-      return await this.openaiService!.generateResponse(rawData);
+      // For background jobs (reminders), create a requestId if not in context
+      const requestContext = RequestContext.get();
+      let requestId = requestContext?.performanceRequestId;
+      
+      if (!requestId && userPhone) {
+        // Create a requestId for background job tracking
+        requestId = this.performanceTracker.startRequest(userPhone);
+      }
+      
+      const response = await this.openaiService!.generateResponse(rawData, requestId, 'reminder-service');
+      
+      // End request if we created it
+      if (requestId && !requestContext?.performanceRequestId) {
+        await this.performanceTracker.endRequest(requestId);
+      }
+      
+      return response;
     } catch (error) {
       this.loggerInstance.error('Failed to enhance message with AI, using fallback:', error);
       // Return raw data as fallback
@@ -395,6 +471,9 @@ export class ReminderService {
       const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
       
       switch (recurrence.type) {
+        case 'nudge':
+          recurrenceInfo = `Nudging every ${recurrence.interval || '10 minutes'}`;
+          break;
         case 'daily':
           recurrenceInfo = `Every day at ${recurrence.time}`;
           break;
