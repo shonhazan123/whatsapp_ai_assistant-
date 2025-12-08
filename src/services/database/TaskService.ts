@@ -106,10 +106,17 @@ export class TaskService extends BaseService {
       return result;
     }
 
+    // Allow dueDate with reminderRecurrence ONLY for nudge type (nudge starts from that time)
     if (hasRecurringReminder && result.dueDate) {
-      result.validationError =
-        'Recurring reminders cannot have a dueDate. Remove dueDate when creating a recurring reminder.';
-      return result;
+      const recurrenceType = typeof result.reminderRecurrence === 'string' 
+        ? JSON.parse(result.reminderRecurrence).type 
+        : result.reminderRecurrence?.type;
+      
+      if (recurrenceType !== 'nudge') {
+        result.validationError =
+          'Only nudge-type reminders can have a dueDate. Daily/weekly/monthly reminders are standalone and cannot have a dueDate.';
+        return result;
+      }
     }
 
     if (hasRecurringReminder && result.reminder) {
