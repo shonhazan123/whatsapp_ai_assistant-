@@ -325,7 +325,7 @@ export class OpenAIService {
 
   /**
    * Analyze an image using GPT-4 Vision
-   * Extracts structured data from images (events, tasks, contacts, etc.)
+   * Extracts structured data from images (events, tasks, etc.)
    */
   async analyzeImage(imageBuffer: Buffer, userCaption?: string, requestId?: string): Promise<ImageAnalysisResult> {
     try {

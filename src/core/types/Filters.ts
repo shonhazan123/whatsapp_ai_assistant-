@@ -19,16 +19,6 @@ export interface TaskFilter {
 	sortDir?: "asc" | "desc";
 }
 
-export interface ContactFilter {
-	q?: string;
-	name?: string;
-	phone?: string;
-	email?: string;
-	ids?: string[];
-	limit?: number;
-	offset?: number;
-}
-
 export interface ListFilter {
 	q?: string;  // Search in list_name or content
 	list_name?: string;  // Filter by title

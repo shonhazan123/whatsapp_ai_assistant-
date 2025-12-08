@@ -9,7 +9,7 @@ export const FuzzyConfig = {
    * Used when no threshold is explicitly provided
    * 0.6 = 60% similarity required for a match
    */
-  DEFAULT_SIMILARITY_THRESHOLD: 0.6,
+  DEFAULT_SIMILARITY_THRESHOLD: 0.52,
 
   /**
    * Minimum number of characters required for a match

@@ -3,16 +3,14 @@ import { BaseAgent } from '../../core/base/BaseAgent';
 import { IFunctionHandler } from '../../core/interfaces/IAgent';
 import { FunctionDefinition } from '../../core/types/AgentTypes';
 import { OpenAIService } from '../../services/ai/OpenAIService';
-import { ContactService } from '../../services/database/ContactService';
 import { ListService } from '../../services/database/ListService';
 import { TaskService } from '../../services/database/TaskService';
 import { UserDataService } from '../../services/database/UserDataService';
 import { logger } from '../../utils/logger';
-import { ContactFunction, ListFunction, TaskFunction, UserDataFunction } from '../functions/DatabaseFunctions';
+import { ListFunction, TaskFunction, UserDataFunction } from '../functions/DatabaseFunctions';
 
 export class DatabaseAgent extends BaseAgent {
   private taskService: TaskService;
-  private contactService: ContactService;
   private listService: ListService;
   private userDataService: UserDataService;
 
@@ -25,11 +23,9 @@ export class DatabaseAgent extends BaseAgent {
 
     // Initialize services
     this.taskService = new TaskService(logger);
-    this.contactService = new ContactService(logger);
     this.listService = new ListService(logger);
     this.userDataService = new UserDataService(
       this.taskService,
-      this.contactService,
       this.listService,
       logger
     );
@@ -78,10 +74,6 @@ export class DatabaseAgent extends BaseAgent {
     // Task functions
     const taskFunction = new TaskFunction(this.taskService, this.logger);
     this.functionHandler.registerFunction(taskFunction);
-
-    // Contact functions
-    const contactFunction = new ContactFunction(this.contactService, this.logger);
-    this.functionHandler.registerFunction(contactFunction);
 
     // List functions
     const listFunction = new ListFunction(this.listService, this.logger);

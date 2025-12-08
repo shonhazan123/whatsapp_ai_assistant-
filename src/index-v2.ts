@@ -47,7 +47,6 @@ export async function processMessageV2(userPhone: string, messageText: string, o
 // Export services for external use
 export * from './core/types/AgentTypes';
 export * from './services/calendar/CalendarService';
-export * from './services/database/ContactService';
 export * from './services/database/ListService';
 export * from './services/database/TaskService';
 export * from './services/database/UserDataService';

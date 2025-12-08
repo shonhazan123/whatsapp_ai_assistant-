@@ -250,16 +250,34 @@ export class ReminderService {
   private calculateNextRecurrence(recurrence: ReminderRecurrence, currentTime: Date): Date {
     const timezone = recurrence.timezone || 'Asia/Jerusalem';
     
-    // Parse time string (HH:mm)
-    const [hours, minutes] = recurrence.time.split(':').map(Number);
-    
     let nextDate = new Date(currentTime);
     
-    // Set time
-    nextDate.setHours(hours, minutes, 0, 0);
-    
     switch (recurrence.type) {
+      case 'nudge': {
+        // Nudge: repeat after specified interval (default 10 minutes)
+        const interval = recurrence.interval || '10 minutes';
+        const minutes = this.parseIntervalToMinutes(interval);
+        
+        if (minutes < 1) {
+          throw new Error('Nudge interval must be at least 1 minute');
+        }
+        
+        // Round to start of current minute (strip seconds/milliseconds)
+        currentTime.setSeconds(0, 0);
+        nextDate.setSeconds(0, 0);
+        
+        // Add interval to current time
+        nextDate.setMinutes(currentTime.getMinutes() + minutes);
+        break;
+      }
+      
       case 'daily': {
+        // Parse time string (HH:mm) - required for daily/weekly/monthly
+        if (!recurrence.time) {
+          throw new Error('Daily recurrence requires time');
+        }
+        const [hours, minutes] = recurrence.time.split(':').map(Number);
+        nextDate.setHours(hours, minutes, 0, 0);
         // If time has passed today, set for tomorrow
         if (nextDate <= currentTime) {
           nextDate.setDate(nextDate.getDate() + 1);
@@ -268,9 +286,15 @@ export class ReminderService {
       }
       
       case 'weekly': {
+        if (!recurrence.time) {
+          throw new Error('Weekly recurrence requires time');
+        }
         if (!recurrence.days || recurrence.days.length === 0) {
           throw new Error('Weekly recurrence requires days array');
         }
+        
+        const [hours, minutes] = recurrence.time.split(':').map(Number);
+        nextDate.setHours(hours, minutes, 0, 0);
         
         // Find next occurrence day
         const currentDay = currentTime.getDay(); // 0=Sunday, 6=Saturday
@@ -304,9 +328,15 @@ export class ReminderService {
       }
       
       case 'monthly': {
+        if (!recurrence.time) {
+          throw new Error('Monthly recurrence requires time');
+        }
         if (!recurrence.dayOfMonth) {
           throw new Error('Monthly recurrence requires dayOfMonth');
         }
+        
+        const [hours, minutes] = recurrence.time.split(':').map(Number);
+        nextDate.setHours(hours, minutes, 0, 0);
         
         // Set day of month
         const maxDay = new Date(currentTime.getFullYear(), currentTime.getMonth() + 1, 0).getDate();
@@ -335,6 +365,33 @@ export class ReminderService {
     }
     
     return nextDate;
+  }
+
+  /**
+   * Parse interval string to minutes
+   * Examples: "10 minutes" → 10, "1 hour" → 60, "2 hours" → 120
+   */
+  private parseIntervalToMinutes(interval: string): number {
+    const normalizedInterval = interval.toLowerCase().trim();
+    
+    // Match patterns like "10 minutes", "1 hour", "2 hours"
+    const minuteMatch = normalizedInterval.match(/^(\d+)\s*(minute|minutes|min|mins|דקות|דקה)$/);
+    if (minuteMatch) {
+      return parseInt(minuteMatch[1], 10);
+    }
+    
+    const hourMatch = normalizedInterval.match(/^(\d+)\s*(hour|hours|hr|hrs|שעות|שעה)$/);
+    if (hourMatch) {
+      return parseInt(hourMatch[1], 10) * 60;
+    }
+    
+    // If no match, try to extract just the number and assume minutes
+    const numberMatch = normalizedInterval.match(/^(\d+)$/);
+    if (numberMatch) {
+      return parseInt(numberMatch[1], 10);
+    }
+    
+    throw new Error(`Invalid interval format: ${interval}. Use format like "10 minutes" or "1 hour"`);
   }
 
   /**
@@ -414,6 +471,9 @@ export class ReminderService {
       const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
       
       switch (recurrence.type) {
+        case 'nudge':
+          recurrenceInfo = `Nudging every ${recurrence.interval || '10 minutes'}`;
+          break;
         case 'daily':
           recurrenceInfo = `Every day at ${recurrence.time}`;
           break;
