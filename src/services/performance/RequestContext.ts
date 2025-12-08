@@ -9,7 +9,6 @@ import { PerformanceContext } from './types';
 export class PerformanceRequestContext {
   private static instance: PerformanceRequestContext;
   private contexts: Map<string, PerformanceContext> = new Map();
-  private sessionIds: Map<string, string> = new Map(); // userPhone -> sessionId
 
   private constructor() {}
 
@@ -22,10 +21,13 @@ export class PerformanceRequestContext {
 
   /**
    * Start a new request context
+   * Each request gets its own session ID (1 request = 1 session)
+   * A session represents: user sends message → agent processes → agent responds
    */
   startRequest(userPhone: string): string {
     const requestId = randomUUID();
-    const sessionId = this.getOrCreateSessionId(userPhone);
+    // Each request gets its own session ID (1 request = 1 session)
+    const sessionId = requestId;
     
     const context: PerformanceContext = {
       requestId,
@@ -46,16 +48,6 @@ export class PerformanceRequestContext {
    */
   getContext(requestId: string): PerformanceContext | null {
     return this.contexts.get(requestId) || null;
-  }
-
-  /**
-   * Get or create session ID for user
-   */
-  private getOrCreateSessionId(userPhone: string): string {
-    if (!this.sessionIds.has(userPhone)) {
-      this.sessionIds.set(userPhone, randomUUID());
-    }
-    return this.sessionIds.get(userPhone)!;
   }
 
   /**
@@ -138,3 +130,4 @@ export class PerformanceRequestContext {
   }
 }
 
+ 

@@ -63,10 +63,9 @@ export class MultiAgentCoordinator {
 
       const involvedAgents = this.resolveInvolvedAgents(intentDecision);
       
-      // Check if request requires planning even for single agent (e.g., delete + add operations)
-      const requiresMultiStepPlan = await this.requiresMultiStepPlan(messageText, involvedAgents);
-      
-      if (!intentDecision.requiresPlan && !requiresMultiStepPlan && involvedAgents.length === 1) {
+      // Route directly to single agent if no planning needed
+      // Intent detection now handles both multi-agent and single-agent multi-step scenarios
+      if (!intentDecision.requiresPlan && involvedAgents.length === 1) {
         return await this.executeSingleAgent(involvedAgents[0], messageText, userPhone, context);
       }
 
@@ -601,65 +600,8 @@ export class MultiAgentCoordinator {
    * Check if request requires multi-step plan even for single agent
    * Uses LLM to detect if request contains multiple operations (e.g., delete + add)
    */
-  private async requiresMultiStepPlan(messageText: string, involvedAgents: AgentName[]): Promise<boolean> {
-    // Only check if single agent is involved
-    if (involvedAgents.length !== 1) {
-      return false;
-    }
-
-    try {
-      const requestId = setAgentNameForTracking('plan-analyzer');
-
-      const completion = await this.openaiService.createCompletion({
-        messages: [
-          {
-            role: 'system',
-            content: `You are a request analyzer. Determine if a user request requires multiple sequential operations from the same agent that must be executed step-by-step.
-
-CRITICAL: A request requires multi-step planning if it contains:
-- DELETE operation AND CREATE/ADD operation (e.g., "delete X and add Y", "מחק X ותוסיף Y")
-- UPDATE operation AND CREATE operation (e.g., "update X and create Y")
-- Multiple distinct operations that depend on each other (e.g., "delete old events and create new ones")
-
-A request does NOT require multi-step planning if:
-- It's a single operation (e.g., "create event", "delete tasks")
-- It's a bulk operation of the same type (e.g., "create multiple events", "delete all tasks")
-- Operations can be done in parallel or are independent
-
-Respond with ONLY a JSON object: {"requiresPlan": true/false, "reason": "brief explanation"}
-
-Examples:
-User: "delete all my tasks and add banana to shopping list" → {"requiresPlan": true, "reason": "delete and add are different operations"}
-User: "create event for tomorrow" → {"requiresPlan": false, "reason": "single create operation"}
-User: "delete the recurring event and keep only this week's events" → {"requiresPlan": true, "reason": "delete and conditional keep requires sequential steps"}
-User: "תמחק את האירועים החוזרים ותשאיר רק את השבוע" → {"requiresPlan": true, "reason": "delete and conditional keep requires sequential steps"}`
-          },
-          {
-            role: 'user',
-            content: messageText
-          }
-        ],
-        temperature: 0.1,
-        maxTokens: 100,
-        model: DEFAULT_MODEL
-      }, requestId);
-
-      const response = completion.choices[0]?.message?.content?.trim();
-      if (!response) {
-        return false;
-      }
-
-      try {
-        const parsed = JSON.parse(response);
-        return parsed.requiresPlan === true;
-      } catch {
-        // If JSON parsing fails, default to false (single operation)
-        return false;
-      }
-      } catch (error) {
-        logger.error('Error checking for multi-step plan:', error);
-        // On error, default to false to avoid unnecessary planning
-        return false;
-      }
-  }
+  // REMOVED: requiresMultiStepPlan function
+  // Logic consolidated into intent detection (OpenAIService.detectIntent)
+  // Intent detection now handles both multi-agent and single-agent multi-step scenarios
+  // This eliminates redundant AI calls and simplifies the codebase
 }

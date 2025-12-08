@@ -33,6 +33,16 @@ export class CalendarFunction implements IFunction {
       },
       eventId: { type: 'string', description: 'Event ID for get, update, delete operations' },
       summary: { type: 'string', description: 'Event title/summary (for create/get) or new title (for update)' },
+      excludeSummaries: { 
+        type: 'array', 
+        items: { type: 'string' },
+        description: 'For getEvents operation: array of summary keywords to EXCLUDE from results. Events matching these terms will be filtered out. For delete operations: array of summary keywords to EXCLUDE from deletion. Example: ["ultrasound", "doctor"] will exclude any event with "ultrasound" or "doctor" in the title.'
+      },
+      excludeDays: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'For getEvents operation: array of day names to EXCLUDE from results (e.g., ["Monday", "Tuesday"]). Events on these days will be filtered out.'
+      },
       start: { type: 'string', description: 'Start time in ISO format (dateTime) or date format YYYY-MM-DD for all-day events' },
       end: { type: 'string', description: 'End time in ISO format (dateTime) or date format YYYY-MM-DD for all-day events (exclusive end date)' },
       allDay: { type: 'boolean', description: 'If true, event is all-day and start/end should be in YYYY-MM-DD format' },
@@ -96,7 +106,7 @@ export class CalendarFunction implements IFunction {
       days: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Days of week for recurring events (e.g., ["Sunday", "Tuesday", "Wednesday"])'
+        description: 'For WEEKLY recurrence: day names (e.g., ["Monday"], ["Tuesday", "Thursday"]). For MONTHLY recurrence: day numbers as strings 1-31 (e.g., ["10"], ["20"] for 10th or 20th of month). The system auto-detects weekly vs monthly based on whether values are day names or numbers.'
       },
       until: {
         type: 'string',
@@ -355,13 +365,36 @@ Please specify the exact title or provide more details so I can update the corre
     return {};
   }
 
-  private async deleteByWindow(summary: string | undefined, timeMin: string, timeMax: string): Promise<IResponse> {
+  private async deleteByWindow(summary: string | undefined, timeMin: string, timeMax: string, excludeSummaries?: string[]): Promise<IResponse> {
     const eventsResp = await this.calendarService.getEvents({ timeMin, timeMax });
     if (!eventsResp.success || !eventsResp.data) {
       return { success: false, error: 'Failed to fetch events for deletion window' };
     }
 
     let events = (eventsResp.data.events || []) as any[];
+    
+    // First, filter OUT any events that match the exclusion terms
+    if (excludeSummaries && excludeSummaries.length > 0) {
+      const beforeCount = events.length;
+      events = events.filter(event => {
+        const eventSummary = (event.summary || '').toLowerCase().trim();
+        // Keep the event if it doesn't match any exclusion term
+        const shouldExclude = excludeSummaries.some((excludeTerm: string) => {
+          const normalizedTerm = excludeTerm.toLowerCase().trim();
+          return eventSummary.includes(normalizedTerm);
+        });
+        
+        if (shouldExclude) {
+          this.logger.info(`🚫 Excluding from deletion: "${event.summary}" (matched exclusion term)`);
+        }
+        
+        return !shouldExclude;
+      });
+      const afterCount = events.length;
+      this.logger.info(`📊 Delete filter: ${beforeCount} total → ${afterCount} to delete (excluded ${beforeCount - afterCount})`);
+    }
+    
+    // Then, filter IN events matching the summary (if provided)
     if (summary) {
       // Use FuzzyMatcher for better matching (handles word order, name variations, etc.)
       const matches = FuzzyMatcher.search<any>(summary, events, ['summary'], CalendarFunction.DELETE_EVENT_SUMMARY_THRESHOLD);
@@ -531,16 +564,33 @@ Please specify the exact title or provide more details so I can update the corre
           if (!params.summary || !params.startTime || !params.endTime || !params.days) {
             return { success: false, error: 'Summary, startTime, endTime, and days are required for createRecurring operation' };
           }
+          
+          // Detect recurrence type: if days are numeric (1-31), it's monthly; if day names, it's weekly
+          let recurrence: 'weekly' | 'daily' | 'monthly' = 'weekly';
+          
+          if (params.days && params.days.length > 0) {
+            const firstDay = params.days[0];
+            // Check if it's a numeric day of month (1-31)
+            const dayNum = parseInt(firstDay, 10);
+            if (!isNaN(dayNum) && dayNum >= 1 && dayNum <= 31) {
+              recurrence = 'monthly';
+            } else if (params.recurrence) {
+              // Use explicit recurrence if provided
+              recurrence = params.recurrence;
+            }
+            // Otherwise default to weekly (day names like "Monday", "Tuesday", etc.)
+          }
+          
           const reminders = this.buildReminder(params.reminderMinutesBefore);
           return await this.calendarService.createRecurringEvent({
             summary: params.summary,
             startTime: params.startTime,
             endTime: params.endTime,
             days: params.days,
-            recurrence: 'weekly',
+            recurrence: recurrence,
             description: params.description,
             location: params.location,
-            until: params.until, // 👈 supports end date now
+            until: params.until,
             reminders
           });
 
@@ -580,7 +630,54 @@ Please specify the exact title or provide more details so I can update the corre
           if (!params.timeMin || !params.timeMax) {
             return { success: false, error: 'timeMin and timeMax are required for getEvents' };
           }
-          return await this.calendarService.getEvents({ timeMin: params.timeMin, timeMax: params.timeMax });
+          const getEventsResult = await this.calendarService.getEvents({ timeMin: params.timeMin, timeMax: params.timeMax });
+          
+          // If excludeSummaries is provided, filter OUT those events from results
+          // This allows orchestrator to get "events to delete" (excluding exceptions)
+          if (getEventsResult.success && getEventsResult.data?.events && params.excludeSummaries && params.excludeSummaries.length > 0) {
+            const allEvents = getEventsResult.data.events as any[];
+            const beforeCount = allEvents.length;
+            
+            const filteredEvents = allEvents.filter(event => {
+              const eventSummary = (event.summary || '').toLowerCase();
+              // Keep the event if it doesn't match any exclusion term
+              const shouldExclude = params.excludeSummaries!.some((excludeTerm: string) => {
+                const normalizedTerm = excludeTerm.toLowerCase().trim();
+                const normalizedSummary = eventSummary.trim();
+                return normalizedSummary.includes(normalizedTerm);
+              });
+              
+              if (shouldExclude) {
+                this.logger.info(`🚫 Excluding event from results: "${event.summary}" (matched exclusion term)`);
+              }
+              
+              return !shouldExclude;
+            });
+            
+            const afterCount = filteredEvents.length;
+            this.logger.info(`📊 Filtered events: ${beforeCount} total → ${afterCount} after excluding (removed ${beforeCount - afterCount})`);
+            
+            getEventsResult.data.events = filteredEvents;
+            getEventsResult.data.count = filteredEvents.length;
+          }
+          
+          // If excludeDays is provided, filter OUT events on those days
+          if (getEventsResult.success && getEventsResult.data?.events && params.excludeDays && params.excludeDays.length > 0) {
+            const allEvents = getEventsResult.data.events as any[];
+            const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+            const excludeDayIndices = params.excludeDays.map((d: string) => dayNames.indexOf(d.toLowerCase()));
+            
+            const filteredEvents = allEvents.filter(event => {
+              if (!event.start) return true;
+              const eventDate = new Date(event.start.dateTime || event.start.date);
+              const eventDay = eventDate.getDay();
+              return !excludeDayIndices.includes(eventDay);
+            });
+            getEventsResult.data.events = filteredEvents;
+            getEventsResult.data.count = filteredEvents.length;
+          }
+          
+          return getEventsResult;
 
         // ✅ Update event
         case 'update': {
@@ -694,14 +791,15 @@ Please specify the exact title or provide more details so I can update the corre
         case 'delete': {
           if (!params.eventId) {
             const phrase = params.summary || '';
+            const excludeSummaries = params.excludeSummaries;
 
             if (params.timeMin && params.timeMax) {
-              return await this.deleteByWindow(phrase || undefined, params.timeMin, params.timeMax);
+              return await this.deleteByWindow(phrase || undefined, params.timeMin, params.timeMax, excludeSummaries);
             }
 
             const inferredWindow = this.deriveWindow(params, phrase);
             if (inferredWindow) {
-              return await this.deleteByWindow(phrase || undefined, inferredWindow.timeMin, inferredWindow.timeMax);
+              return await this.deleteByWindow(phrase || undefined, inferredWindow.timeMin, inferredWindow.timeMax, excludeSummaries);
             }
 
             const result = await resolver.resolveOneOrAsk(phrase, userId, 'event');

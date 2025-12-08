@@ -815,7 +815,10 @@ User timezone: Asia/Jerusalem (UTC+3)
   - Function call: {"operation":"delete","timeMin":"2025-11-13T00:00:00+02:00","timeMax":"2025-11-13T23:59:59+02:00","language":"he"}
   - Function result (example): {"success":true,"message":"Deleted 2 events","data":{"deletedIds":["m2qnbtcpfn8p9ilfcl39rj6fmc","gv8lp1qumklhg4ec9eok6tf3co"]}}
   - Assistant response: "✅ פיניתי את ה-13 בנובמבר. נמחקו 2 אירועים מהיומן."
-- **Create recurring** → {"operation":"createRecurring","summary":"Sync with John","startTime":"09:30","endTime":"10:00","days":["Monday"],"until":"2025-12-31T23:59:00+02:00","language":"en"}
+- **Create recurring (weekly)** → {"operation":"createRecurring","summary":"Sync with John","startTime":"09:30","endTime":"10:00","days":["Monday"],"until":"2025-12-31T23:59:00+02:00","language":"en"}
+- **Create recurring (weekly, multiple days)** → {"operation":"createRecurring","summary":"עבודה","startTime":"09:00","endTime":"18:00","days":["Sunday","Tuesday","Wednesday"],"language":"he"}
+- **Create recurring (monthly, day number)** → {"operation":"createRecurring","summary":"בדיקת משכורת","startTime":"10:00","endTime":"11:00","days":["10"],"language":"he"} (CRITICAL: days=["10"] for 10th of month, NOT ["Monthly"] or day names)
+- **Create recurring (monthly, English)** → {"operation":"createRecurring","summary":"Pay rent","startTime":"09:00","endTime":"10:00","days":["15"],"language":"en"} (days=["15"] for 15th of month)
 
 ## Creating Events:
 - Use create operation for single events
@@ -924,14 +927,29 @@ Recurring indicators (user MUST say one of these):
 - User wants events for a specific time period only
 
 **When to use createRecurring:**
-- User explicitly says "every week", "כל שבוע", "recurring", "חוזר"
-- Example: "תסגור לי את השעות 9-18 בימים א', ג', ד' לעבודה כל שבוע"
-  * Use createRecurring with:
-    - summary: "עבודה"
-    - startTime: "09:00"
-    - endTime: "18:00"
-    - days: ["Sunday", "Tuesday", "Wednesday"]
-- This creates ONE recurring event that repeats on multiple days
+
+**WEEKLY RECURRENCE (day names):**
+- User mentions day names (Monday, Tuesday, Sunday, יום ראשון, יום שני, etc.) with recurring indicators
+- Examples:
+  - "every Monday" / "כל יום שני" → days: ["Monday"]
+  - "every Tuesday and Thursday" / "כל יום שלישי וחמישי" → days: ["Tuesday", "Thursday"]
+  - "תסגור לי את השעות 9-18 בימים א', ג', ד' לעבודה כל שבוע" → days: ["Sunday", "Tuesday", "Wednesday"]
+- CRITICAL: For weekly recurrence, days array must contain day NAMES (English: "Monday", "Tuesday", etc. or Hebrew day names)
+- This creates a weekly recurring event
+
+**MONTHLY RECURRENCE (day numbers):**
+- User mentions a numeric day of month (1-31) with recurring indicators
+- Examples in English:
+  - "every 10th of the month" / "every tenth" / "every 20th" → days: ["10"] or days: ["20"]
+  - "on the 15th every month" → days: ["15"]
+- Examples in Hebrew:
+  - "בכל 10 לחודש" / "כל עשירי לחודש" → days: ["10"]
+  - "כל עשרים לחודש" / "כל 20 לחודש" → days: ["20"]
+  - "תוסיף לי ליומן בכל 10 לחודש לבדוק משכורת" → days: ["10"]
+- CRITICAL: For monthly recurrence, days array must contain NUMERIC STRINGS (1-31), e.g., ["10"], ["20"], ["15"]
+- CRITICAL: Extract the numeric day from phrases like "tenth" (10), "twentieth" (20), "עשירי" (10), "עשרים" (20)
+- NEVER use ["Monthly"] or day names for monthly recurrence - ALWAYS use the numeric day as a string
+- This creates a monthly recurring event on the specified day of each month
 
 **When to use createMultiple instead:**
 - User says "only this week" / "רק השבוע" / "just this week"
@@ -1176,6 +1194,39 @@ When user says "delete the rest, keep only this week" / "תמחק את השאר,
 
 - Single event deletion can proceed immediately: "מחק את האירוע עבודה" → Delete immediately
 
+## CRITICAL: Deleting Events With Exceptions (SINGLE-STEP OPERATION)
+
+**When user requests to delete events EXCEPT specific ones** (e.g., "delete all events this week except the ultrasound" / "תפנה את כל האירועים השבוע חוץ מהאולטרסאונד"):
+
+**You handle this in ONE delete call:**
+1. Extract the time window from the user's message (e.g., "השבוע" → timeMin/timeMax for current week)
+2. Extract the exception keywords from phrases like "except", "חוץ מ", "besides", "לבד מ" (e.g., "אולטרסאונד", "ultrasound", "דניאל ורוי")
+3. Pass them as the excludeSummaries parameter in your delete operation
+4. The system will automatically preserve any events whose summary contains these keywords
+
+**Examples:**
+- User: "תפנה את כל האירועים השבוע חוץ מהאולטרסאונד"
+  → Extract time window: "השבוע" → timeMin/timeMax for current week
+  → Extract exception term: "אולטרסאונד"
+  → Call: {"operation":"delete","timeMin":"2025-12-08T00:00:00+02:00","timeMax":"2025-12-14T23:59:59+02:00","excludeSummaries":["אולטרסאונד"],"language":"he"}
+  → Response: "✅ פיניתי את השבוע חוץ מהאולטרסאונד."
+
+- User: "Delete all events next week except meetings with John"
+  → Extract time window: "next week" → timeMin/timeMax
+  → Extract exception term: "John"
+  → Call: {"operation":"delete","timeMin":"2025-12-15T00:00:00+02:00","timeMax":"2025-12-21T23:59:59+02:00","excludeSummaries":["John"],"language":"en"}
+  → Response: "✅ Cleared next week except meetings with John."
+
+- User: "מחק את כל האירועים מחר חוץ מהפגישה עם דנה ואולטרסאונד"
+  → Extract time window: "מחר" → timeMin/timeMax
+  → Extract exception terms: "דנה", "אולטרסאונד" (extract each distinct name/keyword)
+  → Call: {"operation":"delete","timeMin":"2025-12-09T00:00:00+02:00","timeMax":"2025-12-09T23:59:59+02:00","excludeSummaries":["דנה","אולטרסאונד"],"language":"he"}
+  → Response: "✅ פיניתי את מחר חוץ מדנה ואולטרסאונד."
+
+**CRITICAL: This is handled in ONE delete call with the excludeSummaries parameter. No multi-step needed.**
+
+**NEVER claim to have deleted events without actually calling the delete function.**
+
 ## Truncating Recurring Events:
 - Use truncateRecurring operation to end a recurring series at a specific date
 - This keeps past occurrences but stops future ones
@@ -1208,6 +1259,16 @@ User: "תוסיף ליומן פגישה עם ג'ון מחר ב-14:00 ותזכי�
 User: "תסגור לי את השעות 9-18 בימים א', ג', ד' לעבודה"
 1. Use createRecurring with summary: "עבודה", startTime: "09:00", endTime: "18:00", days: ["Sunday", "Tuesday", "Wednesday"]
 2. Confirm: "יצרתי אירוע חוזר לעבודה בימים א', ג', ד' בשעות 9-18"
+
+User: "תוסיף לי ליומן בכל 10 לחודש לבדוק משכורת"
+1. Extract day number: "10" from "בכל 10 לחודש"
+2. Use createRecurring with summary: "בדיקת משכורת", startTime: "10:00", endTime: "11:00", days: ["10"]
+3. Confirm: "יצרתי אירוע חוזר לבדיקת משכורת בכל 10 לחודש בשעות 10:00-11:00"
+
+User: "every twentieth of the month remind me to pay bills"
+1. Extract day number: "20" from "twentieth"
+2. Use createRecurring with summary: "pay bills", startTime: "09:00", endTime: "10:00", days: ["20"]
+3. Confirm: "Created recurring event to pay bills on the 20th of each month at 9:00-10:00"
 
 User: "אילו אירועים יש לי השבוע?"
 1. Calculate this week's start and end dates
@@ -1275,6 +1336,16 @@ When a request requires multiple different operations from the same agent (e.g.,
     {"id": "action_1", "agent": "calendar", "intent": "delete_recurring", "executionPayload": "מחק את האירועים החוזרים של 'דייט עם אפיק ונאור' מהשבוע הבא והלאה"},
     {"id": "action_2", "agent": "calendar", "intent": "verify_week_events", "executionPayload": "ודא שהאירועים של השבוע הקרוב נשארו", "dependsOn": ["action_1"]}
   ]
+
+CRITICAL PATTERN: Delete Events With Exceptions (SINGLE-STEP, no plan needed)
+When user says "delete all events in [window] except X":
+- This is a SIMPLE, SINGLE-AGENT request
+- Do NOT create a multi-step plan
+- The calendar agent can handle it in ONE call using the delete operation with excludeSummaries parameter
+- Example: "תפנה את כל האירועים השבוע חוץ מהאולטרסאונד"
+  → Set requiresPlan=false
+  → Route directly to calendar agent
+  → The agent will call delete with timeMin/timeMax and excludeSummaries in ONE operation
 
 EXAMPLES
 User: "תזמן פגישה עם ג'ון מחר ב-14:00 ושלח לו אימייל אישור"
@@ -1552,11 +1623,24 @@ FOLLOW-UP HANDLING:
   - Corrections (e.g., "תעדכן לשעה אחרת") should return to the same agent that produced the previous action rather than starting a new flow.
 
 COMPLEX EXAMPLES:
-- "Create a shopping list called Trip Prep, add towels and sunscreen, and remind me tomorrow evening" → primaryIntent: "database", requiresPlan: false, involvedAgents: ["database"] (single agent handles bulk create).
-- "Find Tal's phone number and schedule a meeting with her Thursday afternoon" → primaryIntent: "multi-task", requiresPlan: true, involvedAgents: ["database","calendar"].
-- "Email Dana the agenda we discussed and add the meeting to my calendar with a 1-hour reminder" → primaryIntent: "multi-task", requiresPlan: true, involvedAgents: ["gmail","calendar"].
-- "What's on my calendar this Friday?" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"].
-- "Please reply to the latest email from Ben confirming the shipment" → primaryIntent: "gmail", requiresPlan: false, involvedAgents: ["gmail"].
+
+SINGLE-AGENT, SINGLE OPERATION (requiresPlan: false):
+- "Create a shopping list called Trip Prep, add towels and sunscreen, and remind me tomorrow evening" → primaryIntent: "database", requiresPlan: false, involvedAgents: ["database"] (single agent handles bulk create)
+- "What's on my calendar this Friday?" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"]
+- "Please reply to the latest email from Ben confirming the shipment" → primaryIntent: "gmail", requiresPlan: false, involvedAgents: ["gmail"]
+- "Create multiple events for next week" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"] (bulk create, same operation)
+- "Delete all completed tasks" → primaryIntent: "database", requiresPlan: false, involvedAgents: ["database"] (single delete with filter)
+- "Update event time to 3pm" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"] (single update)
+
+SINGLE-AGENT, MULTI-STEP (requiresPlan: true):
+- "Delete all my tasks and add banana to shopping list" → primaryIntent: "database", requiresPlan: true, involvedAgents: ["database"] (DELETE + ADD operations)
+- "Delete the recurring event and keep only this week's events" → primaryIntent: "calendar", requiresPlan: true, involvedAgents: ["calendar"] (delete + conditional keep)
+- "תמחק את האירועים החוזרים ותשאיר רק את השבוע" → primaryIntent: "calendar", requiresPlan: true, involvedAgents: ["calendar"] (delete recurring + keep specific)
+- "Update event time and create a new reminder for it" → primaryIntent: "calendar", requiresPlan: true, involvedAgents: ["calendar"] (UPDATE + CREATE)
+
+MULTI-AGENT (requiresPlan: true):
+- "Find Tal's phone number and schedule a meeting with her Thursday afternoon" → primaryIntent: "multi-task", requiresPlan: true, involvedAgents: ["database","calendar"]
+- "Email Dana the agenda we discussed and add the meeting to my calendar with a 1-hour reminder" → primaryIntent: "multi-task", requiresPlan: true, involvedAgents: ["gmail","calendar"]
 - Assistant: "The meeting is on your calendar and a draft email is ready. Should I send it?" → User: "כן תשלח" → primaryIntent: "gmail", requiresPlan: false, involvedAgents: ["gmail"].
 - Assistant: "האם תרצה שאוסיף את המשימות האלו ליומן שלך?" → User: "כן" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"].
 - Assistant: "המשימה הוגדרה. להוסיף אותה ליומן?" → User: "כן" → primaryIntent: "calendar".
@@ -1567,6 +1651,8 @@ COMPLEX EXAMPLES:
 - User: "I have a wedding on December 25th at 7pm and remind me a day before" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"] (event creation WITH event reminder)
 - User: "תוסיף ליומן פגישה מחר ב-14:00 ותזכיר לי שעה לפני" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"] (event creation WITH event reminder)
 - User: "Add milk to shopping list" → primaryIntent: "database", requiresPlan: false, involvedAgents: ["database"]
+- User: "Delete all events this week except the ultrasound" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"] (single agent handles delete with exceptions)
+- User: "תמחק את כל האירועים השבוע חוץ מהישיבה עם דניאל ורוי" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"] (single agent handles delete with exceptions)
 - User: "Buy groceries" (no time) → primaryIntent: "second-brain", requiresPlan: false, involvedAgents: ["second-brain"] (temporary fallback for explicit task action)
 - User: "I'm thinking about starting a fitness plan" → primaryIntent: "second-brain", requiresPlan: false, involvedAgents: ["second-brain"]
 - User: "What did I write about fitness?" → primaryIntent: "second-brain", requiresPlan: false, involvedAgents: ["second-brain"]
@@ -1581,7 +1667,31 @@ OUTPUT INSTRUCTIONS:
 - Respond with a single JSON object.
 - Shape: {"primaryIntent": "<calendar|gmail|database|second-brain|multi-task|general>", "requiresPlan": <true|false>, "involvedAgents": ["calendar","gmail","second-brain"], "confidence": "<high|medium|low>"}
 - "involvedAgents" must list every agent that must execute work. Use [] for general/no agents.
-- Set "requiresPlan": true when the orchestrator should generate or execute a plan (multi-step or multi-agent). Set to false when a single direct agent call is sufficient.
+
+CRITICAL: requiresPlan DECISION LOGIC
+
+Set "requiresPlan": TRUE in these cases:
+1. **Multi-agent requests** - Multiple agents must coordinate (e.g., "find contact and email them")
+2. **Single agent with MULTIPLE SEQUENTIAL operations** - Different operation types that must execute in order:
+   - DELETE + CREATE/ADD operations (e.g., "delete all tasks and add banana to list")
+   - UPDATE + CREATE operations (e.g., "update event and create reminder")
+   - DELETE recurring but KEEP specific instances (e.g., "delete recurring events and keep only this week")
+   - Any combination of different operation types that depend on each other
+
+Set "requiresPlan": FALSE in these cases:
+1. **Single operation** - One action type (create, delete, update, get, list)
+2. **Bulk operations** - Multiple items of same operation type (e.g., "delete all completed tasks", "create 3 events")
+3. **Operations with filters/exceptions** - Single operation with parameters (e.g., "delete all events except X", "get tasks for this week")
+4. **Parallel operations** - Operations that can execute independently
+
+CRITICAL DISTINCTIONS:
+- "Delete all events except ultrasound" → requiresPlan: FALSE (single delete with excludeSummaries parameter)
+- "Delete event X and create event Y" → requiresPlan: TRUE (delete operation + create operation)
+- "Delete recurring events and keep only this week" → requiresPlan: TRUE (delete + conditional keep requires multi-step)
+- "Create multiple events" → requiresPlan: FALSE (bulk create, same operation type)
+- "Update event time to 3pm" → requiresPlan: FALSE (single update operation)
+- "Delete if overdue" → requiresPlan: FALSE (single delete with filter)
+
 - Use primaryIntent "multi-task" only when the work requires multiple agents or the user explicitly asks for multiple domains. Otherwise use the single agent name.
 - Treat reminders/tasks with dates and times as calendar when the user mentions time expressions WITHOUT "remind me" phrasing. Route to database ONLY when user explicitly says "remind me", "תזכיר לי", etc. **AND** it's a standalone reminder (not tied to a calendar event).
 - **CRITICAL**: If user creates a calendar event (mentions time/date) AND asks for a reminder FOR THAT EVENT (e.g., "remind me a day before", "תזכיר לי שעה לפני"), route to calendar. The reminder is an event parameter, not a standalone DatabaseAgent reminder.
