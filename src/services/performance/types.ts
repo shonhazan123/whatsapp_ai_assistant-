@@ -21,6 +21,11 @@ export interface CallLogEntry {
   responseTokens: number;
   totalTokens: number;
   
+  // Cache Metrics (Phase 1: Prompt Caching)
+  cachedTokens?: number;
+  cacheHit?: boolean;
+  cacheWriteTokens?: number;
+  
   // Timing
   startTime: string;
   endTime: string;
@@ -102,6 +107,11 @@ export interface RequestSummary {
   requestTokens: number;
   responseTokens: number;
   
+  // Cache Summary (Phase 1: Prompt Caching)
+  totalCachedTokens?: number;
+  cacheHitRate?: number;
+  estimatedCacheSavings?: number;
+  
   // Call Summary
   totalAICalls: number;
   totalFunctionCalls: number;
@@ -129,6 +139,21 @@ export interface PerformanceContext {
     requestTokens: number;
     responseTokens: number;
     totalTokens: number;
+    cachedTokens?: number;
   };
+}
+
+/**
+ * Cache Statistics for Performance Dashboard
+ * Added in Phase 1: Prompt Caching
+ */
+export interface CachePerformanceStats {
+  date: string;
+  totalRequests: number;
+  cacheHits: number;
+  cacheMisses: number;
+  cacheHitRate: number;
+  totalTokensCached: number;
+  estimatedCostSavings: number;
 }
 

@@ -1,37 +1,23 @@
 import { DEFAULT_MODEL, openai } from '../../config/openai';
 import { SystemPrompts } from '../../config/system-prompts';
 import { FunctionDefinition } from '../../core/types/AgentTypes';
+import { CachedMessage } from '../../types/CacheTypes';
 import { ImageAnalysisResult } from '../../types/imageAnalysis';
 import { ImageCache } from '../image/ImageCache';
 import { ImageProcessor } from '../image/ImageProcessor';
 import { PerformanceTracker } from '../performance/PerformanceTracker';
 import { setAgentNameForTracking } from '../performance/performanceUtils';
 import { OpenAIFunctionHelper, type IntentDecision } from './OpenAIFunctionHelper';
+import { PromptCacheService } from './PromptCacheService';
 
 export interface CompletionRequest {
-  messages: Array<{
-    role: 'system' | 'user' | 'assistant' | 'function' | 'tool';
-    content: string | null;
-    name?: string;
-    tool_call_id?: string;
-    tool_calls?: Array<{
-      id: string;
-      type: 'function';
-      function: {
-        name: string;
-        arguments: string;
-      };
-    }>;
-    function_call?: {
-      name: string;
-      arguments: string;
-    };
-  }>;
+  messages: Array<CachedMessage>;
   functions?: FunctionDefinition[];
   functionCall?: 'auto' | 'none' | { name: string };
   tools?: Array<{
     type: 'function';
     function: FunctionDefinition;
+    cache_control?: { type: 'ephemeral' };
   }>;
   tool_choice?: 'auto' | 'none' | { type: 'function'; function: { name: string } };
   temperature?: number;
@@ -65,10 +51,12 @@ export type { IntentCategory, IntentDecision } from './OpenAIFunctionHelper';
 export class OpenAIService {
   private imageCache: ImageCache;
   private performanceTracker: PerformanceTracker;
+  private promptCacheService: PromptCacheService;
 
   constructor(private logger: any = logger) {
     this.imageCache = ImageCache.getInstance();
     this.performanceTracker = PerformanceTracker.getInstance();
+    this.promptCacheService = PromptCacheService.getInstance();
   }
 
   async createCompletion(request: CompletionRequest, requestId?: string): Promise<CompletionResponse> {
@@ -85,22 +73,32 @@ export class OpenAIService {
       const useToolsFormat = request.tools !== undefined || 
                             (request.functions && OpenAIFunctionHelper.shouldUseToolsFormat(model));
       
+      // Apply prompt caching to messages
+      const messagesWithCache = this.promptCacheService.addCacheControl(
+        request.messages,
+        true, // cache system prompt
+        true  // cache function definitions
+      );
+      
       // Build the API request
       const apiRequest: any = {
         model,
-        messages: request.messages as any,
+        messages: messagesWithCache as any,
       };
 
       // Add functions or tools based on format
       if (useToolsFormat) {
         // Convert functions to tools format if needed
         if (request.functions && !request.tools) {
-          apiRequest.tools = request.functions.map(fn => ({
+          const tools = request.functions.map(fn => ({
             type: 'function',
             function: fn
           }));
+          // Add cache control to tools if eligible
+          apiRequest.tools = this.promptCacheService.addCacheControlToTools(tools);
         } else if (request.tools) {
-          apiRequest.tools = request.tools;
+          // Add cache control to tools if eligible
+          apiRequest.tools = this.promptCacheService.addCacheControlToTools(request.tools);
         }
         
         // Convert functionCall to tool_choice
@@ -146,6 +144,55 @@ export class OpenAIService {
       // Track successful completion
       if (requestId) {
         const usage = (completion as any).usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+        
+        // Log cache information from API response
+        const cachedTokens = usage.cached_tokens || usage.prompt_tokens_details?.cached_tokens || 0;
+        const cacheCreationTokens = usage.prompt_tokens_details?.cache_creation_tokens || 0;
+        
+        // Calculate token breakdown for debugging
+        const nonCachedInputTokens = usage.prompt_tokens - cachedTokens;
+        const systemPromptTokens = messagesWithCache[0]?.content ? Math.ceil((messagesWithCache[0].content?.length || 0) / 4) : 0;
+        const contextTokens = messagesWithCache.length > 1 ? Math.ceil(
+          messagesWithCache.slice(1, -1).reduce((sum, msg) => sum + (msg.content?.length || 0), 0) / 4
+        ) : 0;
+        const lastMessage = messagesWithCache[messagesWithCache.length - 1];
+        const userMessageTokens = lastMessage?.content ? 
+          Math.ceil((lastMessage.content.length || 0) / 4) : 0;
+        
+        if (cachedTokens > 0) {
+          this.logger.info(`✅ Cache HIT: ${cachedTokens.toLocaleString()} tokens served from cache (${((cachedTokens / usage.prompt_tokens) * 100).toFixed(1)}% of input)`);
+          this.logger.debug(`📊 Token Breakdown: System: ~${systemPromptTokens.toLocaleString()}, Context: ~${contextTokens.toLocaleString()}, User: ~${userMessageTokens.toLocaleString()}, Cached: ${cachedTokens.toLocaleString()}`);
+          // Warn if cache is much less than system prompt (context likely broke cache)
+          if (cachedTokens < systemPromptTokens * 0.5) {
+            this.logger.warn(`⚠️  Cache hit is only ${((cachedTokens / systemPromptTokens) * 100).toFixed(1)}% of system prompt - context messages likely broke cache prefix match`);
+          }
+        } else if (cacheCreationTokens > 0) {
+          this.logger.info(`📝 Cache WRITE: ${cacheCreationTokens.toLocaleString()} tokens written to cache (next request will use this cache)`);
+          this.logger.debug(`📊 Token Breakdown: System: ~${systemPromptTokens.toLocaleString()}, Context: ~${contextTokens.toLocaleString()}, User: ~${userMessageTokens.toLocaleString()}`);
+        } else {
+          // No cache hit or write - this shouldn't happen for cached prompts
+          this.logger.warn(`⚠️  No cache activity (neither hit nor write) - system prompt may not be marked for caching or cache was invalidated`);
+        }
+        
+        // Detailed usage logging
+        this.logger.debug('API Usage:', {
+          model: request.model || DEFAULT_MODEL,
+          prompt_tokens: usage.prompt_tokens,
+          completion_tokens: usage.completion_tokens,
+          total_tokens: usage.total_tokens,
+          cached_tokens: cachedTokens,
+          cache_creation_tokens: cacheCreationTokens,
+          non_cached_input: nonCachedInputTokens,
+          estimated_breakdown: {
+            system_prompt: systemPromptTokens,
+            context_messages: contextTokens,
+            user_message: userMessageTokens
+          }
+        });
+        
+        // Record cache usage for monitoring (with model for accurate pricing)
+        this.promptCacheService.recordCacheUsage(usage, model);
+        
         const responseMessage = completion.choices[0]?.message;
         const functionCall = responseMessage?.function_call;
         const toolCalls = responseMessage?.tool_calls;
@@ -179,11 +226,17 @@ export class OpenAIService {
           } : undefined),
           success: true,
           error: null,
+          // Cache metrics (Phase 1)
+          cachedTokens: cachedTokens,
+          cacheHit: cachedTokens > 0,
+          cacheWriteTokens: cacheCreationTokens,
           metadata: {
             method: 'createCompletion',
             hasFunctions: !!request.functions || !!request.tools,
             functionCall: request.functionCall || 'auto',
             useToolsFormat,
+            cachedTokens,
+            cacheCreationTokens,
           },
         });
       }
@@ -395,32 +448,35 @@ export class OpenAIService {
             setTimeout(() => reject(new Error('Request timeout')), 60000); // 60 second timeout
           });
 
+          // Apply prompt caching to system message (Phase 1)
+          const messagesWithCache = this.promptCacheService.addCacheControl([
+            {
+              role: 'system',
+              content: userPrompt
+            },
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'text',
+                  text: userCaption 
+                    ? `Analyze this image. The user provided this caption: "${userCaption}". Extract structured data if possible.`
+                    : 'Analyze this image and extract structured data if possible.'
+                },
+                {
+                  type: 'image_url',
+                  image_url: {
+                    url: `data:${mimeType};base64,${base64Image}`
+                  }
+                }
+              ] as any
+            }
+          ], true, false); // Cache system prompt, not tools
+
           completion = await Promise.race([
             openai.chat.completions.create({
               model: 'gpt-4o', // gpt-4o supports vision
-              messages: [
-                {
-                  role: 'system',
-                  content: userPrompt
-                },
-                {
-                  role: 'user',
-                  content: [
-                    {
-                      type: 'text',
-                      text: userCaption 
-                        ? `Analyze this image. The user provided this caption: "${userCaption}". Extract structured data if possible.`
-                        : 'Analyze this image and extract structured data if possible.'
-                    },
-                    {
-                      type: 'image_url',
-                      image_url: {
-                        url: `data:${mimeType};base64,${base64Image}`
-                      }
-                    }
-                  ] as any
-                }
-              ],
+              messages: messagesWithCache as any,
               temperature: 0.3, // Lower temperature for more consistent extraction
               max_tokens: 2000 // Allow enough tokens for detailed extraction
             }),
@@ -431,6 +487,19 @@ export class OpenAIService {
           if (trackingRequestId) {
             const usage = (completion as any).usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
             const responseContent = completion.choices[0]?.message?.content?.trim() || '';
+            
+            // Extract cache information (Phase 1)
+            const cachedTokens = usage.cached_tokens || usage.prompt_tokens_details?.cached_tokens || 0;
+            const cacheCreationTokens = usage.prompt_tokens_details?.cache_creation_tokens || 0;
+            
+            // Record cache usage (vision model: gpt-4o)
+            this.promptCacheService.recordCacheUsage(usage, 'gpt-4o');
+            
+            if (cachedTokens > 0) {
+              this.logger.info(`✅ Cache HIT (Vision): ${cachedTokens} tokens served from cache`);
+            } else if (cacheCreationTokens > 0) {
+              this.logger.info(`📝 Cache WRITE (Vision): ${cacheCreationTokens} tokens written to cache`);
+            }
             
             const aiCallInfo = {
               model: 'gpt-4o',
@@ -454,11 +523,17 @@ export class OpenAIService {
               responseContent: responseContent.substring(0, 1000),
               success: true,
               error: null,
+              // Cache metrics (Phase 1)
+              cachedTokens: cachedTokens,
+              cacheHit: cachedTokens > 0,
+              cacheWriteTokens: cacheCreationTokens,
               metadata: {
                 method: 'analyzeImage',
                 hasImage: true,
                 imageSize: imageBuffer.length,
                 retryAttempt: attempt,
+                cachedTokens,
+                cacheCreationTokens,
               },
             });
           }

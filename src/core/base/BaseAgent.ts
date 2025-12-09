@@ -1,6 +1,7 @@
 import { OpenAIService } from '../../services/ai/OpenAIService';
 import { PerformanceTracker } from '../../services/performance/PerformanceTracker';
 import { setAgentNameForTracking } from '../../services/performance/performanceUtils';
+import { ResponseFormatter } from '../../services/response/ResponseFormatter';
 import { RequestContext } from '../context/RequestContext';
 import { IFunctionHandler } from '../interfaces/IAgent';
 import { FunctionDefinition, IAgent } from '../types/AgentTypes';
@@ -8,6 +9,7 @@ import { FunctionDefinition, IAgent } from '../types/AgentTypes';
 export abstract class BaseAgent implements IAgent {
   protected functions: Map<string, any> = new Map();
   protected performanceTracker: PerformanceTracker;
+  protected responseFormatter: ResponseFormatter;
 
   constructor(
     protected openaiService: OpenAIService,
@@ -15,6 +17,8 @@ export abstract class BaseAgent implements IAgent {
     protected logger: any = logger
   ) {
     this.performanceTracker = PerformanceTracker.getInstance();
+    // Initialize ResponseFormatter for Phase 2 (cheap model for final messages)
+    this.responseFormatter = new ResponseFormatter(openaiService);
   }
 
   abstract processRequest(
@@ -36,14 +40,18 @@ export abstract class BaseAgent implements IAgent {
 
     try {
       const messages = [
-        { role: 'system', content: systemPrompt },
+        // Use the original static system prompt so it can be fully cached
+        // Functions are still passed via the separate `functions` parameter for tool calling
+        { role: 'system' as const, content: systemPrompt },
         ...context,
-        { role: 'user', content: message }
+        { role: 'user' as const, content: message }
       ];
 
+      // Still pass functions parameter (API needs it for function calling)
+      // But cache will use the message prefix (which now includes functions)
       const completion = await this.openaiService.createCompletion({
         messages,
-        functions,
+        functions, // API still needs this for function calling
         functionCall: 'auto'
       }, requestId);
 
@@ -128,19 +136,19 @@ export abstract class BaseAgent implements IAgent {
           resultMessage.name = functionName;
         }
 
-        // Get final response with function result
-        const finalCompletion = await this.openaiService.createCompletion({
-          messages: [
-            { role: 'system', content: systemPrompt },
-            ...context,
-            { role: 'user', content: message },
-            assistantMessage,
-            resultMessage
-          ]
-        }, requestId);
+        // Phase 2: Use ResponseFormatter (cheap model) instead of second expensive LLM call
+        // Same logic as before - pass ORIGINAL systemPrompt (without function definitions), user message, assistantMessage, and resultMessage
+        // The old code used the original systemPrompt, not the enhanced one with function definitions
+        // NO context messages to save tokens, but we need assistantMessage for tool_calls format
+        const formattedResponse = await this.responseFormatter.formatResponse(
+          systemPrompt, // Use original systemPrompt, NOT enhancedSystemPrompt (no function definitions)
+          message,
+          assistantMessage,
+          resultMessage,
+          requestId
+        );
 
-        const rawResponse = finalCompletion.choices[0]?.message?.content || 'Operation completed.';
-        return this.filterAgentResponse(rawResponse);
+        return this.filterAgentResponse(formattedResponse);
       }
 
       const agentEndTime = Date.now();

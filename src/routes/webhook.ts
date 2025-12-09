@@ -242,7 +242,12 @@ async function handleIncomingMessage(message: WhatsAppMessage): Promise<void> {
     const duration = Date.now() - startTime;
     logger.info(`✅ Message handled successfully in ${duration}ms`);
     
-    // Step 6: Upload performance logs to database (after response is sent)
+    // End performance tracking FIRST (needs requestCalls for cost calculation)
+    if (performanceRequestId) {
+      await performanceTracker.endRequest(performanceRequestId);
+    }
+    
+    // Step 6: Upload performance logs to database (after response is sent and summary printed)
     if (performanceRequestId) {
       try {
         const calls = performanceTracker.getRequestCalls(performanceRequestId);
@@ -259,15 +264,15 @@ async function handleIncomingMessage(message: WhatsAppMessage): Promise<void> {
       }
     }
     
-    // End performance tracking
-    if (performanceRequestId) {
-      await performanceTracker.endRequest(performanceRequestId);
-    }
-    
     logger.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
   } catch (error) {
     const duration = Date.now() - startTime;
     logger.error(`❌ Error handling message after ${duration}ms:`, error);
+    
+    // End performance tracking FIRST (needs requestCalls for cost calculation)
+    if (performanceRequestId) {
+      await performanceTracker.endRequest(performanceRequestId);
+    }
     
     // Upload performance logs even on error (if any were collected)
     if (performanceRequestId) {
@@ -282,8 +287,6 @@ async function handleIncomingMessage(message: WhatsAppMessage): Promise<void> {
       } catch (uploadError) {
         logger.error('Error uploading performance logs to database (error case):', uploadError);
       }
-      
-      await performanceTracker.endRequest(performanceRequestId);
     }
     
     try {
