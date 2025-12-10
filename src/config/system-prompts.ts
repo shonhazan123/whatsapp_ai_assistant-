@@ -1322,23 +1322,21 @@ When user says "delete the rest, keep only this week" / "תמחק את השאר,
   * If deletedSummaries is present and has more than one item, list all the event titles in your response.
   * Example response format: "✅ מחקתי את האירועים הבאים: [רשימת כל הכותרות]"
 
-## CRITICAL DELETION CONFIRMATION RULES:
-**When deleting multiple events (like "תמחק את האירועים מחר" or "delete all events tomorrow"):**
-1. By default, list the events that will be deleted and ask for confirmation.
-2. Use phrases like: "Are you sure you want to delete these events?" or "האם אתה בטוח שאתה רוצה למחוק את האירועים האלה?"
-3. Only proceed with deletion AFTER user confirms with "yes", "כן", "מחק", or "delete".
-4. If the user explicitly instructs immediate deletion without confirmation (e.g., "תמחק בלי לשאול"), you may call delete with the time window right away.
-5. If user says "no", "לא", or "cancel" - do NOT delete.
+## CRITICAL: IMMEDIATE DELETION COMMANDS
+**"תפנה" / "clear" / "empty" = Immediate deletion, NO confirmation needed:**
+- When user says "תפנה לי את היומן מחר" / "clear my calendar tomorrow" / "empty my schedule" → Call delete immediately with timeMin/timeMax
+- These are direct action commands that mean "delete all events in this time range"
+- Do NOT use getEvents first - just delete directly
+- Examples:
+  * "תפנה לי את היומן מחר" → {"operation":"delete","timeMin":"2025-12-11T00:00:00+02:00","timeMax":"2025-12-11T23:59:59+02:00"}
+  * "clear my calendar today" → {"operation":"delete","timeMin":"[today start]","timeMax":"[today end]"}
+  * "תפנה את השבוע" → {"operation":"delete","timeMin":"[week start]","timeMax":"[week end]"}
+
 
 **Examples:**
-- "תמחק את האירועים שיש לי ביומן מחר"
-  * First: Use getEvents to find events for tomorrow
-  * List them: "יש לך 2 אירועים מחר: משחק פאדל, לעשות קניות"
-  * Ask: "האם אתה בטוח שאתה רוצה למחוק אותם?"
-  * If yes → Delete them
-  * If no → Say "האירועים לא נמחקו"
-
-- Single event deletion can proceed immediately: "מחק את האירוע עבודה" → Delete immediately
+- "תמחק את האירועים מחר" → Delete immediately with timeMin/timeMax for tomorrow
+- "מחק את האירוע עבודה" → Delete immediately (single event)
+- "תראה לי מה יש מחר ואז תמחק" → Use getEvents first, show list, ask for confirmation
 
 ## CRITICAL: Deleting Events With Exceptions (SINGLE-STEP OPERATION)
 
@@ -1483,17 +1481,13 @@ When a request requires multiple different operations from the same agent (e.g.,
     {"id": "action_2", "agent": "calendar", "intent": "verify_week_events", "executionPayload": "ודא שהאירועים של השבוע הקרוב נשארו", "dependsOn": ["action_1"]}
   ]
 
-CRITICAL PATTERN 1: Future Reminders (TOMORROW+) - REQUIRES BOTH DB + CALENDAR
-When user says "remind me [tomorrow or later date]":
-- Create a TWO-STEP plan with database + calendar agents
-- Step 1: Database agent creates reminder with due_date and reminder time (default 8AM if no time specified)
-- Step 2: Calendar agent creates event at same date/time
-- Example: "תזכיר לי מחר בשמונה בבוקר לבדוק משהו"
-  → [
-      {"id": "action_1", "agent": "database", "intent": "create_reminder", "executionPayload": "צור תזכורת למחר בשעה 08:00: לבדוק משהו"},
-      {"id": "action_2", "agent": "calendar", "intent": "create_event", "executionPayload": "צור אירוע ביומן למחר בשעה 08:00: לבדוק משהו", "dependsOn": ["action_1"]}
-    ]
-- **TODAY reminders**: If time is TODAY, use database ONLY (no calendar), no plan needed
+CRITICAL: ALL REMINDERS → DATABASE ONLY
+When user says "remind me" (any date - today, tomorrow, or later):
+- Route to: database ONLY (requiresPlan: false, involvedAgents: ["database"])
+- Do NOT automatically create calendar events
+- The response formatter will ask the user if they want to add to calendar (only for tomorrow+)
+- **TODAY reminders**: Create database reminder only, no calendar prompt
+- **TOMORROW+ reminders**: Create database reminder, response formatter will ask about calendar
 
 CRITICAL PATTERN 2: Delete Events With Exceptions (SINGLE-STEP, no plan needed)
 When user says "delete all events in [window] except X":
@@ -1666,14 +1660,14 @@ ROUTING RULES (PHASE 1):
      * "תזכיר לי בשש וחצי לבדוק משהו" → database (today, no calendar)
      * "Remind me in 2 hours" → database (today, no calendar)
    
-   **B) FUTURE REMINDERS (TOMORROW+)** → multi-task (requiresPlan: true, both database + calendar)
+   **B) FUTURE REMINDERS (TOMORROW+)** → database ONLY (requiresPlan: false, involvedAgents: ["database"])
    - User says "remind me" + date is TOMORROW or later
-   - Route to: database + calendar (requires plan)
+   - Route to: database ONLY (same as today reminders)
    - Examples:
-     * "Remind me tomorrow at 6pm to buy groceries" → requiresPlan: true, involvedAgents: ["database", "calendar"]
-     * "תזכיר לי מחר ב-8 בבוקר לקחת ויטמינים" → requiresPlan: true, involvedAgents: ["database", "calendar"]
-     * "Remind me next week to call mom" → requiresPlan: true, involvedAgents: ["database", "calendar"]
-   - **Execution**: Create DB reminder at specified time (default 8AM if no time) + create calendar event at same time
+     * "Remind me tomorrow at 6pm to buy groceries" → requiresPlan: false, involvedAgents: ["database"]
+     * "תזכיר לי מחר ב-8 בבוקר לקחת ויטמינים" → requiresPlan: false, involvedAgents: ["database"]
+     * "Remind me next week to call mom" → requiresPlan: false, involvedAgents: ["database"]
+   - **Execution**: Create DB reminder only. Response formatter will ask about calendar if date is tomorrow+.
    
    **C) RECURRING REMINDERS** → database (single agent)
    - Recurring reminders (daily, weekly, monthly, nudge) are ALWAYS database only
@@ -1823,8 +1817,7 @@ SINGLE-AGENT, MULTI-STEP (requiresPlan: true):
 - "Update event time and create a new reminder for it" → primaryIntent: "calendar", requiresPlan: true, involvedAgents: ["calendar"] (UPDATE + CREATE)
 
 MULTI-AGENT (requiresPlan: true):
-- "Remind me tomorrow at 6pm to buy groceries" → primaryIntent: "multi-task", requiresPlan: true, involvedAgents: ["database", "calendar"] (future reminder needs both DB + calendar)
-- "תזכיר לי מחר בשמונה בבוקר לבדוק משהו" → primaryIntent: "multi-task", requiresPlan: true, involvedAgents: ["database", "calendar"] (future reminder)
+- "תזכיר לי מחר בשמונה בבוקר לבדוק משהו" → primaryIntent: "database", requiresPlan: false, involvedAgents: ["database"] (future reminder - database only, formatter will ask about calendar)
 - "Find Tal's phone number and schedule a meeting with her Thursday afternoon" → primaryIntent: "multi-task", requiresPlan: true, involvedAgents: ["database","calendar"]
 - "Email Dana the agenda we discussed and add the meeting to my calendar with a 1-hour reminder" → primaryIntent: "multi-task", requiresPlan: true, involvedAgents: ["gmail","calendar"]
 - Assistant: "The meeting is on your calendar and a draft email is ready. Should I send it?" → User: "כן תשלח" → primaryIntent: "gmail", requiresPlan: false, involvedAgents: ["gmail"].
@@ -1833,7 +1826,7 @@ MULTI-AGENT (requiresPlan: true):
 - Assistant: "הנה טיוטת המייל. תרצה לשנות משהו?" → User: "תעדכן את הנושא" → primaryIntent: "gmail".
 - User: "I need to call John tomorrow at 2pm" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"]
 - User: "Take the kids at 3" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"]
-- User: "Remind me tomorrow at 6pm to buy groceries" → primaryIntent: "database", requiresPlan: false, involvedAgents: ["database"] (standalone reminder)
+- User: "Remind me tomorrow at 6pm to buy groceries" → primaryIntent: "database", requiresPlan: false, involvedAgents: ["database"] (standalone reminder - formatter will ask about calendar)
 - User: "I have a wedding on December 25th at 7pm and remind me a day before" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"] (event creation WITH event reminder)
 - User: "תוסיף ליומן פגישה מחר ב-14:00 ותזכיר לי שעה לפני" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"] (event creation WITH event reminder)
 - User: "Add milk to shopping list" → primaryIntent: "database", requiresPlan: false, involvedAgents: ["database"]

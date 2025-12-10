@@ -321,7 +321,7 @@ Please specify the exact title or provide more details so I can update the corre
             // Event times
             const eventDate = new Date(event.start);
             const eventStartMinutes = eventDate.getHours() * 60 + eventDate.getMinutes();
-            const eventEndDate = new Date(event.end || event.start);
+              const eventEndDate = new Date(event.end || event.start);
             const eventEndMinutes = eventEndDate.getHours() * 60 + eventEndDate.getMinutes();
 
             // Criteria window (inclusive)
@@ -372,12 +372,12 @@ Please specify the exact title or provide more details so I can update the corre
           return {};
         }
 
-        const isRecurring = !!(event as any).recurringEventId;
-        return {
-          eventId: event.id,
-          recurringEventId: (event as any).recurringEventId,
-          isRecurring
-        };
+          const isRecurring = !!(event as any).recurringEventId;
+          return {
+            eventId: event.id,
+            recurringEventId: (event as any).recurringEventId,
+            isRecurring
+          };
       }
     }
     

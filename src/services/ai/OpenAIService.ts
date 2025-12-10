@@ -141,7 +141,6 @@ export class OpenAIService {
       }
 
       completion = await openai.chat.completions.create(apiRequest);
-
       // Track successful completion
       if (requestId) {
         const usage = (completion as any).usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };

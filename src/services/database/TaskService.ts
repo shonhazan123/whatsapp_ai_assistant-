@@ -138,7 +138,13 @@ export class TaskService extends BaseService {
       if (result.dueDate && result.reminder && typeof result.reminder === 'string' && !hasRecurringReminder) {
         result.nextReminderAt = this.calculateOneTimeReminderAt(result.dueDate, result.reminder);
       } else if (result.reminderRecurrence) {
-        result.nextReminderAt = this.calculateNextReminderAt(result.reminderRecurrence);
+        // Special case: nudge WITH dueDate starts from dueDate, not now
+        if (result.reminderRecurrence.type === 'nudge' && result.dueDate) {
+          const interval = result.reminderRecurrence.interval || '10 minutes';
+          result.nextReminderAt = this.calculateNudgeWithDueDate(result.dueDate, interval);
+        } else {
+          result.nextReminderAt = this.calculateNextReminderAt(result.reminderRecurrence);
+        }
       } else {
         result.nextReminderAt = null;
       }
@@ -343,6 +349,31 @@ export class TaskService extends BaseService {
     }
     
     return nextDate.toISOString();
+  }
+
+  /**
+   * Calculate next reminder time for nudge recurrence starting from dueDate
+   * Used when a reminder has both a dueDate and a nudge recurrence
+   * Formula: next_reminder_at = dueDate + interval
+   * 
+   * Example: dueDate = 8am, interval = "5 minutes" → next_reminder_at = 8:05am
+   */
+  private calculateNudgeWithDueDate(dueDate: string, interval: string): string {
+    const dueDateObj = new Date(dueDate);
+    const minutes = this.parseIntervalToMinutes(interval);
+    
+    if (minutes < 1) {
+      throw new Error('Nudge interval must be at least 1 minute');
+    }
+    
+    // Round to start of minute (strip seconds/milliseconds)
+    dueDateObj.setSeconds(0, 0);
+    
+    // Add interval to dueDate
+    const nextReminderDate = new Date(dueDateObj);
+    nextReminderDate.setMinutes(nextReminderDate.getMinutes() + minutes);
+    
+    return nextReminderDate.toISOString();
   }
 
   /**

@@ -99,6 +99,49 @@ End with: "💡 לא ציינת מתי להזכיר לך עליהן. אם תרצ
 
 If you'd like, you can delete it."
 
+**CALENDAR PROMPT FOR FUTURE REMINDERS:**
+After formatting a reminder creation response, check the \`due_date\`:
+- If \`due_date\` is TODAY → Do NOT ask about calendar
+- If \`due_date\` is TOMORROW or LATER → Append calendar prompt
+
+**How to detect tomorrow or later:**
+- Check if \`due_date_formatted\` contains "מחר" / "tomorrow" or a future date (not "היום" / "today")
+- Or check if \`due_date\` ISO string is after today's date
+- Only show this prompt for reminders WITH due_date (not for tasks without due_date)
+- Do NOT show for recurring reminders (reminderRecurrence exists)
+
+**Format for Hebrew:**
+Append after the reminder details:
+"💡 רוצה שאוסיף את זה גם ליומן?"
+
+**Format for English:**
+Append after the reminder details:
+"💡 Would you like me to add this to your calendar as well?"
+
+**Example (Hebrew - tomorrow reminder):**
+"✅ יצרתי תזכורת:
+
+1. *לקחת ויטמינים* 💊
+   - זמן: מחר ב־08:00
+
+💡 רוצה שאוסיף את זה גם ליומן?"
+
+**Example (English - tomorrow reminder):**
+"✅ I've created a reminder:
+
+1. *Take vitamins* 💊
+   - Time: Tomorrow at 08:00
+
+💡 Would you like me to add this to your calendar as well?"
+
+**Example (Hebrew - today reminder - NO calendar prompt):**
+"✅ יצרתי תזכורת:
+
+1. *לקנות חלב* 🥛
+   - זמן: היום ב־18:00"
+
+(No calendar prompt for today reminders)
+
 **English format for TASKS (without due_date):**
 "✅ I've created [X] tasks:
 

@@ -9,6 +9,7 @@ export interface ConversationMessage {
   timestamp: number;
   whatsappMessageId?: string; // Store WhatsApp message ID for reply context
   replyToMessageId?: string; // If this message is a reply, store the message ID it's replying to
+  estimatedTokens?: number; // Cached token count for performance
   metadata?: {
     // metadata for disambiguation context or recent tasks
     disambiguationContext?: {
@@ -43,11 +44,14 @@ export interface RecentTaskSnapshot {
  * 
  * Features:
  * - In-memory storage only (no database)
- * - Maximum 10 user-assistant pairs (20 messages total) per conversation
+ * - Maximum configurable total messages (user + assistant) per conversation
+ * - Maximum configurable total tokens for all context messages
  * - Maintains conversation pairs together (user message + its response)
+ * - Smart removal prioritizes pairs and importance
  * - Supports WhatsApp reply context detection
  * - Singleton pattern for global access
- * - Simple API for adding/getting messages
+ * - Token counting with caching for performance
+ * - All limits are configurable via public constants
  */
 export class ConversationWindow {
   private static instance: ConversationWindow;
@@ -56,9 +60,30 @@ export class ConversationWindow {
   private memory = new Map<string, ConversationMessage[]>();
   private recentTaskContext = new Map<string, RecentTaskSnapshot[]>();
   
-  // Configuration
-  private readonly MAX_USER_MESSAGES = 10; // Maximum 10 user messages (each with its assistant response = 20 messages total)
-  private readonly MAX_RECENT_TASKS = 6;
+  // ============================================================================
+  // CONFIGURABLE CONSTANTS - Adjust these to tune context management
+  // ============================================================================
+  
+  /** Maximum total messages (user + assistant combined). System messages excluded from count but included in token calculation. */
+  public readonly MAX_TOTAL_MESSAGES = 10;
+  
+  /** Maximum total tokens for all context messages combined */
+  public readonly MAX_TOTAL_TOKENS = 500;
+  
+  /** Maximum recent tasks to store per user */
+  public readonly MAX_RECENT_TASKS = 4;
+  
+  /** Maximum system messages to keep in context (to prevent system message bloat) */
+  public readonly MAX_SYSTEM_MESSAGES = 3;
+  
+  /** Characters per token estimation (lower = more conservative, higher = less conservative) */
+  public readonly CHARS_PER_TOKEN = 3.5;
+  
+  /** Conversation cleanup age in milliseconds (default: 12 hours) */
+  public readonly CONVERSATION_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+  
+  /** Disambiguation context expiry time in milliseconds (default: 5 minutes) */
+  public readonly DISAMBIGUATION_EXPIRY_MS = 5 * 60 * 1000;
   
   private constructor() {
     logger.info('🧠 ConversationWindow singleton created');
@@ -73,9 +98,170 @@ export class ConversationWindow {
     }
     return ConversationWindow.instance;
   }
+
+  /**
+   * Estimate token count for a message content
+   * Uses approximation: ~3.5 characters per token (accounts for Hebrew/English mix)
+   */
+  private estimateTokens(content: string): number {
+    if (!content || content.length === 0) return 0;
+    return Math.ceil(content.length / this.CHARS_PER_TOKEN);
+  }
+
+  /**
+   * Get total token count for all messages (excluding system messages from count but including in tokens)
+   */
+  private getTotalTokens(messages: ConversationMessage[]): number {
+    return messages.reduce((total, msg) => {
+      if (msg.estimatedTokens !== undefined) {
+        return total + msg.estimatedTokens;
+      }
+      // Calculate if not cached
+      const tokens = this.estimateTokens(msg.content);
+      msg.estimatedTokens = tokens;
+      return total + tokens;
+    }, 0);
+  }
+
+  /**
+   * Count user + assistant messages (system messages excluded from count)
+   */
+  private countContextMessages(messages: ConversationMessage[]): number {
+    return messages.filter(m => m.role === 'user' || m.role === 'assistant').length;
+  }
+
+  /**
+   * Calculate message importance score (0-100, higher = more important)
+   */
+  private calculateMessageImportance(message: ConversationMessage, index: number, totalMessages: number): number {
+    let importance = 50; // Base importance
+    
+    // Recent messages are more important
+    const recencyScore = ((totalMessages - index) / totalMessages) * 30;
+    importance += recencyScore;
+    
+    // User and assistant messages are more important than system
+    if (message.role === 'user' || message.role === 'assistant') {
+      importance += 20;
+    }
+    
+    // Messages with important metadata are more important
+    if (message.metadata?.disambiguationContext) {
+      importance += 10;
+    } else if (message.metadata?.recentTasks) {
+      importance += 5;
+    }
+    
+    return Math.min(100, Math.max(0, importance));
+  }
+
+  /**
+   * Remove oldest messages until under token limit
+   * Prioritizes removing complete pairs, then by importance
+   */
+  private removeOldestUntilUnderLimit(messages: ConversationMessage[], maxTokens: number): void {
+    let totalTokens = this.getTotalTokens(messages);
+    
+    // If already under limit, nothing to do
+    if (totalTokens <= maxTokens) {
+      return;
+    }
+    
+    // Calculate importance for all messages
+    const messagesWithImportance = messages.map((msg, idx) => ({
+      message: msg,
+      index: idx,
+      importance: this.calculateMessageImportance(msg, idx, messages.length)
+    }));
+    
+    // Sort by importance (lowest first = remove first)
+    messagesWithImportance.sort((a, b) => a.importance - b.importance);
+    
+    // Remove messages until under limit
+    const indicesToRemove = new Set<number>();
+    let remainingTokens = totalTokens;
+    
+    for (const { message, index } of messagesWithImportance) {
+      if (remainingTokens <= maxTokens) {
+        break;
+      }
+      
+      const messageTokens = message.estimatedTokens || this.estimateTokens(message.content);
+      remainingTokens -= messageTokens;
+      indicesToRemove.add(index);
+    }
+    
+    // Remove in reverse order to maintain indices
+    const sortedIndices = Array.from(indicesToRemove).sort((a, b) => b - a);
+    for (const idx of sortedIndices) {
+      messages.splice(idx, 1);
+    }
+    
+    if (indicesToRemove.size > 0) {
+      logger.debug(`Removed ${indicesToRemove.size} messages to stay under ${maxTokens} token limit`);
+    }
+  }
+
+  /**
+   * Remove oldest user-assistant pair
+   */
+  private removeOldestPair(messages: ConversationMessage[]): void {
+    // Find first user message
+    const userIndex = messages.findIndex(m => m.role === 'user');
+    if (userIndex === -1) return;
+    
+    // Remove user message
+    messages.splice(userIndex, 1);
+    
+    // Try to find and remove corresponding assistant (could be right after, or later)
+    // Look for assistant message after the user message
+    let assistantIndex = -1;
+    for (let i = userIndex; i < messages.length; i++) {
+      if (messages[i].role === 'assistant') {
+        assistantIndex = i;
+        break;
+      }
+      // If we hit another user message, stop looking
+      if (messages[i].role === 'user') {
+        break;
+      }
+    }
+    
+    if (assistantIndex !== -1) {
+      messages.splice(assistantIndex, 1);
+      logger.debug(`Removed oldest user-assistant pair`);
+    } else {
+      logger.debug(`Removed oldest user message (no assistant found)`);
+    }
+  }
+
+  /**
+   * Remove excess system messages (keep only most recent ones)
+   */
+  private removeExcessSystemMessages(messages: ConversationMessage[]): void {
+    const systemMessages = messages
+      .map((msg, idx) => ({ msg, idx }))
+      .filter(({ msg }) => msg.role === 'system');
+    
+    if (systemMessages.length <= this.MAX_SYSTEM_MESSAGES) {
+      return;
+    }
+    
+    // Remove oldest system messages
+    const toRemove = systemMessages.length - this.MAX_SYSTEM_MESSAGES;
+    const sortedByIndex = systemMessages.sort((a, b) => a.idx - b.idx);
+    
+    // Remove in reverse order
+    for (let i = toRemove - 1; i >= 0; i--) {
+      messages.splice(sortedByIndex[i].idx, 1);
+    }
+    
+    logger.debug(`Removed ${toRemove} excess system messages`);
+  }
   
   /**
    * Add a message to the conversation window
+   * Enforces both message count limit (MAX_TOTAL_MESSAGES) and token limit (MAX_TOTAL_TOKENS)
    * @param userPhone - User's phone number
    * @param role - Message role (user, assistant, system)
    * @param content - Message content
@@ -99,30 +285,31 @@ export class ConversationWindow {
       
       const messages = this.memory.get(userPhone)!;
       
-      // For user messages: enforce limit of MAX_USER_MESSAGES user messages
-      // Each user message should have its corresponding assistant response
-      // System messages are allowed but don't count toward the user message limit
-      if (role === 'user') {
-        const userMessageCount = messages.filter(m => m.role === 'user').length;
-        
-        // If we're at the limit, remove the oldest user message AND its assistant response (if exists)
-        if (userMessageCount >= this.MAX_USER_MESSAGES) {
-          // Find the oldest user message
-          const oldestUserIndex = messages.findIndex(m => m.role === 'user');
-          if (oldestUserIndex !== -1) {
-            // Remove the user message
-            messages.splice(oldestUserIndex, 1);
-            
-            // If there's an assistant message right after it, remove that too (maintain pairs)
-            // Also check if there's a system message between them (shouldn't happen, but be safe)
-            if (oldestUserIndex < messages.length && messages[oldestUserIndex].role === 'assistant') {
-              messages.splice(oldestUserIndex, 1);
-              logger.debug(`Removed oldest user-assistant pair for ${userPhone} (limit: ${this.MAX_USER_MESSAGES} user messages)`);
-            } else {
-              logger.debug(`Removed oldest user message for ${userPhone} (limit: ${this.MAX_USER_MESSAGES} user messages)`);
-            }
-          }
+      // Calculate tokens for new message
+      const newMessageTokens = this.estimateTokens(content);
+      const currentTotalTokens = this.getTotalTokens(messages);
+      const currentContextCount = this.countContextMessages(messages);
+      
+      // Enforce message count limit (user + assistant only, system excluded from count)
+      if (role === 'user' || role === 'assistant') {
+        while (this.countContextMessages(messages) >= this.MAX_TOTAL_MESSAGES) {
+          this.removeOldestPair(messages);
         }
+      }
+      
+      // Enforce token limit (includes all messages: user, assistant, and system)
+      // Recalculate tokens after message count limit enforcement
+      const updatedTotalTokens = this.getTotalTokens(messages);
+      const projectedTotalTokens = updatedTotalTokens + newMessageTokens;
+      if (projectedTotalTokens > this.MAX_TOTAL_TOKENS) {
+        // Remove messages until we have room for the new one
+        const targetTokens = this.MAX_TOTAL_TOKENS - newMessageTokens;
+        this.removeOldestUntilUnderLimit(messages, targetTokens);
+      }
+      
+      // Remove excess system messages (keep only most recent ones)
+      if (role === 'system') {
+        this.removeExcessSystemMessages(messages);
       }
       
       // For assistant messages: if there's no preceding user message, log a warning
@@ -134,17 +321,23 @@ export class ConversationWindow {
         }
       }
       
-      // Add new message
+      // Add new message with cached token count
       const message: ConversationMessage = {
         role,
         content,
         timestamp: Date.now(),
         whatsappMessageId,
         replyToMessageId,
-        metadata
+        metadata,
+        estimatedTokens: newMessageTokens
       };
       
       messages.push(message);
+      
+      // Log current state for debugging
+      const finalCount = this.countContextMessages(messages);
+      const finalTokens = this.getTotalTokens(messages);
+      logger.debug(`Added ${role} message for ${userPhone}. Context: ${finalCount}/${this.MAX_TOTAL_MESSAGES} messages, ${finalTokens}/${this.MAX_TOTAL_TOKENS} tokens`);
       
     } catch (error) {
       logger.error('Error adding message to conversation window:', error);
@@ -174,7 +367,7 @@ export class ConversationWindow {
     candidates: Array<{ id: string; displayText: string; [key: string]: any }>,
     entityType: string
   ): void {
-    const expiresAt = Date.now() + (5 * 60 * 1000); // 5 minutes expiry
+    const expiresAt = Date.now() + this.DISAMBIGUATION_EXPIRY_MS;
     
     this.addMessage(userPhone, 'system', 'DISAMBIGUATION_CONTEXT', {
       disambiguationContext: {
@@ -345,16 +538,32 @@ export class ConversationWindow {
   /**
    * Get conversation statistics
    */
-  public getStats(userPhone: string): { messageCount: number; userMessageCount: number; assistantMessageCount: number; systemMessageCount: number } {
+  public getStats(userPhone: string): { 
+    messageCount: number; 
+    userMessageCount: number; 
+    assistantMessageCount: number; 
+    systemMessageCount: number;
+    contextMessageCount: number;
+    totalTokens: number;
+    tokenLimit: number;
+    messageLimit: number;
+  } {
     const messages = this.memory.get(userPhone) || [];
     const userMessageCount = messages.filter(m => m.role === 'user').length;
     const assistantMessageCount = messages.filter(m => m.role === 'assistant').length;
     const systemMessageCount = messages.filter(m => m.role === 'system').length;
+    const contextMessageCount = this.countContextMessages(messages);
+    const totalTokens = this.getTotalTokens(messages);
+    
     return {
       messageCount: messages.length,
       userMessageCount,
       assistantMessageCount,
-      systemMessageCount
+      systemMessageCount,
+      contextMessageCount,
+      totalTokens,
+      tokenLimit: this.MAX_TOTAL_TOKENS,
+      messageLimit: this.MAX_TOTAL_MESSAGES
     };
   }
   
@@ -366,11 +575,10 @@ export class ConversationWindow {
   }
   
   /**
-   * Clean up old conversations (older than 24 hours)
+   * Clean up old conversations (older than CONVERSATION_MAX_AGE_MS)
    */
   public cleanup(): void {
     const now = Date.now();
-    const maxAge = 24 * 60 * 60 * 1000; // 24 hours
     
     for (const [userPhone, messages] of this.memory.entries()) {
       if (messages.length === 0) {
@@ -381,7 +589,7 @@ export class ConversationWindow {
       
       // Check if last message is old
       const lastMessage = messages[messages.length - 1];
-      if (now - lastMessage.timestamp > maxAge) {
+      if (now - lastMessage.timestamp > this.CONVERSATION_MAX_AGE_MS) {
         this.memory.delete(userPhone);
         this.recentTaskContext.delete(userPhone);
         logger.debug(`Cleaned up old conversation for ${userPhone}`);
