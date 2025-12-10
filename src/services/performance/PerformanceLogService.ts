@@ -114,6 +114,19 @@ export class PerformanceLogService {
         functionName = entry.functionName || null;
       }
 
+      // Calculate actual paid tokens (excluding cached tokens)
+      const cachedTokens = ('cachedTokens' in entry && entry.cachedTokens) 
+        ? entry.cachedTokens 
+        : (metadataJson && JSON.parse(metadataJson).cachedTokens) || 0;
+      
+      const actualRequestTokens = ('actualRequestTokens' in entry && entry.actualRequestTokens !== undefined)
+        ? entry.actualRequestTokens
+        : (entry.requestTokens || 0) - cachedTokens;
+      
+      const actualTotalTokens = ('actualTotalTokens' in entry && entry.actualTotalTokens !== undefined)
+        ? entry.actualTotalTokens
+        : (entry.totalTokens || 0) - cachedTokens;
+
       const insertQuery = `
         INSERT INTO performance_logs (
           timestamp,
@@ -128,6 +141,8 @@ export class PerformanceLogService {
           request_tokens,
           response_tokens,
           total_tokens,
+          actual_request_tokens,
+          actual_total_tokens,
           start_time,
           end_time,
           duration_ms,
@@ -138,7 +153,7 @@ export class PerformanceLogService {
           error,
           metadata
         ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23
         )
       `;
 
@@ -152,9 +167,11 @@ export class PerformanceLogService {
         entry.callType,
         entry.callSequence || 1,
         entry.model || 'unknown',
-        entry.requestTokens || 0,
+        entry.requestTokens || 0,  // Keep original for analytics
         entry.responseTokens || 0,
-        entry.totalTokens || 0,
+        entry.totalTokens || 0,     // Keep original for analytics
+        actualRequestTokens,        // Actual paid tokens
+        actualTotalTokens,           // Actual paid tokens
         entry.startTime,
         entry.endTime,
         entry.durationMs,

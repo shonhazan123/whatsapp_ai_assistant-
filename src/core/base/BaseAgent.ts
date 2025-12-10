@@ -2,6 +2,7 @@ import { OpenAIService } from '../../services/ai/OpenAIService';
 import { PerformanceTracker } from '../../services/performance/PerformanceTracker';
 import { setAgentNameForTracking } from '../../services/performance/performanceUtils';
 import { ResponseFormatter } from '../../services/response/ResponseFormatter';
+import { prependTimeContext } from '../../utils/timeContext';
 import { RequestContext } from '../context/RequestContext';
 import { IFunctionHandler } from '../interfaces/IAgent';
 import { FunctionDefinition, IAgent } from '../types/AgentTypes';
@@ -39,12 +40,16 @@ export abstract class BaseAgent implements IAgent {
     let error: Error | null = null;
 
     try {
+      // Inject time context into user message so LLM knows current time
+      // This keeps system prompt static (cacheable) while providing time awareness
+      const messageWithTimeContext = prependTimeContext(message);
+      
       const messages = [
         // Use the original static system prompt so it can be fully cached
         // Functions are still passed via the separate `functions` parameter for tool calling
         { role: 'system' as const, content: systemPrompt },
         ...context,
-        { role: 'user' as const, content: message }
+        { role: 'user' as const, content: messageWithTimeContext }
       ];
 
       // Still pass functions parameter (API needs it for function calling)

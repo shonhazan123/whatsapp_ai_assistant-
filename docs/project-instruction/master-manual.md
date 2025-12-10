@@ -44,7 +44,10 @@ WhatsApp message → MainAgent (intent recognition) → (1) direct agent call **
 File: `src/core/base/BaseAgent.ts`
 
 - **executeWithAI(message, userPhone, systemPrompt, functions, context)**:
-  - Builds messages: `[systemPrompt, ...context, user message]`.
+  - **Time Context Injection**: Prepends current time to user message via `prependTimeContext()` from `src/utils/timeContext.ts`.
+    - Format: `[Current time: Day, DD/MM/YYYY HH:mm (ISO+offset), Timezone: Asia/Jerusalem]`
+    - This keeps system prompts static (for caching) while giving LLM accurate time awareness.
+  - Builds messages: `[systemPrompt, ...context, user message with time context]`.
   - Calls `OpenAIService.createCompletion` with:
     - `functions`: the function definitions for that agent.
     - `functionCall: 'auto'`.

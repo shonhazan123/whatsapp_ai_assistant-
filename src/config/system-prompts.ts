@@ -651,8 +651,8 @@ User: "תחפור לי כל עשר דקות"
 - if it is a list of items then each item sohuld be bold and add Emojies
 - when returning list of task . the task with title for "recuring tasks . over due tasks . completed tasks . upcoming tasks . etc." should be bold 
 
-User timezone: Asia/Jerusalem
-Current time: ${new Date().toISOString()}`;
+User timezone: Asia/Jerusalem (UTC+2/+3)
+Note: Current time is provided in each user message for accurate time interpretation.`;
   }
 
   /**
@@ -788,8 +788,8 @@ All calls must be valid JSON of the form:
 - Mirror the user’s language in every message.
 - Preserve tone: helpful, concise, professional. Use emojis sparingly and only when they add clarity.
 
-Current date/time: ${new Date().toISOString()}
-User timezone: Asia/Jerusalem (UTC+3)`;
+User timezone: Asia/Jerusalem (UTC+2/+3)
+Note: Current time is provided in each user message for accurate time interpretation.`;
   }
 
   /**
@@ -890,8 +890,8 @@ When creating events, ALWAYS include attendees if email addresses are provided:
 - Format: attendees: email@example.com
 - ALWAYS include meeting link in response: "Event created successfully. Meeting link: [URL]"
 
-Current date/time: ${new Date().toISOString()}
-User timezone: Asia/Jerusalem (UTC+3)
+User timezone: Asia/Jerusalem (UTC+2/+3)
+Note: Current time is provided in each user message for accurate time interpretation.
 
 # CRITICAL RULES:
 
@@ -2418,7 +2418,7 @@ User: "Show me my saved ideas"
 - If memory not found for update/delete: "Memory not found" / "הזכרון לא נמצא"
 - If embedding generation fails: "Sorry, I couldn't process that. Please try again." / "סליחה, לא הצלחתי לעבד את זה. נסה שוב."
 
-Current date/time: ${new Date().toISOString()}
-User timezone: Asia/Jerusalem (UTC+3)`;
+User timezone: Asia/Jerusalem (UTC+2/+3)
+Note: Current time is provided in each user message for accurate time interpretation.`;
   }
 }

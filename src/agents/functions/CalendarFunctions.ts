@@ -285,6 +285,16 @@ Please specify the exact title or provide more details so I can update the corre
     },
     language: 'he' | 'en'
   ): Promise<{ eventId?: string; recurringEventId?: string; error?: string; isRecurring?: boolean }> {
+    // If no explicit window was provided, default to a 1-day back to 30-days forward window
+    // This ensures we always fetch something when only summary/day/time are supplied
+    if (!criteria.timeMin || !criteria.timeMax) {
+      const now = new Date();
+      const defaultMin = new Date(now.getTime() - 24 * 60 * 60 * 1000); // yesterday
+      const defaultMax = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000); // +30 days
+      criteria.timeMin = criteria.timeMin ?? defaultMin.toISOString();
+      criteria.timeMax = criteria.timeMax ?? defaultMax.toISOString();
+    }
+
     // Strategy 1: If we have timeMin/timeMax, search in that window
     if (criteria.timeMin && criteria.timeMax) {
       const window = { timeMin: criteria.timeMin, timeMax: criteria.timeMax };
@@ -303,20 +313,27 @@ Please specify the exact title or provide more details so I can update the corre
         if (criteria.startTime || criteria.endTime) {
           events = events.filter(event => {
             if (!event.start) return false;
+            const parseToMinutes = (hhmm: string) => {
+              const [h, m] = hhmm.split(':').map(Number);
+              return h * 60 + m;
+            };
+
+            // Event times
             const eventDate = new Date(event.start);
-            const eventHour = eventDate.getHours();
-            const eventMinute = eventDate.getMinutes();
-            const eventTime = `${eventHour.toString().padStart(2, '0')}:${eventMinute.toString().padStart(2, '0')}`;
-            
-            if (criteria.startTime && eventTime !== criteria.startTime) return false;
-            if (criteria.endTime) {
-              const eventEndDate = new Date(event.end || event.start);
-              const eventEndHour = eventEndDate.getHours();
-              const eventEndMinute = eventEndDate.getMinutes();
-              const eventEndTime = `${eventEndHour.toString().padStart(2, '0')}:${eventEndMinute.toString().padStart(2, '0')}`;
-              if (eventEndTime !== criteria.endTime) return false;
-            }
-            return true;
+            const eventStartMinutes = eventDate.getHours() * 60 + eventDate.getMinutes();
+            const eventEndDate = new Date(event.end || event.start);
+            const eventEndMinutes = eventEndDate.getHours() * 60 + eventEndDate.getMinutes();
+
+            // Criteria window (inclusive)
+            const windowStart = criteria.startTime ? parseToMinutes(criteria.startTime) : 0;
+            const windowEnd = criteria.endTime ? parseToMinutes(criteria.endTime) : 24 * 60; // default end of day
+
+            // Allow match if any overlap between event interval and requested window
+            const overlaps =
+              eventStartMinutes <= windowEnd &&
+              eventEndMinutes >= windowStart;
+
+            return overlaps;
           });
         }
         
@@ -340,18 +357,27 @@ Please specify the exact title or provide more details so I can update the corre
           return {};
         }
         
-        if (events.length === 1) {
-          const event = events[0];
-          // Check if it's a recurring event instance
-          const isRecurring = !!(event as any).recurringEventId;
-          return {
-            eventId: event.id,
-            recurringEventId: (event as any).recurringEventId,
-            isRecurring
-          };
-        }
+        // If multiple events matched, pick the nearest upcoming by start time instead of erroring
+        const pickEvent = (list: any[]) => {
+          return list
+            .map(evt => ({
+              raw: evt,
+              startDate: new Date((evt.start?.dateTime || evt.start?.date || evt.start) as string)
+            }))
+            .sort((a, b) => a.startDate.getTime() - b.startDate.getTime())[0]?.raw;
+        };
         
-        return { error: this.buildDisambiguationMessage(events, language) };
+        const event = events.length === 1 ? events[0] : pickEvent(events);
+        if (!event) {
+          return {};
+        }
+
+        const isRecurring = !!(event as any).recurringEventId;
+        return {
+          eventId: event.id,
+          recurringEventId: (event as any).recurringEventId,
+          isRecurring
+        };
       }
     }
     

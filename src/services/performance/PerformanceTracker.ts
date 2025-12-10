@@ -129,6 +129,11 @@ export class PerformanceTracker {
       ? (options.responseContent.length > 1000 ? options.responseContent.substring(0, 1000) + '...' : options.responseContent)
       : undefined;
 
+    // Calculate actual paid tokens (excluding cached tokens)
+    const cachedTokens = options.cachedTokens || 0;
+    const actualRequestTokens = options.requestTokens - cachedTokens;
+    const actualTotalTokens = options.totalTokens - cachedTokens;
+
     const entry: CallLogEntry = {
       id: randomUUID(),
       timestamp: new Date().toISOString(),
@@ -139,13 +144,16 @@ export class PerformanceTracker {
       callType: options.callType,
       callSequence,
       model: options.model,
-      requestTokens: options.requestTokens,
+      requestTokens: options.requestTokens,  // Keep original for analytics
       responseTokens: options.responseTokens,
-      totalTokens: options.totalTokens,
+      totalTokens: options.totalTokens,      // Keep original for analytics
       // Cache metrics (Phase 1)
       cachedTokens: options.cachedTokens,
       cacheHit: options.cacheHit,
       cacheWriteTokens: options.cacheWriteTokens,
+      // Actual paid tokens (for cost reporting)
+      actualRequestTokens: actualRequestTokens,
+      actualTotalTokens: actualTotalTokens,
       startTime: new Date(options.startTime).toISOString(),
       endTime: new Date(options.endTime).toISOString(),
       durationMs: options.endTime - options.startTime,
@@ -245,6 +253,9 @@ export class PerformanceTracker {
       requestTokens?: number;
       responseTokens?: number;
       totalTokens?: number;
+      cachedTokens?: number;
+      actualRequestTokens?: number;
+      actualTotalTokens?: number;
     }
   ): Promise<void> {
     const context = this.requestContext.getContext(requestId);
@@ -269,6 +280,15 @@ export class PerformanceTracker {
     // Get agent name - ensure it's not null
     const agentName = context.currentAgent || 'unknown';
 
+    // Calculate actual tokens from parent AI call
+    const parentCachedTokens = parentAICall?.cachedTokens || 0;
+    const parentRequestTokens = parentAICall?.requestTokens || 0;
+    const parentTotalTokens = parentAICall?.totalTokens || 0;
+    const parentActualRequestTokens = parentAICall?.actualRequestTokens 
+      ?? (parentRequestTokens - parentCachedTokens);
+    const parentActualTotalTokens = parentAICall?.actualTotalTokens 
+      ?? (parentTotalTokens - parentCachedTokens);
+
     const entry: FunctionLogEntry = {
       id: randomUUID(),
       timestamp: new Date().toISOString(),
@@ -280,9 +300,12 @@ export class PerformanceTracker {
       functionName,
       operation,
       model: parentAICall?.model || null, // Inherited from parent AI call
-      requestTokens: parentAICall?.requestTokens || 0, // Inherited from parent AI call
+      requestTokens: parentRequestTokens, // Inherited from parent AI call (including cached)
       responseTokens: parentAICall?.responseTokens || 0, // Inherited from parent AI call
-      totalTokens: parentAICall?.totalTokens || 0, // Inherited from parent AI call
+      totalTokens: parentTotalTokens, // Inherited from parent AI call (including cached)
+      // Actual paid tokens (inherited from parent)
+      actualRequestTokens: parentActualRequestTokens,
+      actualTotalTokens: parentActualTotalTokens,
       startTime: new Date(startTime).toISOString(),
       endTime: new Date(endTime).toISOString(),
       durationMs: endTime - startTime,
@@ -326,6 +349,8 @@ export class PerformanceTracker {
         totalTokens: 0,
         requestTokens: 0,
         responseTokens: 0,
+        actualTotalTokens: 0,
+        actualRequestTokens: 0,
         totalAICalls: 0,
         totalFunctionCalls: 0,
         agentsUsed: [],
@@ -482,7 +507,11 @@ export class PerformanceTracker {
     
     logger.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     logger.info('💰 Request Performance Summary:');
-    logger.info(`   📊 Total Tokens: ${summary.totalTokens.toLocaleString()} (Request: ${summary.requestTokens.toLocaleString()}, Response: ${summary.responseTokens.toLocaleString()})`);
+    // Use actual paid tokens for display
+    const actualTotalTokens = summary.actualTotalTokens || summary.totalTokens;
+    const actualRequestTokens = summary.actualRequestTokens || summary.requestTokens;
+    
+    logger.info(`   📊 Total Tokens: ${actualTotalTokens.toLocaleString()} (Request: ${actualRequestTokens.toLocaleString()}, Response: ${summary.responseTokens.toLocaleString()})`);
     if (cachedTokens > 0) {
       logger.info(`   💾 Cached Tokens: ${cachedTokens.toLocaleString()} (${((cachedTokens / summary.requestTokens) * 100).toFixed(1)}% of input)`);
       logger.info(`   💵 Actual Cost: $${totalCost.toFixed(4)} (Saved: $${(summary.estimatedCacheSavings || 0).toFixed(4)})`);

@@ -518,11 +518,41 @@ export class CalendarService {
 
       } else {
         // Weekly recurrence (default): days are day names
-        const firstDayIndex = this.getDayIndex(request.days[0]);
+        // Find the NEAREST day from the requested days (not just the first one)
+        const today = new Date();
+        const currentDayIndex = today.getDay();
         
-        while (startDate.getDay() !== firstDayIndex) {
-          startDate.setDate(startDate.getDate() + 1);
+        // Map all requested days to their indices and find nearest occurrence
+        const dayIndices = request.days.map(day => this.getDayIndex(day));
+        let nearestDayIndex = -1;
+        let daysToAdd = 7; // Max days to look ahead
+        
+        // Find the nearest day (including today if it's one of the requested days)
+        for (let i = 0; i <= 6; i++) {
+          const checkDayIndex = (currentDayIndex + i) % 7;
+          if (dayIndices.includes(checkDayIndex)) {
+            nearestDayIndex = checkDayIndex;
+            daysToAdd = i;
+            break;
+          }
         }
+        
+        // If no day found (shouldn't happen), fall back to first day
+        if (nearestDayIndex === -1) {
+          nearestDayIndex = dayIndices[0];
+          daysToAdd = 0;
+          while (startDate.getDay() !== nearestDayIndex) {
+          startDate.setDate(startDate.getDate() + 1);
+            daysToAdd++;
+          }
+        } else {
+          // Set to the nearest day
+          startDate.setDate(startDate.getDate() + daysToAdd);
+        }
+        
+        // Log which day we're starting from
+        const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        this.logger.info(`📅 Starting recurring event from ${dayNames[nearestDayIndex]} (${startDate.toDateString()}), days to add: ${daysToAdd}`);
 
         // Set the start time
         const [startHour, startMinute] = request.startTime.split(':').map(Number);

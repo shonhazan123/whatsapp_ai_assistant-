@@ -3,6 +3,7 @@ import { SystemPrompts } from '../../config/system-prompts';
 import { FunctionDefinition } from '../../core/types/AgentTypes';
 import { CachedMessage } from '../../types/CacheTypes';
 import { ImageAnalysisResult } from '../../types/imageAnalysis';
+import { prependTimeContext } from '../../utils/timeContext';
 import { ImageCache } from '../image/ImageCache';
 import { ImageProcessor } from '../image/ImageProcessor';
 import { PerformanceTracker } from '../performance/PerformanceTracker';
@@ -197,11 +198,18 @@ export class OpenAIService {
         const functionCall = responseMessage?.function_call;
         const toolCalls = responseMessage?.tool_calls;
 
+        // Calculate actual paid tokens
+        const actualRequestTokens = usage.prompt_tokens - cachedTokens;
+        const actualTotalTokens = usage.total_tokens - cachedTokens;
+
         const aiCallInfo = {
           model: request.model || DEFAULT_MODEL,
           requestTokens: usage.prompt_tokens || 0,
           responseTokens: usage.completion_tokens || 0,
           totalTokens: usage.total_tokens || 0,
+          cachedTokens: cachedTokens,
+          actualRequestTokens: actualRequestTokens,
+          actualTotalTokens: actualTotalTokens,
         };
 
         // Store last AI call info for function tracking
@@ -317,10 +325,11 @@ export class OpenAIService {
         });
       });
 
-      // Add current message
+      // Add current message with time context for accurate time interpretation
+      // This allows the intent classifier to understand "tomorrow", "at 6pm", etc.
       messages.push({
         role: 'user',
-        content: message
+        content: prependTimeContext(message)
       });
 
       const completion = await this.createCompletion({
@@ -501,11 +510,18 @@ export class OpenAIService {
               this.logger.info(`📝 Cache WRITE (Vision): ${cacheCreationTokens} tokens written to cache`);
             }
             
+            // Calculate actual paid tokens
+            const actualRequestTokens = usage.prompt_tokens - cachedTokens;
+            const actualTotalTokens = usage.total_tokens - cachedTokens;
+            
             const aiCallInfo = {
               model: 'gpt-4o',
               requestTokens: usage.prompt_tokens || 0,
               responseTokens: usage.completion_tokens || 0,
               totalTokens: usage.total_tokens || 0,
+              cachedTokens: cachedTokens,
+              actualRequestTokens: actualRequestTokens,
+              actualTotalTokens: actualTotalTokens,
             };
             
             // Store last AI call info
@@ -707,6 +723,7 @@ export class OpenAIService {
       if (trackingRequestId) {
         // Embeddings API doesn't return usage in the same format, estimate tokens
         // Rough estimate: ~1 token per 4 characters for embeddings
+        // Embeddings don't support caching, so actual = total
         const estimatedTokens = Math.ceil(text.trim().length / 4);
         
         const aiCallInfo = {
@@ -714,6 +731,9 @@ export class OpenAIService {
           requestTokens: estimatedTokens,
           responseTokens: 0, // Embeddings don't have response tokens
           totalTokens: estimatedTokens,
+          cachedTokens: 0, // No caching support
+          actualRequestTokens: estimatedTokens, // actual = total (no cache)
+          actualTotalTokens: estimatedTokens,
         };
         
         // Store last AI call info

@@ -7,6 +7,7 @@ import { AgentName, IAgent } from '../core/interfaces/IAgent';
 import { IntentDecision, OpenAIService } from '../services/ai/OpenAIService';
 import { setAgentNameForTracking } from '../services/performance/performanceUtils';
 import { logger } from '../utils/logger';
+import { prependTimeContext } from '../utils/timeContext';
 import { CoordinatorAgent, ExecutionResult, PlannedAction } from './types/MultiAgentPlan';
 
 export class MultiAgentCoordinator {
@@ -222,9 +223,10 @@ export class MultiAgentCoordinator {
       }
     });
 
+    // Inject time context for accurate time interpretation in planning
     messages.push({
       role: 'user',
-      content: messageText
+      content: prependTimeContext(messageText)
     });
 
     return messages;
@@ -394,7 +396,7 @@ export class MultiAgentCoordinator {
       ...context,
       {
         role: 'user',
-        content: messageText
+        content: prependTimeContext(messageText) // Inject time context for time-aware responses
       }
     ];
 
