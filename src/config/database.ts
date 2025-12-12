@@ -20,16 +20,11 @@ pool.on('error', (err) => {
   logger.error('Unexpected database error:', err);
 });
 
-pool.on('connect', () => {
-  logger.info('Database connected successfully');
-});
-
 export async function query(text: string, params?: any[]) {
   const start = Date.now();
   try {
     const res = await pool.query(text, params);
     const duration = Date.now() - start;
-    logger.debug('Executed query', { duration, rows: res.rowCount });
     return res;
   } catch (error) {
     logger.error('Database query error:', error);

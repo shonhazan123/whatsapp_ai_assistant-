@@ -23,6 +23,7 @@ export interface Task {
   reminder?: string; // INTERVAL string for one-time reminders
   reminder_recurrence?: ReminderRecurrence | null;
   next_reminder_at?: string | null;
+  nudge_count?: number; // Number of nudge reminders sent (for nudge-type reminders)
   completed: boolean;
   created_at: string;
   subtasks?: Subtask[];
@@ -421,9 +422,9 @@ export class TaskService extends BaseService {
       }
 
       const result = await this.executeSingleQuery<Task>(
-        `INSERT INTO tasks (user_id, text, category, due_date, reminder, reminder_recurrence, next_reminder_at) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7) 
-         RETURNING id, text, category, due_date, reminder, reminder_recurrence, next_reminder_at, completed, created_at`,
+        `INSERT INTO tasks (user_id, text, category, due_date, reminder, reminder_recurrence, next_reminder_at, nudge_count) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) 
+         RETURNING id, text, category, due_date, reminder, reminder_recurrence, next_reminder_at, nudge_count, completed, created_at`,
         [
           userId,
           data.text,
@@ -431,7 +432,8 @@ export class TaskService extends BaseService {
           reminderPayload.dueDate || null,
           reminderPayload.reminder || null,
           reminderPayload.reminderRecurrence ? JSON.stringify(reminderPayload.reminderRecurrence) : null,
-          reminderPayload.nextReminderAt || null
+          reminderPayload.nextReminderAt || null,
+          0 // Initialize nudge_count to 0 for new tasks
         ]
       );
 
@@ -479,9 +481,9 @@ export class TaskService extends BaseService {
           }
 
           const result = await this.executeSingleQuery<Task>(
-            `INSERT INTO tasks (user_id, text, category, due_date, reminder, reminder_recurrence, next_reminder_at) 
-             VALUES ($1, $2, $3, $4, $5, $6, $7) 
-             RETURNING id, text, category, due_date, reminder, reminder_recurrence, next_reminder_at, completed, created_at`,
+            `INSERT INTO tasks (user_id, text, category, due_date, reminder, reminder_recurrence, next_reminder_at, nudge_count) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) 
+             RETURNING id, text, category, due_date, reminder, reminder_recurrence, next_reminder_at, nudge_count, completed, created_at`,
             [
               userId,
               sanitizedItem.text,
@@ -489,7 +491,8 @@ export class TaskService extends BaseService {
               reminderPayload.dueDate || null,
               reminderPayload.reminder || null,
               reminderPayload.reminderRecurrence ? JSON.stringify(reminderPayload.reminderRecurrence) : null,
-              reminderPayload.nextReminderAt || null
+              reminderPayload.nextReminderAt || null,
+              0 // Initialize nudge_count to 0 for new tasks
             ]
           );
 
@@ -533,7 +536,7 @@ export class TaskService extends BaseService {
       const userId = await this.resolveUserId(request.userId, request.userPhone);
       
       const task = await this.executeSingleQuery<Task>(
-        `SELECT id, text, category, due_date, reminder, reminder_recurrence, next_reminder_at, completed, created_at
+        `SELECT id, text, category, due_date, reminder, reminder_recurrence, next_reminder_at, nudge_count, completed, created_at
          FROM tasks
          WHERE user_id = $1 AND id = $2`,
         [userId, request.id]
@@ -560,7 +563,7 @@ export class TaskService extends BaseService {
       const userId = await this.resolveUserId(request.userId, request.userPhone);
       
       let query = `
-        SELECT id, text, category, due_date, reminder, reminder_recurrence, next_reminder_at, completed, created_at
+        SELECT id, text, category, due_date, reminder, reminder_recurrence, next_reminder_at, nudge_count, completed, created_at
         FROM tasks
         WHERE user_id = $1
       `;
@@ -743,6 +746,31 @@ export class TaskService extends BaseService {
       }
       this.logger.error('Error updating task:', error);
       return this.createErrorResponse('Failed to update task');
+    }
+  }
+
+  /**
+   * Increment nudge count for a task
+   * Returns the new count
+   */
+  async incrementNudgeCount(taskId: string): Promise<number> {
+    try {
+      const result = await this.executeSingleQuery<{ nudge_count: number }>(
+        `UPDATE tasks 
+         SET nudge_count = nudge_count + 1 
+         WHERE id = $1 
+         RETURNING nudge_count`,
+        [taskId]
+      );
+      
+      if (!result) {
+        throw new Error(`Task not found: ${taskId}`);
+      }
+      
+      return result.nudge_count;
+    } catch (error) {
+      this.logger.error(`Error incrementing nudge count for task ${taskId}:`, error);
+      throw error;
     }
   }
 

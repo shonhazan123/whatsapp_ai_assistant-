@@ -8,4 +8,9 @@ export const openai = new OpenAI({
 });
 
 // Default model for the application - change this to update all agents using gpt-5.1
-export const DEFAULT_MODEL = 'gpt-5.1';
+export const GPT_5_1_MODEL = 'gpt-5.1';
+export const GPT_4O_MINI_MODEL = 'gpt-4o-mini';
+export const GPT_5_MINI_MODEL = 'gpt-5-mini';
+export const GPT_5_NANO_MODEL = 'gpt-5-nano';
+
+export const DEFAULT_MODEL = GPT_5_1_MODEL

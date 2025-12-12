@@ -3,15 +3,18 @@
 ## Problem Statement
 
 Currently, the performance tracking system logs **total tokens** (including cached tokens) in the database and statistics. However, OpenAI charges differently for cached vs non-cached tokens:
+
 - **Cached tokens**: 90% discount (e.g., $0.125 per 1M instead of $1.25 per 1M)
 - **Non-cached tokens**: Full price
 
 **Current Issue:**
+
 - Database shows: `request_tokens: 24,182`, `total_tokens: 24,439`
 - But user only paid for: `24,182 - 8,192 = 16,190` request tokens
 - Statistics are inflated, making it look like more tokens were used than actually paid for
 
 **Goal:**
+
 - Report only **actual paid tokens** in the database and statistics
 - Keep cached token information as metadata for analytics
 - Each AI call should report: `actualTokens = totalTokens - cachedTokens`
@@ -43,18 +46,22 @@ Database (performance_logs table)
 ### 2. Key Files Involved
 
 1. **`src/services/ai/OpenAIService.ts`** (Lines 149-240)
+
    - Extracts `cachedTokens` from API response
    - Passes full token counts to `logAICall()`
 
 2. **`src/services/performance/PerformanceTracker.ts`**
+
    - `logAICall()` (Lines 99-175): Stores full token counts
    - `updateRequestSummary()` (Lines 343-365): Aggregates full token counts
    - `endRequest()` (Lines 400-500): Prints summary with full token counts
 
 3. **`src/services/performance/PerformanceLogService.ts`** (Lines 145-167)
+
    - `uploadSingleLog()`: Inserts full token counts to database
 
 4. **`src/services/performance/types.ts`**
+
    - `CallLogEntry`: Defines token fields
    - `RequestSummary`: Defines aggregated token fields
 
@@ -72,11 +79,13 @@ Database (performance_logs table)
 ### Token Calculation Logic
 
 For each AI call:
+
 - `actualRequestTokens = requestTokens - cachedTokens`
 - `actualResponseTokens = responseTokens` (response tokens are never cached)
 - `actualTotalTokens = actualRequestTokens + actualResponseTokens`
 
 **Note:** `totalTokens` from API = `requestTokens + responseTokens`, so:
+
 - `actualTotalTokens = totalTokens - cachedTokens`
 
 ---
@@ -88,26 +97,29 @@ For each AI call:
 **File:** `src/services/performance/types.ts`
 
 **Changes:**
+
 1. Add new fields to `CallLogEntry`:
+
    ```typescript
    // Existing fields (keep for backward compatibility)
    requestTokens: number;  // Total request tokens (including cached)
    responseTokens: number; // Response tokens (never cached)
    totalTokens: number;    // Total tokens (including cached)
    cachedTokens?: number;  // Cached tokens (metadata)
-   
+
    // NEW fields (actual paid tokens)
    actualRequestTokens?: number;  // requestTokens - cachedTokens
    actualTotalTokens?: number;     // totalTokens - cachedTokens
    ```
 
 2. Add new fields to `RequestSummary`:
+
    ```typescript
    // Existing fields (keep for analytics)
    totalTokens: number;           // Total including cached
    requestTokens: number;         // Total including cached
    totalCachedTokens?: number;     // Total cached tokens
-   
+
    // NEW fields (actual paid tokens)
    actualTotalTokens?: number;    // Sum of actualTotalTokens from all calls
    actualRequestTokens?: number;  // Sum of actualRequestTokens from all calls
@@ -124,23 +136,25 @@ For each AI call:
 **Location:** Lines 132-163 (entry creation)
 
 **Changes:**
+
 1. Calculate actual tokens when creating `CallLogEntry`:
+
    ```typescript
    const cachedTokens = options.cachedTokens || 0;
    const actualRequestTokens = options.requestTokens - cachedTokens;
    const actualTotalTokens = options.totalTokens - cachedTokens;
-   
+
    const entry: CallLogEntry = {
-     // ... existing fields ...
-     requestTokens: options.requestTokens,  // Keep original
-     responseTokens: options.responseTokens,
-     totalTokens: options.totalTokens,       // Keep original
-     cachedTokens: cachedTokens,             // Keep for analytics
-     
-     // NEW: Actual paid tokens
-     actualRequestTokens: actualRequestTokens,
-     actualTotalTokens: actualTotalTokens,
-     // ...
+   	// ... existing fields ...
+   	requestTokens: options.requestTokens, // Keep original
+   	responseTokens: options.responseTokens,
+   	totalTokens: options.totalTokens, // Keep original
+   	cachedTokens: cachedTokens, // Keep for analytics
+
+   	// NEW: Actual paid tokens
+   	actualRequestTokens: actualRequestTokens,
+   	actualTotalTokens: actualTotalTokens,
+   	// ...
    };
    ```
 
@@ -159,24 +173,26 @@ For each AI call:
 **Location:** `logFunctionExecution()` (Lines 233-297)
 
 **Changes:**
+
 1. When inheriting from parent AI call, also inherit actual tokens:
+
    ```typescript
-   const parentActualRequestTokens = parentAICall?.requestTokens 
-     ? (parentAICall.requestTokens - (parentAICall.cachedTokens || 0))
-     : 0;
+   const parentActualRequestTokens = parentAICall?.requestTokens
+   	? parentAICall.requestTokens - (parentAICall.cachedTokens || 0)
+   	: 0;
    const parentActualTotalTokens = parentAICall?.totalTokens
-     ? (parentAICall.totalTokens - (parentAICall.cachedTokens || 0))
-     : 0;
-   
+   	? parentAICall.totalTokens - (parentAICall.cachedTokens || 0)
+   	: 0;
+
    const entry: FunctionLogEntry = {
-     // ... existing fields ...
-     requestTokens: parentAICall?.requestTokens || 0,  // Keep original
-     totalTokens: parentAICall?.totalTokens || 0,       // Keep original
-     
-     // NEW: Actual paid tokens
-     actualRequestTokens: parentActualRequestTokens,
-     actualTotalTokens: parentActualTotalTokens,
-     // ...
+   	// ... existing fields ...
+   	requestTokens: parentAICall?.requestTokens || 0, // Keep original
+   	totalTokens: parentAICall?.totalTokens || 0, // Keep original
+
+   	// NEW: Actual paid tokens
+   	actualRequestTokens: parentActualRequestTokens,
+   	actualTotalTokens: parentActualTotalTokens,
+   	// ...
    };
    ```
 
@@ -193,14 +209,16 @@ For each AI call:
 **Location:** Lines 200-240 (AI call info and logging)
 
 **Changes:**
+
 1. Include `cachedTokens` in `aiCallInfo`:
+
    ```typescript
    const aiCallInfo = {
-     model: request.model || DEFAULT_MODEL,
-     requestTokens: usage.prompt_tokens || 0,
-     responseTokens: usage.completion_tokens || 0,
-     totalTokens: usage.total_tokens || 0,
-     cachedTokens: cachedTokens,  // ADD THIS
+   	model: request.model || DEFAULT_MODEL,
+   	requestTokens: usage.prompt_tokens || 0,
+   	responseTokens: usage.completion_tokens || 0,
+   	totalTokens: usage.total_tokens || 0,
+   	cachedTokens: cachedTokens, // ADD THIS
    };
    ```
 
@@ -219,19 +237,22 @@ For each AI call:
 **Location:** `uploadSingleLog()` (Lines 145-167)
 
 **Changes:**
+
 1. Use `actualRequestTokens` and `actualTotalTokens` for database insertion:
+
    ```typescript
-   const actualRequestTokens = entry.actualRequestTokens 
-     ?? (entry.requestTokens - (entry.cachedTokens || 0));
-   const actualTotalTokens = entry.actualTotalTokens 
-     ?? (entry.totalTokens - (entry.cachedTokens || 0));
-   
+   const actualRequestTokens =
+   	entry.actualRequestTokens ??
+   	entry.requestTokens - (entry.cachedTokens || 0);
+   const actualTotalTokens =
+   	entry.actualTotalTokens ?? entry.totalTokens - (entry.cachedTokens || 0);
+
    await query(insertQuery, [
-     // ... other fields ...
-     actualRequestTokens,  // Use actual instead of entry.requestTokens
-     entry.responseTokens, // Response tokens are never cached
-     actualTotalTokens,     // Use actual instead of entry.totalTokens
-     // ... rest of fields ...
+   	// ... other fields ...
+   	actualRequestTokens, // Use actual instead of entry.requestTokens
+   	entry.responseTokens, // Response tokens are never cached
+   	actualTotalTokens, // Use actual instead of entry.totalTokens
+   	// ... rest of fields ...
    ]);
    ```
 
@@ -251,12 +272,16 @@ For each AI call:
 **Location:** `endRequest()` (Lines 400-500)
 
 **Changes:**
+
 1. Use `actualTotalTokens` and `actualRequestTokens` in summary calculations:
+
    ```typescript
    const actualTotalTokens = summary.actualTotalTokens || 0;
    const actualRequestTokens = summary.actualRequestTokens || 0;
-   
-   logger.info(`   📊 Total Tokens: ${actualTotalTokens.toLocaleString()} (Request: ${actualRequestTokens.toLocaleString()}, Response: ${summary.responseTokens.toLocaleString()})`);
+
+   logger.info(
+   	`   📊 Total Tokens: ${actualTotalTokens.toLocaleString()} (Request: ${actualRequestTokens.toLocaleString()}, Response: ${summary.responseTokens.toLocaleString()})`
+   );
    ```
 
 2. Update cost calculation to use actual tokens:
@@ -272,14 +297,17 @@ For each AI call:
 **File:** `scripts/create-performance-logs-table.sql`
 
 **Changes:**
+
 1. Add new columns for actual tokens:
+
    ```sql
-   ALTER TABLE performance_logs 
+   ALTER TABLE performance_logs
    ADD COLUMN IF NOT EXISTS actual_request_tokens INTEGER DEFAULT 0,
    ADD COLUMN IF NOT EXISTS actual_total_tokens INTEGER DEFAULT 0;
    ```
 
 2. Add comments:
+
    ```sql
    COMMENT ON COLUMN performance_logs.request_tokens IS 'Total request tokens including cached (for analytics)';
    COMMENT ON COLUMN performance_logs.actual_request_tokens IS 'Actual paid request tokens (request_tokens - cached_tokens)';
@@ -291,7 +319,7 @@ For each AI call:
    ```sql
    -- Backfill actual tokens for existing records
    UPDATE performance_logs
-   SET 
+   SET
      actual_request_tokens = request_tokens - COALESCE((metadata->>'cachedTokens')::integer, 0),
      actual_total_tokens = total_tokens - COALESCE((metadata->>'cachedTokens')::integer, 0)
    WHERE metadata->>'cachedTokens' IS NOT NULL;
@@ -304,7 +332,9 @@ For each AI call:
 ### Phase 8: Update Other AI Call Types
 
 **Files to Update:**
+
 1. `src/services/ai/OpenAIService.ts`:
+
    - `analyzeImage()` (Lines 492-540): Extract cached tokens from vision API
    - `createEmbedding()`: Embeddings don't support caching, but ensure consistency
    - `transcribeAudio()`: Transcriptions don't support caching, but ensure consistency
@@ -313,6 +343,7 @@ For each AI call:
    - Ensure transcription calls use same token calculation pattern
 
 **Changes:**
+
 - Apply same `actualTokens = totalTokens - cachedTokens` logic
 - For APIs without caching, `actualTokens = totalTokens` (no change)
 
@@ -325,17 +356,18 @@ For each AI call:
 ### For Existing Data
 
 1. **Backfill Script:**
+
    ```sql
    -- Calculate actual tokens from metadata
    UPDATE performance_logs
-   SET 
+   SET
      actual_request_tokens = request_tokens - COALESCE((metadata->>'cachedTokens')::integer, 0),
      actual_total_tokens = total_tokens - COALESCE((metadata->>'cachedTokens')::integer, 0)
    WHERE metadata->>'cachedTokens' IS NOT NULL;
-   
+
    -- For records without cached tokens, actual = total
    UPDATE performance_logs
-   SET 
+   SET
      actual_request_tokens = request_tokens,
      actual_total_tokens = total_tokens
    WHERE actual_request_tokens IS NULL OR actual_request_tokens = 0;
@@ -357,6 +389,7 @@ For each AI call:
 ### Unit Tests
 
 1. **Token Calculation Tests:**
+
    - Test `actualRequestTokens = requestTokens - cachedTokens`
    - Test `actualTotalTokens = totalTokens - cachedTokens`
    - Test edge cases: `cachedTokens = 0`, `cachedTokens = requestTokens`
@@ -368,6 +401,7 @@ For each AI call:
 ### Integration Tests
 
 1. **End-to-End Flow:**
+
    - Send a message that triggers AI calls with caching
    - Verify database has correct `actual_request_tokens` and `actual_total_tokens`
    - Verify console output shows actual tokens
@@ -379,6 +413,7 @@ For each AI call:
 ### Manual Testing
 
 1. **Console Output Verification:**
+
    - Send a message and check console summary
    - Verify token counts match: `actualTotalTokens = totalTokens - cachedTokens`
 
@@ -395,6 +430,7 @@ For each AI call:
 ### Updated Queries
 
 **Old Query (Inflated):**
+
 ```sql
 SELECT SUM(total_tokens) as total_tokens
 FROM performance_logs
@@ -403,6 +439,7 @@ WHERE user_phone = '+972507564671';
 ```
 
 **New Query (Accurate):**
+
 ```sql
 SELECT SUM(actual_total_tokens) as total_tokens
 FROM performance_logs
@@ -413,11 +450,13 @@ WHERE user_phone = '+972507564671';
 ### Statistics to Update
 
 1. **User Statistics:**
+
    - Total Tokens: Use `actual_total_tokens`
    - Cost Calculation: Already correct (uses cached pricing)
    - Token Usage Trends: Use `actual_total_tokens`
 
 2. **Agent Statistics:**
+
    - Tokens per Agent: Use `actual_total_tokens`
    - Average Tokens per Call: Use `actual_total_tokens`
 
@@ -432,10 +471,12 @@ WHERE user_phone = '+972507564671';
 ### Strategy
 
 1. **Keep Original Fields:**
+
    - `request_tokens`, `response_tokens`, `total_tokens` remain in database
    - `CallLogEntry` and `RequestSummary` keep original fields
 
 2. **Add New Fields:**
+
    - `actual_request_tokens`, `actual_total_tokens` are new additions
    - Default to calculated value if not present
 
@@ -464,19 +505,23 @@ WHERE user_phone = '+972507564671';
 ## Success Criteria
 
 ✅ **Database:**
+
 - `actual_request_tokens` and `actual_total_tokens` are stored correctly
 - `actual_request_tokens = request_tokens - cached_tokens` (from metadata)
 - All new records have actual token fields populated
 
 ✅ **Console Output:**
+
 - Token counts show actual paid tokens
 - Cache savings are still displayed separately
 
 ✅ **Statistics:**
+
 - Dashboard shows accurate token usage (actual paid tokens)
 - Cost calculations remain correct (already use cached pricing)
 
 ✅ **Backward Compatibility:**
+
 - Existing queries still work (using original fields)
 - New queries use actual fields for accurate reporting
 
@@ -488,4 +533,3 @@ WHERE user_phone = '+972507564671';
 - **Response tokens are never cached:** No need to calculate `actualResponseTokens`
 - **Cost calculation is already correct:** Uses separate pricing for cached vs non-cached tokens
 - **This change only affects token counting:** Not cost calculation or caching logic
-

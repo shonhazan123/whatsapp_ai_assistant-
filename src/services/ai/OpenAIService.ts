@@ -1,4 +1,4 @@
-import { DEFAULT_MODEL, openai } from '../../config/openai';
+import { DEFAULT_MODEL, GPT_4O_MINI_MODEL, GPT_5_NANO_MODEL, openai } from '../../config/openai';
 import { SystemPrompts } from '../../config/system-prompts';
 import { FunctionDefinition } from '../../core/types/AgentTypes';
 import { CachedMessage } from '../../types/CacheTypes';
@@ -291,12 +291,21 @@ export class OpenAIService {
           { role: 'system', content: SystemPrompts.getMessageEnhancementPrompt() },
           { role: 'user', content: message }
         ],
-        temperature: 0.7,
+        // temperature: 0.7,
         maxTokens: 500,
-        model: 'gpt-4o-mini'
+        model: GPT_5_NANO_MODEL
       }, trackingRequestId);
 
-      return response.choices[0]?.message?.content?.trim() || '';
+      const generatedMessage = response.choices[0]?.message?.content?.trim() || '';
+      
+      // Validate response is not empty - treat as error case
+      if (!generatedMessage) {
+        this.logger.warn('AI generated empty response, using original message as fallback');
+        // Return original message as fallback instead of empty string
+        return message;
+      }
+      
+      return generatedMessage;
     } catch (error) {
       this.logger.error('Error generating response:', error);
       throw new Error(`Error generating response: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -333,9 +342,9 @@ export class OpenAIService {
 
       const completion = await this.createCompletion({
         messages,
-        temperature: 0.1,
-        maxTokens: 200,
-        model: DEFAULT_MODEL // Keep gpt-5 as is (not gpt-5.1, so not using DEFAULT_MODEL)
+        // temperature: 0.1,
+        maxTokens: 500,
+        model: GPT_4O_MINI_MODEL // Keep gpt-5 as is (not gpt-5.1, so not using DEFAULT_MODEL)
       }, trackingRequestId);
 
       const rawContent = completion.choices[0]?.message?.content?.trim();

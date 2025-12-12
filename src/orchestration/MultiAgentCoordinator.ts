@@ -1,4 +1,4 @@
-import { DEFAULT_MODEL } from '../config/openai';
+import { DEFAULT_MODEL, GPT_4O_MINI_MODEL } from '../config/openai';
 import { SystemPrompts } from '../config/system-prompts';
 import { ServiceContainer } from '../core/container/ServiceContainer';
 import { RequestContext } from '../core/context/RequestContext';
@@ -73,6 +73,11 @@ export class MultiAgentCoordinator {
       const plan = await this.planActions(messageText, context, involvedAgents);
       if (plan.length === 0) {
         logger.warn('Planner returned empty plan for orchestrated request');
+        // Fallback: If single agent and empty plan, route directly (likely single operation)
+        if (involvedAgents.length === 1) {
+          logger.info(`🔄 Fallback: Routing directly to ${involvedAgents[0]} agent (empty plan for single-agent request)`);
+          return await this.executeSingleAgent(involvedAgents[0], messageText, userPhone, context);
+        }
         return this.buildNoActionResponse(intentDecision.primaryIntent);
       }
 
@@ -386,7 +391,7 @@ export class MultiAgentCoordinator {
   }
 
   private async generateGeneralResponse(context: any[], messageText: string): Promise<string> {
-    const requestId = setAgentNameForTracking('orchestrator');
+    const requestId = setAgentNameForTracking('General Agent');
 
     const messages: any[] = [
       {
@@ -402,8 +407,9 @@ export class MultiAgentCoordinator {
 
     const completion = await this.openaiService.createCompletion({
       messages: messages as any,
-      temperature: 0.7,
-      maxTokens: 500
+      // temperature: 0.7,
+      maxTokens: 500,
+      model: GPT_4O_MINI_MODEL
     }, requestId);
 
     return completion.choices[0]?.message?.content?.trim() || 'I could not generate a response.';
@@ -551,8 +557,8 @@ export class MultiAgentCoordinator {
           }
         ],
         // temperature: 0.4,
-        // maxTokens: 300,
-        model: DEFAULT_MODEL
+        maxTokens: 300,
+        model: GPT_4O_MINI_MODEL
       }, requestId);
 
       const text = completion.choices[0]?.message?.content?.trim();

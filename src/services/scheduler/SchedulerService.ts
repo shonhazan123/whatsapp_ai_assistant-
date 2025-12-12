@@ -7,7 +7,7 @@ export class SchedulerService {
   private isRunning: boolean = false;
   private morningDigestHour: number;
 
-  constructor(reminderService?: ReminderService, morningDigestHour: number = 8) {
+  constructor(reminderService?: ReminderService, morningDigestHour: number = 10) {
     this.reminderService = reminderService || new ReminderService();
     this.morningDigestHour = morningDigestHour;
   }
@@ -23,8 +23,8 @@ export class SchedulerService {
 
     logger.info('📅 Starting reminder scheduler...');
 
-    // Run reminder checks every 5 minutes
-    cron.schedule('*/5 * * * *', async () => {
+    // Run reminder checks every 1 minutes
+    cron.schedule('*/1 * * * *', async () => {
       try {
         await this.reminderService.sendUpcomingReminders();
       } catch (error) {

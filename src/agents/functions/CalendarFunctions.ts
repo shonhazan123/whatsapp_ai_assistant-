@@ -20,6 +20,7 @@ export class CalendarFunction implements IFunction {
           'create',
           'createMultiple',
           'createRecurring',
+          'createMultipleRecurring',
           'get',
           'getEvents',
           'update',
@@ -97,6 +98,34 @@ export class CalendarFunction implements IFunction {
             }
           },
           required: ['summary', 'start', 'end']
+        }
+      },
+      recurringEvents: {
+        type: 'array',
+        description: 'Array of recurring events for createMultipleRecurring operation. Each event must have summary, startTime, endTime, and days.',
+        items: {
+          type: 'object',
+          properties: {
+            summary: { type: 'string', description: 'Event title/summary' },
+            startTime: { type: 'string', description: 'Start time (e.g., "09:00")' },
+            endTime: { type: 'string', description: 'End time (e.g., "18:00")' },
+            days: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'For WEEKLY: day names (e.g., ["Monday"], ["Tuesday", "Thursday"]). For MONTHLY: day numbers as strings (e.g., ["10"], ["20"])'
+            },
+            description: { type: 'string', description: 'Event description' },
+            location: { type: 'string', description: 'Event location' },
+            until: { type: 'string', description: 'Optional ISO date to stop recurrence' },
+            reminderMinutesBefore: {
+              anyOf: [
+                { type: 'number' },
+                { type: 'null' }
+              ],
+              description: 'Minutes before the event to trigger a popup reminder'
+            }
+          },
+          required: ['summary', 'startTime', 'endTime', 'days']
         }
       },
       timeMin: { type: 'string', description: 'Start time for getEvents operation (ISO format)' },
@@ -285,12 +314,12 @@ Please specify the exact title or provide more details so I can update the corre
     },
     language: 'he' | 'en'
   ): Promise<{ eventId?: string; recurringEventId?: string; error?: string; isRecurring?: boolean }> {
-    // If no explicit window was provided, default to a 1-day back to 30-days forward window
+    // If no explicit window was provided, default to a 1-day back to 90-days forward window
     // This ensures we always fetch something when only summary/day/time are supplied
     if (!criteria.timeMin || !criteria.timeMax) {
       const now = new Date();
       const defaultMin = new Date(now.getTime() - 24 * 60 * 60 * 1000); // yesterday
-      const defaultMax = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000); // +30 days
+      const defaultMax = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000); // +90 days
       criteria.timeMin = criteria.timeMin ?? defaultMin.toISOString();
       criteria.timeMax = criteria.timeMax ?? defaultMax.toISOString();
     }
@@ -620,6 +649,80 @@ Please specify the exact title or provide more details so I can update the corre
             reminders
           });
 
+        // ✅ Create multiple recurring events
+        case 'createMultipleRecurring':
+          if (!params.recurringEvents?.length) {
+            return { success: false, error: 'recurringEvents array is required for createMultipleRecurring operation' };
+          }
+          
+          const results: any[] = [];
+          const errors: any[] = [];
+          
+          for (const event of params.recurringEvents) {
+            if (!event.summary || !event.startTime || !event.endTime || !event.days) {
+              errors.push({ 
+                event: event.summary || 'Unknown', 
+                error: 'Summary, startTime, endTime, and days are required for each recurring event' 
+              });
+              continue;
+            }
+            
+            // Detect recurrence type: if days are numeric (1-31), it's monthly; if day names, it's weekly
+            let recurrence: 'weekly' | 'daily' | 'monthly' = 'weekly';
+            
+            if (event.days && event.days.length > 0) {
+              const firstDay = event.days[0];
+              const dayNum = parseInt(firstDay, 10);
+              if (!isNaN(dayNum) && dayNum >= 1 && dayNum <= 31) {
+                recurrence = 'monthly';
+              }
+            }
+            
+            const reminders = this.buildReminder(event.reminderMinutesBefore);
+            
+            try {
+              const result = await this.calendarService.createRecurringEvent({
+                summary: event.summary,
+                startTime: event.startTime,
+                endTime: event.endTime,
+                days: event.days,
+                recurrence: recurrence,
+                description: event.description,
+                location: event.location,
+                until: event.until,
+                reminders
+              });
+              
+              if (result.success) {
+                results.push({
+                  summary: event.summary,
+                  id: result.data?.id,
+                  recurringEventId: result.data?.recurringEventId
+                });
+              } else {
+                errors.push({ 
+                  event: event.summary, 
+                  error: result.error || 'Failed to create recurring event' 
+                });
+              }
+            } catch (error) {
+              errors.push({ 
+                event: event.summary, 
+                error: error instanceof Error ? error.message : 'Unknown error' 
+              });
+            }
+          }
+          
+          return {
+            success: errors.length === 0,
+            message: `Created ${results.length} recurring event(s)${errors.length ? `, ${errors.length} failed` : ''}`,
+            data: {
+              created: results,
+              errors: errors.length > 0 ? errors : undefined,
+              count: results.length
+            }
+          };
+
         // ✅ Get recurring instances
         case 'getRecurringInstances':
           if (!params.eventId) return { success: false, error: 'Event ID is required for getRecurringInstances' };
@@ -819,13 +922,19 @@ Please specify the exact title or provide more details so I can update the corre
             const phrase = params.summary || '';
             const excludeSummaries = params.excludeSummaries;
 
-            if (params.timeMin && params.timeMax) {
-              return await this.deleteByWindow(phrase || undefined, params.timeMin, params.timeMax, excludeSummaries);
+            // Extract timeMin/timeMax from searchCriteria if provided
+            const searchCriteria = params.searchCriteria || {};
+            const timeMin = params.timeMin || searchCriteria.timeMin;
+            const timeMax = params.timeMax || searchCriteria.timeMax;
+            const searchSummary = phrase || searchCriteria.summary;
+
+            if (timeMin && timeMax) {
+              return await this.deleteByWindow(searchSummary || undefined, timeMin, timeMax, excludeSummaries);
             }
 
             const inferredWindow = this.deriveWindow(params, phrase);
             if (inferredWindow) {
-              return await this.deleteByWindow(phrase || undefined, inferredWindow.timeMin, inferredWindow.timeMax, excludeSummaries);
+              return await this.deleteByWindow(searchSummary || undefined, inferredWindow.timeMin, inferredWindow.timeMax, excludeSummaries);
             }
 
             const result = await resolver.resolveOneOrAsk(phrase, userId, 'event');

@@ -1,10 +1,11 @@
 import { query } from '../../config/database';
+import { NUDGE_LIMIT } from '../../config/reminder-config';
 import { RequestContext } from '../../core/context/RequestContext';
 import { RequestUserContext } from '../../types/UserContext';
 import { logger } from '../../utils/logger';
 import { OpenAIService } from '../ai/OpenAIService';
 import { CalendarService } from '../calendar/CalendarService';
-import { ReminderRecurrence, Task } from '../database/TaskService';
+import { ReminderRecurrence, Task, TaskService } from '../database/TaskService';
 import { UserService } from '../database/UserService';
 import { PerformanceTracker } from '../performance/PerformanceTracker';
 import { sendWhatsAppMessage } from '../whatsapp';
@@ -23,6 +24,7 @@ interface TaskWithUser extends Task {
 export class ReminderService {
   private calendarService: CalendarService;
   private userService: UserService;
+  private taskService: TaskService;
   private performanceTracker: PerformanceTracker;
 
   constructor(
@@ -32,6 +34,7 @@ export class ReminderService {
     this.openaiService = openaiService || new OpenAIService(this.loggerInstance);
     this.calendarService = new CalendarService(this.loggerInstance);
     this.userService = new UserService(this.loggerInstance);
+    this.taskService = new TaskService(this.loggerInstance);
     this.performanceTracker = PerformanceTracker.getInstance();
   }
 
@@ -83,13 +86,35 @@ export class ReminderService {
             continue;
           }
 
+          // Check nudge limit for nudge-type reminders
+          const nudgeCount = task.nudge_count || 0;
+          if (recurrence?.type === 'nudge' && nudgeCount >= NUDGE_LIMIT) {
+            // Delete task if nudge limit reached
+            this.loggerInstance.info(`Nudge limit (${NUDGE_LIMIT}) reached for task ${task.id}, auto-deleting: ${task.text}`);
+            await this.deleteTask(task.id);
+            continue;
+          }
+
           // Send reminder
           const rawData = this.buildRecurringReminderData(task);
           const message = await this.enhanceMessageWithAI(rawData, task.phone);
           await sendWhatsAppMessage(task.phone, message);
           this.loggerInstance.info(`✅ Sent recurring reminder to ${task.phone}: ${task.text}`);
 
-          // Calculate and update next_reminder_at
+          // Increment nudge count for nudge-type reminders
+          if (recurrence?.type === 'nudge') {
+            const newNudgeCount = await this.taskService.incrementNudgeCount(task.id);
+            this.loggerInstance.info(`Incremented nudge count for task ${task.id}: ${newNudgeCount}/${NUDGE_LIMIT}`);
+            
+            // Check if we just hit the limit (15th nudge was sent)
+            if (newNudgeCount >= NUDGE_LIMIT) {
+              this.loggerInstance.info(`Nudge limit (${NUDGE_LIMIT}) reached after sending reminder, auto-deleting task ${task.id}: ${task.text}`);
+              await this.deleteTask(task.id);
+              continue; // Don't schedule next reminder
+            }
+          }
+
+          // Calculate and update next_reminder_at (only if task wasn't deleted)
           if (recurrence) {
             const nextReminderAt = this.calculateNextRecurrence(recurrence, new Date());
             await this.updateNextReminderAt(task.id, nextReminderAt.toISOString());
@@ -241,6 +266,13 @@ export class ReminderService {
       'UPDATE tasks SET next_reminder_at = $1 WHERE id = $2',
       [nextReminderAt, taskId]
     );
+  }
+
+  /**
+   * Delete a task (used for auto-deleting after nudge limit)
+   */
+  private async deleteTask(taskId: string): Promise<void> {
+    await query('DELETE FROM tasks WHERE id = $1', [taskId]);
   }
 
   /**

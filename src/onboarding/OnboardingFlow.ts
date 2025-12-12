@@ -82,7 +82,7 @@ export class OnboardingFlow {
    */
   isUsingGoogleCalendar(messageText: string): boolean {
     const normalized = messageText.toLowerCase().trim();
-    const googleKeywords = ['google calendar', 'יומן גוגל', 'גוגל', 'google'];
+    const googleKeywords = ['google calendar', 'יומן גוגל', 'גוגל', 'google','גוגל קלנדר'];
     return googleKeywords.some(keyword => normalized.includes(keyword));
   }
 

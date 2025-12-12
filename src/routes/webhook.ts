@@ -9,6 +9,7 @@ import { UserOnboardingHandler } from '../services/onboarding/UserOnboardingHand
 import { PerformanceLogService } from '../services/performance/PerformanceLogService';
 import { PerformanceTracker } from '../services/performance/PerformanceTracker';
 import { transcribeAudio } from '../services/transcription';
+import { MessageIdCache } from '../services/webhook/MessageIdCache';
 import {
   downloadWhatsAppMedia,
   sendTypingIndicator,
@@ -27,6 +28,7 @@ const conversationWindow = ConversationWindow.getInstance();
 const onboardingHandler = new UserOnboardingHandler(logger);
 const performanceTracker = PerformanceTracker.getInstance();
 const performanceLogService = PerformanceLogService.getInstance();
+const messageIdCache = MessageIdCache.getInstance();
 
 // Webhook verification (GET request from WhatsApp)
 whatsappWebhook.get('/whatsapp', (req: Request, res: Response) => {
@@ -60,6 +62,12 @@ whatsappWebhook.post('/whatsapp', async (req: Request, res: Response) => {
         
         if (messages && messages.length > 0) {
           for (const message of messages) {
+            // Check for duplicate message ID before processing
+            if (message.id && messageIdCache.has(message.id)) {
+              logger.info(`⏭️  Skipping duplicate message ID: ${message.id.substring(0, 20)}...`);
+              continue;
+            }
+            
             await handleIncomingMessage(message);
           }
         }
@@ -67,7 +75,7 @@ whatsappWebhook.post('/whatsapp', async (req: Request, res: Response) => {
     }
   } catch (error) {
     logger.error('Error processing webhook:', error);
-    res.sendStatus(500);
+    // Don't send status here - already sent 200 above
   }
 });
 
@@ -84,6 +92,12 @@ async function handleIncomingMessage(message: WhatsAppMessage): Promise<void> {
     const userPhone = normalizeWhatsAppNumber(rawNumber);
     let messageText = '';
     
+    // Mark message ID as processed (before any async operations)
+    if (message.id) {
+      messageIdCache.add(message.id);
+    }
+    
+    await sendTypingIndicator(userPhone, message.id);
     // Start performance tracking
     performanceRequestId = performanceTracker.startRequest(userPhone);
 
@@ -97,7 +111,6 @@ async function handleIncomingMessage(message: WhatsAppMessage): Promise<void> {
       logger.info(`↩️  This is a reply to message ID: ${replyToMessageId}`);
     }
 
-    await sendTypingIndicator(userPhone, message.id);
 
     // Step 2: Handle different message types
     logger.debug('Step 2: Processing message content...');

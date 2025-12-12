@@ -122,7 +122,6 @@ export class ResponseFormatter {
             // Keep original value but add formatted version
             result[key] = value;
             result[`${key}_formatted`] = this.formatRelativeDate(parsed);
-            logger.debug(`📅 Formatted date: ${key} = "${value}" → "${result[`${key}_formatted`]}"`);
           } else {
             result[key] = value;
           }

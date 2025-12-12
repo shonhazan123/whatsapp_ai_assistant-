@@ -11,6 +11,7 @@ The WhatsApp AI Assistant now tracks **actual paid tokens** (excluding cached to
 The `performance_logs` table now has **two sets of token columns**:
 
 1. **Original columns (for analytics):**
+
    - `request_tokens` - Total request tokens including cached
    - `response_tokens` - Response tokens (never cached)
    - `total_tokens` - Total tokens including cached
@@ -38,6 +39,7 @@ The `performance_logs` table now has **two sets of token columns**:
 ```
 
 **Migration Steps:**
+
 1. Run `scripts/add-actual-tokens-columns.sql` in your Supabase SQL Editor
 2. Verify migration: `SELECT COUNT(*) FROM performance_logs WHERE actual_total_tokens = 0 AND total_tokens > 0;` should return 0 or only records with no cached tokens
 
@@ -48,8 +50,9 @@ The `performance_logs` table now has **two sets of token columns**:
 ### 1. User Statistics
 
 **Current Query (WRONG - uses inflated tokens):**
+
 ```sql
-SELECT 
+SELECT
   user_phone,
   COUNT(DISTINCT session_id) as sessions,
   COUNT(*) as calls,
@@ -61,8 +64,9 @@ GROUP BY user_phone;
 ```
 
 **Updated Query (CORRECT - uses actual paid tokens):**
+
 ```sql
-SELECT 
+SELECT
   user_phone,
   COUNT(DISTINCT session_id) as sessions,
   COUNT(*) as calls,
@@ -77,6 +81,7 @@ GROUP BY user_phone;
 ```
 
 **Example Output:**
+
 ```
 User: +972507564671
 Sessions: 2
@@ -88,8 +93,9 @@ Cost: $1.0239  (unchanged - already uses correct pricing)
 ### 2. Agent Statistics
 
 **Updated Query:**
+
 ```sql
-SELECT 
+SELECT
   agent,
   COUNT(*) as calls,
   SUM(actual_total_tokens) as total_tokens,  -- ✅ Use actual_total_tokens
@@ -107,8 +113,9 @@ ORDER BY total_tokens DESC;
 ### 3. Model Statistics
 
 **Updated Query:**
+
 ```sql
-SELECT 
+SELECT
   model,
   COUNT(*) as calls,
   SUM(actual_total_tokens) as total_tokens,  -- ✅ Use actual_total_tokens
@@ -125,8 +132,9 @@ ORDER BY total_tokens DESC;
 ### 4. Session Statistics
 
 **Updated Query:**
+
 ```sql
-SELECT 
+SELECT
   session_id,
   user_phone,
   COUNT(DISTINCT request_id) as requests,
@@ -142,10 +150,12 @@ GROUP BY session_id, user_phone;
 ### 5. Cost Calculation
 
 **IMPORTANT:** Cost calculation is **already correct** and doesn't need changes. It uses:
+
 - `cached_tokens` from metadata for cached pricing (90% discount)
 - `non_cached_tokens` for regular pricing
 
 **Current Cost Logic (KEEP AS IS):**
+
 ```typescript
 // Cost calculation already handles cached tokens correctly
 const cachedTokens = metadata->>'cachedTokens';
@@ -164,7 +174,7 @@ You can now add cache analytics to the dashboard:
 ### Cache Hit Rate by Agent
 
 ```sql
-SELECT 
+SELECT
   agent,
   COUNT(*) as total_calls,
   SUM(CASE WHEN (metadata->>'cachedTokens')::integer > 0 THEN 1 ELSE 0 END) as cache_hits,
@@ -182,7 +192,7 @@ ORDER BY cache_hit_rate_percent DESC;
 ### Cache Savings
 
 ```sql
-SELECT 
+SELECT
   DATE(timestamp) as date,
   SUM((metadata->>'cachedTokens')::integer) as cached_tokens,
   SUM(request_tokens) as total_request_tokens,
@@ -203,7 +213,7 @@ ORDER BY date DESC;
 
 ```sql
 -- Should return 0 rows (all records should have actual <= total)
-SELECT 
+SELECT
   id,
   request_tokens,
   actual_request_tokens,
@@ -219,7 +229,7 @@ WHERE actual_request_tokens > request_tokens
 
 ```sql
 -- Should return 0 rows (actual should equal total - cached)
-SELECT 
+SELECT
   id,
   request_tokens,
   actual_request_tokens,
@@ -236,7 +246,7 @@ WHERE actual_request_tokens != (request_tokens - COALESCE((metadata->>'cachedTok
 -- Should return 0 rows (all records should have actual tokens)
 SELECT COUNT(*) as missing_actual_tokens
 FROM performance_logs
-WHERE actual_total_tokens = 0 
+WHERE actual_total_tokens = 0
   AND total_tokens > 0
   AND timestamp > NOW() - INTERVAL '1 day';
 ```
@@ -261,6 +271,7 @@ WHERE actual_total_tokens = 0
 ## Example: Before vs After
 
 ### Before (Inflated):
+
 ```
 User: +972507564671
 Calls: 109
@@ -270,6 +281,7 @@ Cost: $1.0239
 ```
 
 ### After (Accurate):
+
 ```
 User: +972507564671
 Calls: 109
@@ -284,6 +296,7 @@ Cost: $1.0239  (unchanged - already correct)
 ## Frontend Display Recommendations
 
 ### Option 1: Show Both Metrics
+
 ```
 Total Tokens: 510,000 (Paid)
 Cached Tokens: 252,400 (90% savings)
@@ -291,12 +304,14 @@ Total with Cache: 762,400 (for reference)
 ```
 
 ### Option 2: Primary Metric Only
+
 ```
 Tokens: 510,000
 (Cached: 252,400 saved)
 ```
 
 ### Option 3: Detailed Breakdown
+
 ```
 Request Tokens: 450,000 (Paid: 300,000, Cached: 150,000)
 Response Tokens: 60,000
@@ -308,6 +323,7 @@ Total: 510,000 (Paid)
 ## Questions?
 
 If you encounter any issues:
+
 1. Check that the migration script ran successfully
 2. Verify `actual_total_tokens` column exists: `SELECT column_name FROM information_schema.columns WHERE table_name = 'performance_logs' AND column_name LIKE 'actual%';`
 3. Check for null values: `SELECT COUNT(*) FROM performance_logs WHERE actual_total_tokens IS NULL;`
@@ -317,14 +333,15 @@ If you encounter any issues:
 
 ## Summary
 
-**Key Takeaway:** 
+**Key Takeaway:**
+
 - Use `actual_total_tokens` and `actual_request_tokens` for all statistics and displays
 - Keep `total_tokens` and `request_tokens` for cache analytics only
 - Cost calculation is already correct - don't change it
 - Response tokens are never cached - use `response_tokens` directly
 
 **Impact:**
+
 - Token counts will now accurately reflect what users actually paid for
 - Statistics will show realistic token usage (not inflated by cached tokens)
 - Cache savings can be displayed separately for transparency
-

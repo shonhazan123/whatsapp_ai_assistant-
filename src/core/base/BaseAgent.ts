@@ -121,7 +121,9 @@ export abstract class BaseAgent implements IAgent {
 
         // Add the appropriate call format to the assistant message
         if (isToolCallFormat) {
-          assistantMessage.tool_calls = toolCalls;
+          // CRITICAL: Only include the tool call that was executed to avoid OpenAI API errors
+          // If multiple tool calls exist, filter to only the one we executed
+          assistantMessage.tool_calls = toolCalls.filter((tc: any) => tc.id === toolCallId);
         } else {
           assistantMessage.function_call = functionCall;
         }
