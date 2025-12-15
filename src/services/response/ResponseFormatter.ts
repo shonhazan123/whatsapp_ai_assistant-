@@ -145,9 +145,186 @@ export class ResponseFormatter {
   }
 
   /**
-   * Pre-process the result message to format dates before sending to LLM
+   * Extract context metadata from assistant message and result message
+   * This helps the LLM understand which agent made the call and what operation was performed
    */
-  private preprocessResultMessage(resultMessage: any): any {
+  private extractResponseContext(assistantMessage: any, resultMessage: any): any {
+    try {
+      const metadata: any = {
+        agent: 'unknown',
+        functionName: 'unknown',
+        operation: 'unknown',
+        entityType: 'unknown',
+        context: {
+          isRecurring: false,
+          isNudge: false,
+          hasDueDate: false,
+          isMultiple: false,
+          isCalendarEvent: false,
+          isReminder: false,
+          isToday: false,
+          isTomorrowOrLater: false
+        }
+      };
+
+      // Extract from assistantMessage.tool_calls
+      if (assistantMessage?.tool_calls && assistantMessage.tool_calls.length > 0) {
+        const toolCall = assistantMessage.tool_calls[0];
+        const functionName = toolCall?.function?.name || 'unknown';
+        metadata.functionName = functionName;
+
+        // Map function name to agent
+        if (functionName === 'calendarOperations') {
+          metadata.agent = 'calendar';
+          metadata.entityType = 'event';
+          metadata.context.isCalendarEvent = true;
+        } else if (functionName === 'taskOperations') {
+          metadata.agent = 'database';
+          metadata.entityType = 'reminder';
+          metadata.context.isReminder = true;
+        } else if (functionName === 'listOperations') {
+          metadata.agent = 'database';
+          metadata.entityType = 'list';
+        } else if (functionName === 'gmailOperations') {
+          metadata.agent = 'gmail';
+          metadata.entityType = 'email';
+        } else if (functionName === 'memoryOperations') {
+          metadata.agent = 'memory';
+          metadata.entityType = 'memory';
+        }
+
+        // Parse function arguments
+        try {
+          const args = typeof toolCall?.function?.arguments === 'string' 
+            ? JSON.parse(toolCall.function.arguments)
+            : toolCall?.function?.arguments || {};
+          
+          metadata.operation = args.operation || 'unknown';
+
+          // Detect multiple operations
+          if (metadata.operation.includes('Multiple')) {
+            metadata.context.isMultiple = true;
+          }
+
+          // Detect recurring operations
+          if (metadata.operation.includes('Recurring') || args.recurrence || args.recurring) {
+            metadata.context.isRecurring = true;
+          }
+
+          // Check for reminder recurrence (nudge)
+          if (args.reminderRecurrence) {
+            metadata.context.isRecurring = true;
+            if (args.reminderRecurrence.type === 'nudge') {
+              metadata.context.isNudge = true;
+            }
+          }
+
+          // Check for due date
+          if (args.dueDate || args.due_date) {
+            metadata.context.hasDueDate = true;
+          }
+        } catch (parseError) {
+          logger.warn('Failed to parse function arguments:', parseError);
+        }
+      }
+
+      // Extract from result message to supplement context
+      try {
+        if (resultMessage?.content) {
+          const resultContent = typeof resultMessage.content === 'string'
+            ? JSON.parse(resultMessage.content)
+            : resultMessage.content;
+
+          // Check for recurrence in result
+          if (resultContent.recurrence || resultContent.recurringEventId) {
+            metadata.context.isRecurring = true;
+          }
+
+          // Check for reminder recurrence
+          if (resultContent.reminder_recurrence || resultContent.reminderRecurrence) {
+            metadata.context.isRecurring = true;
+            const recurrence = resultContent.reminder_recurrence || resultContent.reminderRecurrence;
+            if (recurrence?.type === 'nudge' || (typeof recurrence === 'object' && recurrence.type === 'nudge')) {
+              metadata.context.isNudge = true;
+            }
+          }
+
+          // Check for due date and determine if today/tomorrow
+          const dueDate = resultContent.due_date || resultContent.dueDate;
+          const dueDateFormatted = resultContent.due_date_formatted || resultContent.dueDate_formatted;
+          if (dueDate) {
+            metadata.context.hasDueDate = true;
+          }
+
+          // Check start date for calendar events
+          const startDate = resultContent.start || resultContent.startTime;
+          const startFormatted = resultContent.start_formatted || resultContent.startTime_formatted;
+          if (startDate || startFormatted) {
+            const dateToCheck = startFormatted || dueDateFormatted;
+            if (dateToCheck) {
+              if (dateToCheck.includes('היום') || dateToCheck.includes('today')) {
+                metadata.context.isToday = true;
+              } else if (dateToCheck.includes('מחר') || dateToCheck.includes('tomorrow') || dateToCheck.includes('יום')) {
+                metadata.context.isTomorrowOrLater = true;
+              }
+            } else if (dueDate || startDate) {
+              // Parse ISO date to check if tomorrow or later
+              const dateStr = startDate || dueDate;
+              const parsed = this.parseISOToLocalTime(dateStr);
+              if (parsed) {
+                const now = new Date();
+                const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                const tomorrow = new Date(today);
+                tomorrow.setDate(tomorrow.getDate() + 1);
+                const taskDate = new Date(parsed.date.getFullYear(), parsed.date.getMonth(), parsed.date.getDate());
+                
+                if (taskDate.getTime() === today.getTime()) {
+                  metadata.context.isToday = true;
+                } else if (taskDate.getTime() >= tomorrow.getTime()) {
+                  metadata.context.isTomorrowOrLater = true;
+                }
+              }
+            }
+          } else if (dueDateFormatted) {
+            if (dueDateFormatted.includes('היום') || dueDateFormatted.includes('today')) {
+              metadata.context.isToday = true;
+            } else {
+              metadata.context.isTomorrowOrLater = true;
+            }
+          }
+        }
+      } catch (resultParseError) {
+        logger.warn('Failed to parse result message for context:', resultParseError);
+      }
+
+      return metadata;
+    } catch (error) {
+      logger.warn('Failed to extract response context, using defaults:', error);
+      // Return minimal metadata as fallback
+      return {
+        agent: 'unknown',
+        functionName: 'unknown',
+        operation: 'unknown',
+        entityType: 'unknown',
+        context: {
+          isRecurring: false,
+          isNudge: false,
+          hasDueDate: false,
+          isMultiple: false,
+          isCalendarEvent: false,
+          isReminder: false,
+          isToday: false,
+          isTomorrowOrLater: false
+        }
+      };
+    }
+  }
+
+  /**
+   * Pre-process the result message to format dates before sending to LLM
+   * Also injects context metadata to help LLM understand the operation
+   */
+  private preprocessResultMessage(resultMessage: any, metadata?: any): any {
     if (!resultMessage || !resultMessage.content) return resultMessage;
     
     try {
@@ -169,6 +346,11 @@ export class ResponseFormatter {
           formattedContent.recurrence_text = formattedContent.recurrence;
         }
       }
+
+      // Inject metadata as _metadata field for LLM to use
+      if (metadata) {
+        formattedContent._metadata = metadata;
+      }
       
       // Return a copy with formatted content
       return {
@@ -176,7 +358,7 @@ export class ResponseFormatter {
         content: JSON.stringify(formattedContent)
       };
     } catch (error) {
-      // If parsing fails, return original
+      // If parsing fails, return original (fallback)
       logger.warn('Failed to preprocess result message for date formatting:', error);
       return resultMessage;
     }
@@ -198,9 +380,14 @@ export class ResponseFormatter {
     try {
       logger.debug('🎨 Using ResponseFormatter (cheap model) for final message generation');
 
+      // Extract context metadata from assistant message and result message
+      const metadata = this.extractResponseContext(assistantMessage, resultMessage);
+      logger.debug('📋 Extracted response context metadata:', metadata);
+
       // Pre-process the result message to format ISO dates into human-readable strings
       // This prevents the LLM from misinterpreting timezone offsets
-      const processedResultMessage = this.preprocessResultMessage(resultMessage);
+      // Also injects metadata for LLM context awareness
+      const processedResultMessage = this.preprocessResultMessage(resultMessage, metadata);
 
       // Use ResponseFormatterPrompt which contains all the exact formatting instructions
       // This is separate from the agent's system prompt which focuses on function calling logic
@@ -245,14 +432,61 @@ export class ResponseFormatter {
       }
 
       if (!rawResponse || rawResponse.trim().length === 0) {
-        logger.warn('⚠️  Formatter returned empty response');
-        return 'Operation completed.';
+        logger.warn('⚠️  Formatter returned empty response, attempting fallback');
+        // Fallback: try to extract a meaningful message from the original result
+        return this.extractFallbackMessage(resultMessage) || 'Operation completed.';
       }
 
       return rawResponse;
     } catch (error) {
-      logger.error('Error formatting response:', error);
-      return 'Sorry, I encountered an error processing your request.';
+      logger.error('Error formatting response, using fallback:', error);
+      // Fallback: extract meaningful message from original result
+      return this.extractFallbackMessage(resultMessage) || 'Sorry, I encountered an error processing your request.';
+    }
+  }
+
+  /**
+   * Extract a fallback message from the result message if formatting fails
+   * This provides a graceful degradation when the LLM formatter fails
+   */
+  private extractFallbackMessage(resultMessage: any): string | null {
+    try {
+      if (!resultMessage?.content) return null;
+
+      const content = typeof resultMessage.content === 'string'
+        ? JSON.parse(resultMessage.content)
+        : resultMessage.content;
+
+      // Try to extract success message or meaningful content
+      if (content.message) {
+        return content.message;
+      }
+
+      // For calendar events, try to format a basic message
+      if (content.summary && (content.start || content.start_formatted)) {
+        const summary = content.summary;
+        const time = content.start_formatted || content.start;
+        return `✅ האירוע "${summary}" נוסף ליומן${time ? ` ב-${time}` : ''}`;
+      }
+
+      // For tasks/reminders, try to format basic message
+      if (content.text || (Array.isArray(content.tasks) && content.tasks.length > 0)) {
+        const taskText = content.text || content.tasks[0]?.text || '';
+        const dueDate = content.due_date_formatted || content.due_date || content.dueDate;
+        if (taskText) {
+          return `✅ יצרתי תזכורת: ${taskText}${dueDate ? ` (${dueDate})` : ''}`;
+        }
+      }
+
+      // Generic success message
+      if (content.success !== false) {
+        return 'Operation completed successfully.';
+      }
+
+      return null;
+    } catch (error) {
+      logger.warn('Failed to extract fallback message:', error);
+      return null;
     }
   }
 }

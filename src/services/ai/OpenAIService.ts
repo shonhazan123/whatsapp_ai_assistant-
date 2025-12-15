@@ -1,4 +1,4 @@
-import { DEFAULT_MODEL, GPT_4O_MINI_MODEL, GPT_5_NANO_MODEL, openai } from '../../config/openai';
+import { DEFAULT_MODEL, GPT_4O_MINI_MODEL, openai } from '../../config/openai';
 import { SystemPrompts } from '../../config/system-prompts';
 import { FunctionDefinition } from '../../core/types/AgentTypes';
 import { CachedMessage } from '../../types/CacheTypes';
@@ -293,7 +293,7 @@ export class OpenAIService {
         ],
         // temperature: 0.7,
         maxTokens: 500,
-        model: GPT_5_NANO_MODEL
+        model: GPT_4O_MINI_MODEL
       }, trackingRequestId);
 
       const generatedMessage = response.choices[0]?.message?.content?.trim() || '';
