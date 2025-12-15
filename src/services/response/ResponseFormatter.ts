@@ -201,6 +201,11 @@ export class ResponseFormatter {
           
           metadata.operation = args.operation || 'unknown';
 
+          // Detect listing operations (getAll, get)
+          if (metadata.operation === 'getAll' || metadata.operation === 'get') {
+            metadata.context.isListing = true;
+          }
+
           // Detect multiple operations
           if (metadata.operation.includes('Multiple')) {
             metadata.context.isMultiple = true;
@@ -222,6 +227,44 @@ export class ResponseFormatter {
           // Check for due date
           if (args.dueDate || args.due_date) {
             metadata.context.hasDueDate = true;
+          }
+
+          // Extract date context from filters for getAll operations
+          if (metadata.operation === 'getAll' && args.filters?.dueDateFrom && args.filters?.dueDateTo) {
+            try {
+              const fromDate = new Date(args.filters.dueDateFrom);
+              const toDate = new Date(args.filters.dueDateTo);
+              const today = new Date();
+              today.setHours(0, 0, 0, 0);
+              const tomorrow = new Date(today);
+              tomorrow.setDate(tomorrow.getDate() + 1);
+              
+              const fromDateOnly = new Date(fromDate);
+              fromDateOnly.setHours(0, 0, 0, 0);
+              const toDateOnly = new Date(toDate);
+              toDateOnly.setHours(0, 0, 0, 0);
+              
+              // Check if it's today
+              if (fromDateOnly.getTime() === today.getTime() && toDateOnly.getTime() === today.getTime()) {
+                metadata.dateContext = 'today';
+              }
+              // Check if it's tomorrow
+              else if (fromDateOnly.getTime() === tomorrow.getTime() && toDateOnly.getTime() === tomorrow.getTime()) {
+                metadata.dateContext = 'tomorrow';
+              }
+              // Otherwise, format the date
+              else if (fromDateOnly.getTime() === toDateOnly.getTime()) {
+                // Single date query - format it
+                const dateStr = fromDateOnly.toLocaleDateString('he-IL', { 
+                  year: 'numeric', 
+                  month: 'long', 
+                  day: 'numeric' 
+                });
+                metadata.dateContext = dateStr;
+              }
+            } catch (dateError) {
+              // Ignore date parsing errors
+            }
           }
         } catch (parseError) {
           logger.warn('Failed to parse function arguments:', parseError);
@@ -314,7 +357,8 @@ export class ResponseFormatter {
           isCalendarEvent: false,
           isReminder: false,
           isToday: false,
-          isTomorrowOrLater: false
+          isTomorrowOrLater: false,
+          isListing: false
         }
       };
     }
@@ -323,6 +367,7 @@ export class ResponseFormatter {
   /**
    * Pre-process the result message to format dates before sending to LLM
    * Also injects context metadata to help LLM understand the operation
+   * Categorizes tasks for getAll operations (overdue/upcoming/unplanned)
    */
   private preprocessResultMessage(resultMessage: any, metadata?: any): any {
     if (!resultMessage || !resultMessage.content) return resultMessage;
@@ -345,6 +390,77 @@ export class ResponseFormatter {
         } else if (typeof formattedContent.recurrence === 'string') {
           formattedContent.recurrence_text = formattedContent.recurrence;
         }
+      }
+
+      // Categorize tasks for getAll operations
+      if (metadata?.operation === 'getAll' && formattedContent?.data?.tasks && Array.isArray(formattedContent.data.tasks)) {
+        const now = new Date();
+        const categorized = {
+          overdue: [] as any[],
+          upcoming: [] as any[],
+          recurring: [] as any[],
+          unplanned: [] as any[]
+        };
+
+        // Use date context from metadata (extracted in extractResponseContext)
+        const dateContext = metadata?.dateContext || null;
+
+        formattedContent.data.tasks.forEach((task: any) => {
+          // Skip completed tasks
+          if (task.completed) return;
+
+          // Check if task has reminder_recurrence (recurring reminder)
+          // reminder_recurrence might be a JSON string or an object
+          let reminderRecurrence = task.reminder_recurrence;
+          if (typeof reminderRecurrence === 'string') {
+            try {
+              reminderRecurrence = JSON.parse(reminderRecurrence);
+            } catch (e) {
+              // If parsing fails, treat as no recurrence
+              reminderRecurrence = null;
+            }
+          }
+          const hasRecurrence = reminderRecurrence !== null && reminderRecurrence !== undefined;
+          
+          if (hasRecurrence) {
+            // Recurring reminder - separate category
+            categorized.recurring.push(task);
+          } else if (!task.due_date) {
+            // Unplanned task (no due date, no recurrence)
+            categorized.unplanned.push(task);
+          } else {
+            // Parse due date
+            const dueDate = new Date(task.due_date);
+            if (isNaN(dueDate.getTime())) {
+              // Invalid date, treat as unplanned
+              categorized.unplanned.push(task);
+            } else if (dueDate < now) {
+              // Overdue task
+              categorized.overdue.push(task);
+            } else {
+              // Upcoming task
+              categorized.upcoming.push(task);
+            }
+          }
+        });
+
+        // Check if all categories are empty
+        const isEmpty = categorized.overdue.length === 0 && 
+                        categorized.upcoming.length === 0 && 
+                        categorized.recurring.length === 0 && 
+                        categorized.unplanned.length === 0;
+
+        // Add categorized data to formatted content
+        formattedContent.data._categorized = categorized;
+        formattedContent.data._currentTime = now.toISOString();
+        formattedContent.data._isEmpty = isEmpty;
+        formattedContent.data._dateContext = dateContext;
+      } else if (metadata?.operation === 'getAll' && formattedContent?.data?.tasks && Array.isArray(formattedContent.data.tasks)) {
+        // Handle simple list (no categorization) - check if empty
+        const isEmpty = formattedContent.data.tasks.length === 0 || 
+                        formattedContent.data.tasks.every((task: any) => task.completed);
+        formattedContent.data._isEmpty = isEmpty;
+        formattedContent.data._dateContext = metadata?.dateContext || null;
       }
 
       // Inject metadata as _metadata field for LLM to use
