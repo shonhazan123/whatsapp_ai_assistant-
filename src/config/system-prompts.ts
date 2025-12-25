@@ -1913,10 +1913,33 @@ ROUTING RULES (PHASE 1):
 
 
 8. **EXPLICIT CALENDAR MENTION** → calendar
-   - User explicitly says "calendar", "יומן", "ביומן", "ליומן", "add to calendar"
+   - User explicitly says "calendar", "יומן", "ביומן", "ליומן", "לוח שנה", "add to calendar"
    - Route to: calendar
    - Example: "Add meeting to calendar" → calendar
    - Example: "תוסיף ליומן פגישה מחר" → calendar
+
+9. **CALENDAR QUERIES / QUESTIONS ABOUT EVENTS** → calendar
+   - **CRITICAL**: If user asks questions about their calendar or events (past or upcoming) AND mentions calendar-related words → route to calendar
+   - Calendar-related words: "calendar", "יומן", "ביומן", "ליומן", "לוח שנה", "אירוע", "event", "פגישה", "meeting"
+   - Question patterns:
+     * Questions about past events: "מתי היה...", "when did I...", "מה היה...", "what was...", "איזה אירוע...", "which event..."
+     * Questions about upcoming events: "מה יש לי...", "what do I have...", "אילו אירועים...", "which events...", "מה האירועים...", "what events..."
+     * Questions about event details: "מתי...", "when..."
+   - Route to: calendar (even if it's just a question, not an action)
+   - Examples (Past Events):
+     * "מתי היה האירוע האחרון שלי?" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"]
+     * "When did I last have a meeting with John? It's in my calendar" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"]
+     * "מה היה האירוע שהיה לי בשבוע שעבר?" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"]
+     * "איזה אירועים היו לי בחודש שעבר?" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"]
+     * "מתי קיבלתי את הפגישה האחרונה? זה מופיע ביומן" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"]
+   - Examples (Upcoming Events):
+     * "מה יש לי מחר ביומן?" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"]
+     * "What events do I have this week?" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"]
+     * "אילו אירועים יש לי השבוע?" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"]
+     * "מה האירועים שלי בחודש הבא?" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"]
+     * "מתי יש לי פגישה עם דנה? זה ביומן" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"]
+     * "When is my next meeting? It's on my calendar" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"]
+   - **CRITICAL**: Even if the message is just a question (no action verb), if it mentions calendar/events → route to calendar, NOT general
 
 
 
@@ -1935,6 +1958,10 @@ SINGLE-AGENT, SINGLE OPERATION (requiresPlan: false):
 - "תזכיר לי בשש וחצי לבדוק משהו" → primaryIntent: "database", requiresPlan: false, involvedAgents: ["database"] (TODAY reminder, database only)
 - "Create a shopping list called Trip Prep, add towels and sunscreen" → primaryIntent: "database", requiresPlan: false, involvedAgents: ["database"] (single agent handles bulk create)
 - "What's on my calendar this Friday?" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"]
+- "מתי היה האירוע האחרון שלי? זה מופיע ביומן" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"] (question about past event with calendar mention)
+- "מה יש לי מחר ביומן?" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"] (question about upcoming events)
+- "When did I last have a meeting? It's in my calendar" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"] (question about past event)
+- "אילו אירועים היו לי השבוע שעבר?" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"] (question about past events)
 - "Please reply to the latest email from Ben confirming the shipment" → primaryIntent: "gmail", requiresPlan: false, involvedAgents: ["gmail"]
 - "Create multiple events for next week" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"] (bulk create, same operation)
 - "תוסיף לי מחר חדר כושר מתשע עד 11 ומ 11 וחצי עד חמש פיתוח תוכנה" → primaryIntent: "calendar", requiresPlan: false, involvedAgents: ["calendar"] (bulk create - multiple events in one message, same operation)

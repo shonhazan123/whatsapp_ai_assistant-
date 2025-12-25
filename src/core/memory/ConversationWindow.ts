@@ -203,36 +203,25 @@ export class ConversationWindow {
   }
 
   /**
-   * Remove oldest user-assistant pair
+   * Remove oldest user or assistant message (not system)
+   * Handles cases where agent sends messages without user messages (e.g., morning digests, reminders)
+   * Returns true if a message was removed, false otherwise
    */
-  private removeOldestPair(messages: ConversationMessage[]): void {
-    // Find first user message
-    const userIndex = messages.findIndex(m => m.role === 'user');
-    if (userIndex === -1) return;
+  private removeOldestContextMessage(messages: ConversationMessage[]): boolean {
+    // Find the oldest user or assistant message (not system)
+    const oldestIndex = messages.findIndex(m => m.role === 'user' || m.role === 'assistant');
     
-    // Remove user message
-    messages.splice(userIndex, 1);
-    
-    // Try to find and remove corresponding assistant (could be right after, or later)
-    // Look for assistant message after the user message
-    let assistantIndex = -1;
-    for (let i = userIndex; i < messages.length; i++) {
-      if (messages[i].role === 'assistant') {
-        assistantIndex = i;
-        break;
-      }
-      // If we hit another user message, stop looking
-      if (messages[i].role === 'user') {
-        break;
-      }
+    if (oldestIndex === -1) {
+      // No user or assistant messages to remove
+      return false;
     }
     
-    if (assistantIndex !== -1) {
-      messages.splice(assistantIndex, 1);
-      logger.debug(`Removed oldest user-assistant pair`);
-    } else {
-      logger.debug(`Removed oldest user message (no assistant found)`);
-    }
+    // Remove the oldest context message
+    const removedRole = messages[oldestIndex].role;
+    messages.splice(oldestIndex, 1);
+    logger.debug(`Removed oldest ${removedRole} message`);
+    
+    return true;
   }
 
   /**
@@ -287,13 +276,41 @@ export class ConversationWindow {
       
       // Calculate tokens for new message
       const newMessageTokens = this.estimateTokens(content);
-      const currentTotalTokens = this.getTotalTokens(messages);
-      const currentContextCount = this.countContextMessages(messages);
       
       // Enforce message count limit (user + assistant only, system excluded from count)
       if (role === 'user' || role === 'assistant') {
+        let loopCount = 0;
+        let previousCount = this.countContextMessages(messages);
+        
         while (this.countContextMessages(messages) >= this.MAX_TOTAL_MESSAGES) {
-          this.removeOldestPair(messages);
+          loopCount++;
+          
+          // Safety check to prevent infinite loops
+          if (loopCount > 100) {
+            logger.error(`Infinite loop detected in message count limit enforcement! Count: ${previousCount}, Limit: ${this.MAX_TOTAL_MESSAGES}`);
+            throw new Error('Infinite loop in message count limit enforcement');
+          }
+          
+          // Try to remove oldest context message
+          const removed = this.removeOldestContextMessage(messages);
+          const newCount = this.countContextMessages(messages);
+          
+          // Safety check: if removal didn't reduce count, force break to prevent infinite loop
+          if (!removed || newCount >= previousCount) {
+            logger.error(`Removal failed or count didn't decrease! removed=${removed}, previous=${previousCount}, new=${newCount}`);
+            // Force remove the oldest message regardless (fallback)
+            const fallbackIndex = messages.findIndex(m => m.role === 'user' || m.role === 'assistant');
+            if (fallbackIndex !== -1) {
+              messages.splice(fallbackIndex, 1);
+              logger.warn(`Force removed message at index ${fallbackIndex} to break potential infinite loop`);
+            } else {
+              // No context messages left, break the loop
+              logger.error(`No context messages to remove, breaking loop to prevent infinite loop`);
+              break;
+            }
+          }
+          
+          previousCount = this.countContextMessages(messages);
         }
       }
       
@@ -301,6 +318,7 @@ export class ConversationWindow {
       // Recalculate tokens after message count limit enforcement
       const updatedTotalTokens = this.getTotalTokens(messages);
       const projectedTotalTokens = updatedTotalTokens + newMessageTokens;
+      
       if (projectedTotalTokens > this.MAX_TOTAL_TOKENS) {
         // Remove messages until we have room for the new one
         const targetTokens = this.MAX_TOTAL_TOKENS - newMessageTokens;
@@ -341,6 +359,7 @@ export class ConversationWindow {
       
     } catch (error) {
       logger.error('Error adding message to conversation window:', error);
+      throw error;
     }
   }
   
