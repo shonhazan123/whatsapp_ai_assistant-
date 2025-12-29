@@ -43,6 +43,16 @@ export class MainAgent extends BaseAgent {
       if (options?.replyToMessageId) {
         const repliedToMessage = this.conversationWindow.getRepliedToMessage(userPhone, options.replyToMessageId);
         if (repliedToMessage) {
+          // Check if the replied-to message has reminder context
+          if (repliedToMessage.metadata?.reminderContext) {
+            const reminderCtx = repliedToMessage.metadata.reminderContext;
+            const taskTexts = reminderCtx.taskTexts || [];
+            if (taskTexts.length > 0) {
+              enhancedMessage = `[Context: User is replying to a reminder message about: ${taskTexts.join(', ')}]\n\n${message}`;
+              this.logger.debug(`User replied to reminder message with tasks: ${taskTexts.join(', ')}`);
+            }
+          }
+          
           // Check if the replied-to message has image context
           if (repliedToMessage.metadata?.imageContext) {
             imageContextToInclude = repliedToMessage.metadata.imageContext;
@@ -57,16 +67,19 @@ export class MainAgent extends BaseAgent {
           // This helps the AI understand references like "ב1" (item #1) or "האירוע הראשון" (the first event)
           const hasNumberedList = /^\d+\.|^\s*\d+\./.test(repliedToContent) || /\n\d+\./.test(repliedToContent);
           
-          if (hasNumberedList) {
-            // Include full list context (up to 1000 chars) so AI can match numbered references
-            const listContent = repliedToContent.substring(0, 1000);
-            enhancedMessage = `[The user is replying to a message that listed items:\n"${listContent}"\n\nIMPORTANT: When the user refers to an item by number (like "ב1", "#1", "הראשון", "the first one"), they mean the corresponding numbered item from the list above. Extract the details (name, time, etc.) from that numbered item and use them as searchCriteria (OLD values) when updating.]\n\nUser's message: ${message}`;
-            this.logger.debug(`User is replying to a numbered list message`);
-          } else {
-            // Regular reply context
-            const shortContent = repliedToContent.substring(0, 500);
-            enhancedMessage = `[Replying to: "${shortContent}"]\n\n${message}`;
-            this.logger.debug(`User is replying to message: "${shortContent.substring(0, 100)}..."`);
+          // Only add list context if we haven't already added reminder context
+          if (!repliedToMessage.metadata?.reminderContext) {
+            if (hasNumberedList) {
+              // Include full list context (up to 1000 chars) so AI can match numbered references
+              const listContent = repliedToContent.substring(0, 1000);
+              enhancedMessage = `[The user is replying to a message that listed items:\n"${listContent}"\n\nIMPORTANT: When the user refers to an item by number (like "ב1", "#1", "הראשון", "the first one"), they mean the corresponding numbered item from the list above. Extract the details (name, time, etc.) from that numbered item and use them as searchCriteria (OLD values) when updating.]\n\nUser's message: ${message}`;
+              this.logger.debug(`User is replying to a numbered list message`);
+            } else {
+              // Regular reply context
+              const shortContent = repliedToContent.substring(0, 500);
+              enhancedMessage = `[Replying to: "${shortContent}"]\n\n${message}`;
+              this.logger.debug(`User is replying to message: "${shortContent.substring(0, 100)}..."`);
+            }
           }
         }
       }

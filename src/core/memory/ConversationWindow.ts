@@ -27,6 +27,12 @@ export interface ConversationMessage {
       imageType: 'structured' | 'random';
       extractedAt: number; // Timestamp
     };
+    reminderContext?: {
+      taskTexts: string[]; // Task texts from the reminder message
+      taskIds: string[]; // Task IDs from the reminder message
+      reminderType: 'one-time' | 'recurring' | 'nudge'; // Type of reminder
+      sentAt: string; // ISO timestamp when reminder was sent
+    };
   };
 }
 
