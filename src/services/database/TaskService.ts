@@ -23,6 +23,7 @@ export interface Task {
   reminder?: string; // INTERVAL string for one-time reminders
   reminder_recurrence?: ReminderRecurrence | null;
   next_reminder_at?: string | null;
+  nudge_count?: number; // Number of nudge reminders sent (for nudge-type reminders)
   completed: boolean;
   created_at: string;
   subtasks?: Subtask[];
@@ -106,10 +107,17 @@ export class TaskService extends BaseService {
       return result;
     }
 
+    // Allow dueDate with reminderRecurrence ONLY for nudge type (nudge starts from that time)
     if (hasRecurringReminder && result.dueDate) {
-      result.validationError =
-        'Recurring reminders cannot have a dueDate. Remove dueDate when creating a recurring reminder.';
-      return result;
+      const recurrenceType = typeof result.reminderRecurrence === 'string' 
+        ? JSON.parse(result.reminderRecurrence).type 
+        : result.reminderRecurrence?.type;
+      
+      if (recurrenceType !== 'nudge') {
+        result.validationError =
+          'Only nudge-type reminders can have a dueDate. Daily/weekly/monthly reminders are standalone and cannot have a dueDate.';
+        return result;
+      }
     }
 
     if (hasRecurringReminder && result.reminder) {
@@ -131,7 +139,13 @@ export class TaskService extends BaseService {
       if (result.dueDate && result.reminder && typeof result.reminder === 'string' && !hasRecurringReminder) {
         result.nextReminderAt = this.calculateOneTimeReminderAt(result.dueDate, result.reminder);
       } else if (result.reminderRecurrence) {
-        result.nextReminderAt = this.calculateNextReminderAt(result.reminderRecurrence);
+        // Special case: nudge WITH dueDate starts from dueDate, not now
+        if (result.reminderRecurrence.type === 'nudge' && result.dueDate) {
+          const interval = result.reminderRecurrence.interval || '10 minutes';
+          result.nextReminderAt = this.calculateNudgeWithDueDate(result.dueDate, interval);
+        } else {
+          result.nextReminderAt = this.calculateNextReminderAt(result.reminderRecurrence);
+        }
       } else {
         result.nextReminderAt = null;
       }
@@ -339,6 +353,31 @@ export class TaskService extends BaseService {
   }
 
   /**
+   * Calculate next reminder time for nudge recurrence starting from dueDate
+   * Used when a reminder has both a dueDate and a nudge recurrence
+   * Formula: next_reminder_at = dueDate + interval
+   * 
+   * Example: dueDate = 8am, interval = "5 minutes" → next_reminder_at = 8:05am
+   */
+  private calculateNudgeWithDueDate(dueDate: string, interval: string): string {
+    const dueDateObj = new Date(dueDate);
+    const minutes = this.parseIntervalToMinutes(interval);
+    
+    if (minutes < 1) {
+      throw new Error('Nudge interval must be at least 1 minute');
+    }
+    
+    // Round to start of minute (strip seconds/milliseconds)
+    dueDateObj.setSeconds(0, 0);
+    
+    // Add interval to dueDate
+    const nextReminderDate = new Date(dueDateObj);
+    nextReminderDate.setMinutes(nextReminderDate.getMinutes() + minutes);
+    
+    return nextReminderDate.toISOString();
+  }
+
+  /**
    * Parse interval string to minutes
    * Examples: "10 minutes" → 10, "1 hour" → 60, "2 hours" → 120
    */
@@ -383,9 +422,9 @@ export class TaskService extends BaseService {
       }
 
       const result = await this.executeSingleQuery<Task>(
-        `INSERT INTO tasks (user_id, text, category, due_date, reminder, reminder_recurrence, next_reminder_at) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7) 
-         RETURNING id, text, category, due_date, reminder, reminder_recurrence, next_reminder_at, completed, created_at`,
+        `INSERT INTO tasks (user_id, text, category, due_date, reminder, reminder_recurrence, next_reminder_at, nudge_count) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) 
+         RETURNING id, text, category, due_date, reminder, reminder_recurrence, next_reminder_at, nudge_count, completed, created_at`,
         [
           userId,
           data.text,
@@ -393,7 +432,8 @@ export class TaskService extends BaseService {
           reminderPayload.dueDate || null,
           reminderPayload.reminder || null,
           reminderPayload.reminderRecurrence ? JSON.stringify(reminderPayload.reminderRecurrence) : null,
-          reminderPayload.nextReminderAt || null
+          reminderPayload.nextReminderAt || null,
+          0 // Initialize nudge_count to 0 for new tasks
         ]
       );
 
@@ -441,9 +481,9 @@ export class TaskService extends BaseService {
           }
 
           const result = await this.executeSingleQuery<Task>(
-            `INSERT INTO tasks (user_id, text, category, due_date, reminder, reminder_recurrence, next_reminder_at) 
-             VALUES ($1, $2, $3, $4, $5, $6, $7) 
-             RETURNING id, text, category, due_date, reminder, reminder_recurrence, next_reminder_at, completed, created_at`,
+            `INSERT INTO tasks (user_id, text, category, due_date, reminder, reminder_recurrence, next_reminder_at, nudge_count) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) 
+             RETURNING id, text, category, due_date, reminder, reminder_recurrence, next_reminder_at, nudge_count, completed, created_at`,
             [
               userId,
               sanitizedItem.text,
@@ -451,7 +491,8 @@ export class TaskService extends BaseService {
               reminderPayload.dueDate || null,
               reminderPayload.reminder || null,
               reminderPayload.reminderRecurrence ? JSON.stringify(reminderPayload.reminderRecurrence) : null,
-              reminderPayload.nextReminderAt || null
+              reminderPayload.nextReminderAt || null,
+              0 // Initialize nudge_count to 0 for new tasks
             ]
           );
 
@@ -495,7 +536,7 @@ export class TaskService extends BaseService {
       const userId = await this.resolveUserId(request.userId, request.userPhone);
       
       const task = await this.executeSingleQuery<Task>(
-        `SELECT id, text, category, due_date, reminder, reminder_recurrence, next_reminder_at, completed, created_at
+        `SELECT id, text, category, due_date, reminder, reminder_recurrence, next_reminder_at, nudge_count, completed, created_at
          FROM tasks
          WHERE user_id = $1 AND id = $2`,
         [userId, request.id]
@@ -522,7 +563,7 @@ export class TaskService extends BaseService {
       const userId = await this.resolveUserId(request.userId, request.userPhone);
       
       let query = `
-        SELECT id, text, category, due_date, reminder, reminder_recurrence, next_reminder_at, completed, created_at
+        SELECT id, text, category, due_date, reminder, reminder_recurrence, next_reminder_at, nudge_count, completed, created_at
         FROM tasks
         WHERE user_id = $1
       `;
@@ -705,6 +746,31 @@ export class TaskService extends BaseService {
       }
       this.logger.error('Error updating task:', error);
       return this.createErrorResponse('Failed to update task');
+    }
+  }
+
+  /**
+   * Increment nudge count for a task
+   * Returns the new count
+   */
+  async incrementNudgeCount(taskId: string): Promise<number> {
+    try {
+      const result = await this.executeSingleQuery<{ nudge_count: number }>(
+        `UPDATE tasks 
+         SET nudge_count = nudge_count + 1 
+         WHERE id = $1 
+         RETURNING nudge_count`,
+        [taskId]
+      );
+      
+      if (!result) {
+        throw new Error(`Task not found: ${taskId}`);
+      }
+      
+      return result.nudge_count;
+    } catch (error) {
+      this.logger.error(`Error incrementing nudge count for task ${taskId}:`, error);
+      throw error;
     }
   }
 

@@ -11,7 +11,8 @@
         "dev:ngrok": "node scripts/start-with-ngrok.js",
         "test:webhook": "node scripts/test-webhook.js",
         "whatsapp:info": "node scripts/get-whatsapp-info.js",
-        "debug": "node scripts/debug-setup.js"
+        "debug": "node scripts/debug-setup.js",
+        "debug:morning-digest": "ts-node scripts/debug-morning-digest.ts"
     },
     "keywords": [
         "whatsapp",

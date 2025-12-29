@@ -9,6 +9,12 @@ const ACCESS_TOKEN = process.env.WHATSAPP_API_TOKEN;
 
 export async function sendWhatsAppMessage(to: string, message: string): Promise<string | null> {
   try {
+    // Validate message is not empty
+    if (!message || message.trim().length === 0) {
+      logger.error(`Cannot send empty message to ${to}`);
+      throw new Error('Message cannot be empty');
+    }
+    
     // WhatsApp API requires phone numbers without + sign
     const normalizedPhone = to.replace(/^\+/, '');
     

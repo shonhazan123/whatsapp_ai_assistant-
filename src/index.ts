@@ -1,7 +1,9 @@
 import dotenv from 'dotenv';
 import express from 'express';
 import { testConnection } from './config/database';
+import { ENVIRONMENT } from './config/environment';
 import { authRouter } from './routes/auth';
+import { debugRouter } from './routes/debug';
 import { whatsappWebhook } from './routes/webhook';
 import { SchedulerService } from './services/scheduler/SchedulerService';
 import { logger } from './utils/logger';
@@ -23,8 +25,16 @@ app.get('/health', (req, res) => {
 // Auth routes
 app.use('/auth', authRouter);
 
-// WhatsApp webhook routes
-app.use('/webhook', whatsappWebhook);
+// Debug routes (only accessible in DEBUG environment)
+app.use('/api/debug', debugRouter);
+
+// WhatsApp webhook routes (only registered in PRODUCTION)
+if (ENVIRONMENT === 'PRODUCTION') {
+  app.use('/webhook', whatsappWebhook);
+  logger.info('✅ WhatsApp webhook routes registered (PRODUCTION mode)');
+} else {
+  logger.info('⚠️  WhatsApp webhook routes skipped (DEBUG mode)');
+}
 
 // Error handling middleware
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {

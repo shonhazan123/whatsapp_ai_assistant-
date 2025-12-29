@@ -95,6 +95,14 @@ export class CalendarService {
     return context;
   }
 
+  /**
+   * Detects if a date string is in date-only format (YYYY-MM-DD) vs datetime format
+   */
+  private isDateOnlyFormat(dateStr: string): boolean {
+    if (!dateStr || typeof dateStr !== 'string') return false;
+    return /^\d{4}-\d{2}-\d{2}$/.test(dateStr) && !dateStr.includes('T');
+  }
+
   private buildOAuthClient(context: RequestUserContext) {
     if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
       throw new Error('Google OAuth client is not configured properly.');
@@ -374,19 +382,54 @@ export class CalendarService {
       const calendarClient = this.buildCalendar();
       const calendarId = this.resolveCalendarId(request.calendarId);
 
-      const response = await calendarClient.events.patch({
-        calendarId,
-        eventId: request.eventId,
-        requestBody: updates
-      });
+      try {
+        const response = await calendarClient.events.patch({
+          calendarId,
+          eventId: request.eventId,
+          requestBody: updates
+        });
 
-      this.logger.info(`✅ Event updated: ${request.eventId}`);
-      
-      return {
-        success: true,
-        data: response.data,
-        message: 'Event updated successfully'
-      };
+        this.logger.info(`✅ Event updated: ${request.eventId}`);
+        
+        return {
+          success: true,
+          data: response.data,
+          message: 'Event updated successfully'
+        };
+      } catch (error: any) {
+        // Retry with date format if format mismatch (all-day event)
+        // Check for: 1) Invalid error, 2) Bad Request with date-only input, 3) date-only format in request
+        const isFormatError = error?.status === 400 && (
+          error?.errors?.[0]?.message?.includes('Invalid') ||
+          error?.errors?.[0]?.reason === 'badRequest'
+        );
+        const hasDateOnlyInput = (request.start && this.isDateOnlyFormat(request.start)) ||
+                                 (request.end && this.isDateOnlyFormat(request.end));
+        
+        if (isFormatError || hasDateOnlyInput) {
+          this.logger.warn(`⚠️  Format mismatch detected, retrying with date format for event: ${request.eventId}`);
+          if (updates.start?.dateTime) {
+            const dateOnly = updates.start.dateTime.split('T')[0];
+            updates.start = { date: dateOnly };
+          }
+          if (updates.end?.dateTime) {
+            const dateOnly = updates.end.dateTime.split('T')[0];
+            updates.end = { date: dateOnly };
+          }
+          const retryResponse = await calendarClient.events.patch({
+            calendarId,
+            eventId: request.eventId,
+            requestBody: updates
+          });
+          this.logger.info(`✅ Event updated (retry with date format): ${request.eventId}`);
+          return {
+            success: true,
+            data: retryResponse.data,
+            message: 'Event updated successfully'
+          };
+        }
+        throw error;
+      }
     } catch (error) {
       this.logger.error('Error updating calendar event:', error);
       return {
@@ -518,11 +561,41 @@ export class CalendarService {
 
       } else {
         // Weekly recurrence (default): days are day names
-        const firstDayIndex = this.getDayIndex(request.days[0]);
+        // Find the NEAREST day from the requested days (not just the first one)
+        const today = new Date();
+        const currentDayIndex = today.getDay();
         
-        while (startDate.getDay() !== firstDayIndex) {
-          startDate.setDate(startDate.getDate() + 1);
+        // Map all requested days to their indices and find nearest occurrence
+        const dayIndices = request.days.map(day => this.getDayIndex(day));
+        let nearestDayIndex = -1;
+        let daysToAdd = 7; // Max days to look ahead
+        
+        // Find the nearest day (including today if it's one of the requested days)
+        for (let i = 0; i <= 6; i++) {
+          const checkDayIndex = (currentDayIndex + i) % 7;
+          if (dayIndices.includes(checkDayIndex)) {
+            nearestDayIndex = checkDayIndex;
+            daysToAdd = i;
+            break;
+          }
         }
+        
+        // If no day found (shouldn't happen), fall back to first day
+        if (nearestDayIndex === -1) {
+          nearestDayIndex = dayIndices[0];
+          daysToAdd = 0;
+          while (startDate.getDay() !== nearestDayIndex) {
+          startDate.setDate(startDate.getDate() + 1);
+            daysToAdd++;
+          }
+        } else {
+          // Set to the nearest day
+          startDate.setDate(startDate.getDate() + daysToAdd);
+        }
+        
+        // Log which day we're starting from
+        const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        this.logger.info(`📅 Starting recurring event from ${dayNames[nearestDayIndex]} (${startDate.toDateString()}), days to add: ${daysToAdd}`);
 
         // Set the start time
         const [startHour, startMinute] = request.startTime.split(':').map(Number);

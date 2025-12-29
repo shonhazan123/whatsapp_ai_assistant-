@@ -1,5 +1,6 @@
 import { ServiceContainer } from '../../core/container/ServiceContainer';
 import { logger } from '../../utils/logger';
+import { prependTimeContext } from '../../utils/timeContext';
 import { OpenAIService } from '../ai/OpenAIService';
 
 export interface Task {
@@ -74,7 +75,7 @@ Return ONLY a JSON array of tasks in this format:
           },
           {
             role: 'user',
-            content: messageText
+            content: prependTimeContext(messageText) // Inject time context for accurate time parsing
           }
         ],
         model: 'gpt-4o-mini',

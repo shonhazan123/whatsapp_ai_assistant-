@@ -1,14 +1,17 @@
 import dotenv from 'dotenv';
 import express, { Request, Response } from 'express';
+import { ENVIRONMENT } from '../config/environment';
 import { RequestContext } from '../core/context/RequestContext';
 import { ConversationWindow } from '../core/memory/ConversationWindow';
 import { processMessageV2 } from '../index-v2';
 import { OpenAIService } from '../services/ai/OpenAIService';
 import { UserService } from '../services/database/UserService';
+import { DebugForwarderService } from '../services/debug/DebugForwarderService';
 import { UserOnboardingHandler } from '../services/onboarding/UserOnboardingHandler';
 import { PerformanceLogService } from '../services/performance/PerformanceLogService';
 import { PerformanceTracker } from '../services/performance/PerformanceTracker';
 import { transcribeAudio } from '../services/transcription';
+import { MessageIdCache } from '../services/webhook/MessageIdCache';
 import {
   downloadWhatsAppMedia,
   sendTypingIndicator,
@@ -27,49 +30,69 @@ const conversationWindow = ConversationWindow.getInstance();
 const onboardingHandler = new UserOnboardingHandler(logger);
 const performanceTracker = PerformanceTracker.getInstance();
 const performanceLogService = PerformanceLogService.getInstance();
+const messageIdCache = MessageIdCache.getInstance();
+
+// Initialize DebugForwarderService only in PRODUCTION
+const debugForwarder = ENVIRONMENT === 'PRODUCTION' ? new DebugForwarderService() : null;
 
 // Webhook verification (GET request from WhatsApp)
-whatsappWebhook.get('/whatsapp', (req: Request, res: Response) => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
+// Only register in PRODUCTION environment
+if (ENVIRONMENT === 'PRODUCTION') {
+  whatsappWebhook.get('/whatsapp', (req: Request, res: Response) => {
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
 
-  const verifyToken = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN;
+    const verifyToken = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN;
 
-  if (mode === 'subscribe' && token === verifyToken) {
-    logger.info('Webhook verified successfully');
-    res.status(200).send(challenge);
-  } else {
-    logger.warn('Webhook verification failed');
-    res.sendStatus(403);
-  }
-});
+    if (mode === 'subscribe' && token === verifyToken) {
+      logger.info('Webhook verified successfully');
+      res.status(200).send(challenge);
+    } else {
+      logger.warn('Webhook verification failed');
+      res.sendStatus(403);
+    }
+  });
+} else {
+  logger.info('⚠️  WhatsApp webhook registration skipped (ENVIRONMENT is DEBUG)');
+}
 
 // Webhook message handler (POST request from WhatsApp)
-whatsappWebhook.post('/whatsapp', async (req: Request, res: Response) => {
-  try {
-    const payload: WhatsAppWebhookPayload = req.body;
+// Only register in PRODUCTION environment
+if (ENVIRONMENT === 'PRODUCTION') {
+  whatsappWebhook.post('/whatsapp', async (req: Request, res: Response) => {
+    try {
+      const payload: WhatsAppWebhookPayload = req.body;
 
-    // Respond immediately to WhatsApp
-    res.sendStatus(200);
+      // Respond immediately to WhatsApp
+      res.sendStatus(200);
 
-    // Process the webhook payload
-    if (payload.entry && payload.entry[0]?.changes) {
-      for (const change of payload.entry[0].changes) {
-        const messages = change.value.messages;
-        
-        if (messages && messages.length > 0) {
-          for (const message of messages) {
-            await handleIncomingMessage(message);
+      // Process the webhook payload
+      if (payload.entry && payload.entry[0]?.changes) {
+        for (const change of payload.entry[0].changes) {
+          const messages = change.value.messages;
+          
+          if (messages && messages.length > 0) {
+            for (const message of messages) {
+              // Check for duplicate message ID before processing
+              if (message.id && messageIdCache.has(message.id)) {
+                logger.info(`⏭️  Skipping duplicate message ID: ${message.id.substring(0, 20)}...`);
+                continue;
+              }
+              
+              await handleIncomingMessage(message);
+            }
           }
         }
       }
+    } catch (error) {
+      logger.error('Error processing webhook:', error);
+      // Don't send status here - already sent 200 above
     }
-  } catch (error) {
-    logger.error('Error processing webhook:', error);
-    res.sendStatus(500);
-  }
-});
+  });
+} else {
+  logger.info('⚠️  WhatsApp webhook POST handler skipped (ENVIRONMENT is DEBUG)');
+}
 
 async function handleIncomingMessage(message: WhatsAppMessage): Promise<void> {
   const startTime = Date.now();
@@ -82,8 +105,59 @@ async function handleIncomingMessage(message: WhatsAppMessage): Promise<void> {
   try {
     const rawNumber = message.from;
     const userPhone = normalizeWhatsAppNumber(rawNumber);
+    
+    // Phase 5: Conditional forwarding in PRODUCTION
+    if (ENVIRONMENT === 'PRODUCTION' && debugForwarder && debugForwarder.shouldForwardToDebug(userPhone)) {
+      logger.info(`🔄 Forwarding message from ${userPhone} to DEBUG instance`);
+      
+      // Extract message text for forwarding
+      let messageText = '';
+      if (message.type === 'text' && message.text) {
+        messageText = message.text.body;
+      } else if (message.type === 'audio' && message.audio) {
+        // For audio, we'll need to transcribe it first or forward the audio ID
+        messageText = '[Audio message]';
+      } else if (message.type === 'image' && message.image) {
+        messageText = message.image.caption || '[Image message]';
+      }
+      
+      try {
+        const forwardResponse = await debugForwarder.forwardToDebug({
+          messageText,
+          userPhone,
+          messageId: message.id || '',
+          messageType: (message.type === 'text' || message.type === 'audio' || message.type === 'image') ? message.type : 'text',
+          replyToMessageId: message.context?.id,
+          whatsappMessageId: message.id,
+          audioId: message.audio?.id,
+          imageId: message.image?.id,
+          imageCaption: message.image?.caption
+        });
+        
+        if (forwardResponse.success) {
+          logger.info(`✅ Successfully forwarded to DEBUG and received response`);
+          // Response is already sent to WhatsApp by DEBUG instance
+          return;
+        } else {
+          logger.error(`❌ Failed to forward to DEBUG: ${forwardResponse.error}`);
+          await sendWhatsAppMessage(userPhone, forwardResponse.responseText || 'Debug service is currently unavailable.');
+          return;
+        }
+      } catch (error: any) {
+        logger.error(`❌ Error forwarding to DEBUG:`, error);
+        await sendWhatsAppMessage(userPhone, 'Debug service is currently unavailable. Please try again later.');
+        return;
+      }
+    }
+    
     let messageText = '';
     
+    // Mark message ID as processed (before any async operations)
+    if (message.id) {
+      messageIdCache.add(message.id);
+    }
+    
+    await sendTypingIndicator(userPhone, message.id);
     // Start performance tracking
     performanceRequestId = performanceTracker.startRequest(userPhone);
 
@@ -97,7 +171,6 @@ async function handleIncomingMessage(message: WhatsAppMessage): Promise<void> {
       logger.info(`↩️  This is a reply to message ID: ${replyToMessageId}`);
     }
 
-    await sendTypingIndicator(userPhone, message.id);
 
     // Step 2: Handle different message types
     logger.debug('Step 2: Processing message content...');
@@ -242,7 +315,12 @@ async function handleIncomingMessage(message: WhatsAppMessage): Promise<void> {
     const duration = Date.now() - startTime;
     logger.info(`✅ Message handled successfully in ${duration}ms`);
     
-    // Step 6: Upload performance logs to database (after response is sent)
+    // End performance tracking FIRST (needs requestCalls for cost calculation)
+    if (performanceRequestId) {
+      await performanceTracker.endRequest(performanceRequestId);
+    }
+    
+    // Step 6: Upload performance logs to database (after response is sent and summary printed)
     if (performanceRequestId) {
       try {
         const calls = performanceTracker.getRequestCalls(performanceRequestId);
@@ -259,15 +337,15 @@ async function handleIncomingMessage(message: WhatsAppMessage): Promise<void> {
       }
     }
     
-    // End performance tracking
-    if (performanceRequestId) {
-      await performanceTracker.endRequest(performanceRequestId);
-    }
-    
     logger.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
   } catch (error) {
     const duration = Date.now() - startTime;
     logger.error(`❌ Error handling message after ${duration}ms:`, error);
+    
+    // End performance tracking FIRST (needs requestCalls for cost calculation)
+    if (performanceRequestId) {
+      await performanceTracker.endRequest(performanceRequestId);
+    }
     
     // Upload performance logs even on error (if any were collected)
     if (performanceRequestId) {
@@ -282,8 +360,6 @@ async function handleIncomingMessage(message: WhatsAppMessage): Promise<void> {
       } catch (uploadError) {
         logger.error('Error uploading performance logs to database (error case):', uploadError);
       }
-      
-      await performanceTracker.endRequest(performanceRequestId);
     }
     
     try {

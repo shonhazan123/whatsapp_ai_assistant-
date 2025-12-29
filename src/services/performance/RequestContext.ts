@@ -90,6 +90,9 @@ export class PerformanceRequestContext {
     requestTokens: number;
     responseTokens: number;
     totalTokens: number;
+    cachedTokens?: number;
+    actualRequestTokens?: number;
+    actualTotalTokens?: number;
   }): void {
     const context = this.contexts.get(requestId);
     if (context) {
@@ -105,6 +108,9 @@ export class PerformanceRequestContext {
     requestTokens: number;
     responseTokens: number;
     totalTokens: number;
+    cachedTokens?: number;
+    actualRequestTokens?: number;
+    actualTotalTokens?: number;
   } | undefined {
     const context = this.contexts.get(requestId);
     return context?.lastAICall;

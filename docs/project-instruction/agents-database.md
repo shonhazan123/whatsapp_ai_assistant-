@@ -70,12 +70,36 @@ It talks to `TaskService`, `ListService`, `UserDataService`, and `OnboardingServ
 
 ---
 
+### IMPORTANT: TASK vs REMINDER Terminology
+
+**The database stores "tasks" but the terminology depends on whether it has a due date:**
+
+- **משימה (Task)** = A task with NO `due_date` - general to-do item
+- **תזכורת (Reminder)** = A task WITH a `due_date` - will notify at that time
+
+**Database fields:**
+
+- `due_date` = WHEN the reminder fires (this IS the reminder time)
+- `reminder` = Advance notice interval (OPTIONAL) - e.g., "30 minutes" before due_date
+- `next_reminder_at` = Calculated notification time (due_date minus reminder interval)
+- `reminder_recurrence` = For recurring reminders (daily/weekly/monthly/nudge)
+
+**Response formatting rules:**
+
+- If `due_date` exists → show "זמן: [date/time]"
+- If `reminder` field has value → show "תזכורת: X לפני"
+- If `reminder` field is null → OMIT the "תזכורת" line (reminder fires at due_date)
+- If no `due_date` → show "💡 לא ציינת מתי להזכיר לך..."
+
+---
+
 ### Tasks & Reminders – Parameters & Behavior
 
 - **Core fields**
 
   - `text`: task title/description.
-  - `dueDate`: ISO date/time for one-time reminders.
+  - `dueDate`: ISO date/time for one-time reminders (if null, it's a general task).
+  - `reminder`: Optional advance notice interval (e.g., "30 minutes").
   - `category`: user-defined grouping (e.g., work, personal).
   - `completed`: boolean.
 

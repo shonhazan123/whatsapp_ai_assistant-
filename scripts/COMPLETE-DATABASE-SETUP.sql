@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     reminder INTERVAL,
     reminder_recurrence JSONB,
     next_reminder_at TIMESTAMP WITH TIME ZONE,
+    nudge_count INTEGER DEFAULT 0,
     completed BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()

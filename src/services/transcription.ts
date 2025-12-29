@@ -26,11 +26,18 @@ export async function transcribeAudio(audioBuffer: Buffer): Promise<string> {
       // Rough estimate: ~1 token per second of audio
       const estimatedTokens = Math.ceil(audioBuffer.length / 1000); // Rough estimate
       
+      // Transcription doesn't support caching, so actual = total
+      const responseTokens = Math.ceil(transcription.text.length / 4);
+      const totalTokens = estimatedTokens + responseTokens;
+      
       const aiCallInfo = {
         model: 'whisper-1',
         requestTokens: estimatedTokens,
-        responseTokens: transcription.text.length / 4, // Rough estimate: ~1 token per 4 chars
-        totalTokens: estimatedTokens + Math.ceil(transcription.text.length / 4),
+        responseTokens: responseTokens,
+        totalTokens: totalTokens,
+        cachedTokens: 0, // No caching support
+        actualRequestTokens: estimatedTokens, // actual = total (no cache)
+        actualTotalTokens: totalTokens,
       };
       
       // Store last AI call info

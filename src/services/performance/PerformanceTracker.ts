@@ -6,13 +6,16 @@
 import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import { calculateCacheSavings, calculateCost } from '../../config/model-pricing';
 import { logger } from '../../utils/logger';
+import { PromptCacheService } from '../ai/PromptCacheService';
 import { PerformanceRequestContext } from './RequestContext';
-import { CallLogEntry, FunctionLogEntry, PerformanceContext, RequestSummary } from './types';
+import { CachePerformanceStats, CallLogEntry, FunctionLogEntry, PerformanceContext, RequestSummary } from './types';
 
 export class PerformanceTracker {
   private static instance: PerformanceTracker;
   private requestContext: PerformanceRequestContext;
+  private promptCacheService: PromptCacheService;
   private logsDir: string;
   private requestSummaries: Map<string, RequestSummary> = new Map();
   // In-memory storage for all calls and functions (for database upload)
@@ -21,6 +24,7 @@ export class PerformanceTracker {
 
   private constructor() {
     this.requestContext = PerformanceRequestContext.getInstance();
+    this.promptCacheService = PromptCacheService.getInstance();
     this.logsDir = path.join(process.cwd(), 'logs', 'performance');
     this.ensureLogsDirectory();
   }
@@ -100,6 +104,10 @@ export class PerformanceTracker {
       functionCall?: { name: string; arguments: any };
       success: boolean;
       error: string | null;
+      // Cache metrics (Phase 1)
+      cachedTokens?: number;
+      cacheHit?: boolean;
+      cacheWriteTokens?: number;
       metadata?: Record<string, any>;
     }
   ): Promise<void> {
@@ -121,6 +129,11 @@ export class PerformanceTracker {
       ? (options.responseContent.length > 1000 ? options.responseContent.substring(0, 1000) + '...' : options.responseContent)
       : undefined;
 
+    // Calculate actual paid tokens (excluding cached tokens)
+    const cachedTokens = options.cachedTokens || 0;
+    const actualRequestTokens = options.requestTokens - cachedTokens;
+    const actualTotalTokens = options.totalTokens - cachedTokens;
+
     const entry: CallLogEntry = {
       id: randomUUID(),
       timestamp: new Date().toISOString(),
@@ -131,9 +144,16 @@ export class PerformanceTracker {
       callType: options.callType,
       callSequence,
       model: options.model,
-      requestTokens: options.requestTokens,
+      requestTokens: options.requestTokens,  // Keep original for analytics
       responseTokens: options.responseTokens,
-      totalTokens: options.totalTokens,
+      totalTokens: options.totalTokens,      // Keep original for analytics
+      // Cache metrics (Phase 1)
+      cachedTokens: options.cachedTokens,
+      cacheHit: options.cacheHit,
+      cacheWriteTokens: options.cacheWriteTokens,
+      // Actual paid tokens (for cost reporting)
+      actualRequestTokens: actualRequestTokens,
+      actualTotalTokens: actualTotalTokens,
       startTime: new Date(options.startTime).toISOString(),
       endTime: new Date(options.endTime).toISOString(),
       durationMs: options.endTime - options.startTime,
@@ -233,6 +253,9 @@ export class PerformanceTracker {
       requestTokens?: number;
       responseTokens?: number;
       totalTokens?: number;
+      cachedTokens?: number;
+      actualRequestTokens?: number;
+      actualTotalTokens?: number;
     }
   ): Promise<void> {
     const context = this.requestContext.getContext(requestId);
@@ -257,6 +280,15 @@ export class PerformanceTracker {
     // Get agent name - ensure it's not null
     const agentName = context.currentAgent || 'unknown';
 
+    // Calculate actual tokens from parent AI call
+    const parentCachedTokens = parentAICall?.cachedTokens || 0;
+    const parentRequestTokens = parentAICall?.requestTokens || 0;
+    const parentTotalTokens = parentAICall?.totalTokens || 0;
+    const parentActualRequestTokens = parentAICall?.actualRequestTokens 
+      ?? (parentRequestTokens - parentCachedTokens);
+    const parentActualTotalTokens = parentAICall?.actualTotalTokens 
+      ?? (parentTotalTokens - parentCachedTokens);
+
     const entry: FunctionLogEntry = {
       id: randomUUID(),
       timestamp: new Date().toISOString(),
@@ -268,9 +300,12 @@ export class PerformanceTracker {
       functionName,
       operation,
       model: parentAICall?.model || null, // Inherited from parent AI call
-      requestTokens: parentAICall?.requestTokens || 0, // Inherited from parent AI call
+      requestTokens: parentRequestTokens, // Inherited from parent AI call (including cached)
       responseTokens: parentAICall?.responseTokens || 0, // Inherited from parent AI call
-      totalTokens: parentAICall?.totalTokens || 0, // Inherited from parent AI call
+      totalTokens: parentTotalTokens, // Inherited from parent AI call (including cached)
+      // Actual paid tokens (inherited from parent)
+      actualRequestTokens: parentActualRequestTokens,
+      actualTotalTokens: parentActualTotalTokens,
       startTime: new Date(startTime).toISOString(),
       endTime: new Date(endTime).toISOString(),
       durationMs: endTime - startTime,
@@ -314,12 +349,18 @@ export class PerformanceTracker {
         totalTokens: 0,
         requestTokens: 0,
         responseTokens: 0,
+        actualTotalTokens: 0,
+        actualRequestTokens: 0,
         totalAICalls: 0,
         totalFunctionCalls: 0,
         agentsUsed: [],
         functionsUsed: [],
         success: true,
         error: null,
+        // Cache metrics (Phase 1)
+        totalCachedTokens: 0,
+        cacheHitRate: 0,
+        estimatedCacheSavings: 0,
       };
       this.requestSummaries.set(requestId, summary);
     }
@@ -327,9 +368,31 @@ export class PerformanceTracker {
     if (summary) {
       if (entry.callType === 'completion' || entry.callType === 'embedding' || entry.callType === 'vision' || entry.callType === 'transcription') {
         summary.totalAICalls++;
+        
+        // ACTUAL tokens paid = total tokens, but cached tokens cost 90% less
+        // OpenAI charges: (cached_tokens * 0.003) + (non-cached_tokens * 0.03) per 1k
+        const cachedTokens = entry.cachedTokens || 0;
+        const nonCachedTokens = entry.requestTokens - cachedTokens;
+        
+        // Track actual usage (what OpenAI reports)
         summary.totalTokens += entry.totalTokens;
         summary.requestTokens += entry.requestTokens;
         summary.responseTokens += entry.responseTokens;
+        
+        // Track cache metrics (Phase 1)
+        if (cachedTokens > 0) {
+          summary.totalCachedTokens = (summary.totalCachedTokens || 0) + cachedTokens;
+          // Calculate cache savings using model-specific pricing
+          const model = entry.model || 'gpt-5.1';
+          const savings = calculateCacheSavings(model, cachedTokens);
+          summary.estimatedCacheSavings = (summary.estimatedCacheSavings || 0) + savings;
+        }
+        
+        // Calculate cache hit rate
+        if (summary.totalAICalls > 0) {
+          const cacheHits = this.requestCalls.get(requestId)?.filter(c => c.cacheHit).length || 0;
+          summary.cacheHitRate = cacheHits / summary.totalAICalls;
+        }
       }
 
       if (entry.agent && !summary.agentsUsed.includes(entry.agent)) {
@@ -345,6 +408,23 @@ export class PerformanceTracker {
         summary.error = entry.error || 'Unknown error';
       }
     }
+  }
+  
+  /**
+   * Get cache performance statistics
+   * Added in Phase 1: Prompt Caching
+   */
+  getCacheStats(): CachePerformanceStats {
+    const cacheStats = this.promptCacheService.getStats();
+    return {
+      date: new Date().toISOString().split('T')[0],
+      totalRequests: cacheStats.totalRequests,
+      cacheHits: cacheStats.cacheHits,
+      cacheMisses: cacheStats.cacheMisses,
+      cacheHitRate: cacheStats.cacheHitRate,
+      totalTokensCached: cacheStats.tokensSaved,
+      estimatedCostSavings: cacheStats.costSaved
+    };
   }
 
   /**
@@ -378,13 +458,73 @@ export class PerformanceTracker {
   private printRequestSummary(summary: RequestSummary): void {
     const durationSeconds = (summary.totalDurationMs / 1000).toFixed(2);
     
+    // Calculate ACTUAL cost using model-specific pricing
+    // Get all calls for this request to determine model mix
+    const calls = this.requestCalls.get(summary.requestId) || [];
+    const modelCosts = new Map<string, { input: number; output: number; cached: number }>();
+    
+    // Debug: Log calls for troubleshooting
+    if (calls.length === 0) {
+      logger.warn(`⚠️  No calls found for request ${summary.requestId}`);
+    } else {
+      logger.debug(`📊 Processing ${calls.length} calls for cost calculation`);
+    }
+    
+    // Aggregate costs per model
+    for (const call of calls) {
+      if (call.callType === 'completion' || call.callType === 'vision' || call.callType === 'embedding') {
+        const model = call.model || 'gpt-5.1';
+        const cached = call.cachedTokens || 0;
+        const nonCached = call.requestTokens - cached;
+        
+        logger.debug(`💰 Call: ${call.callType}, Model: ${model}, Request: ${call.requestTokens}, Cached: ${cached}, Response: ${call.responseTokens}`);
+        
+        if (!modelCosts.has(model)) {
+          modelCosts.set(model, { input: 0, output: 0, cached: 0 });
+        }
+        const costs = modelCosts.get(model)!;
+        costs.input += nonCached;
+        costs.output += call.responseTokens;
+        costs.cached += cached;
+      } else {
+        logger.debug(`⏭️  Skipping call type: ${call.callType}`);
+      }
+    }
+    
+    // Calculate total cost across all models
+    let totalCost = 0;
+    if (modelCosts.size === 0) {
+      // Debug: No calls found for cost calculation
+      logger.warn(`⚠️  No calls found for cost calculation (requestId: ${summary.requestId}, calls array length: ${calls.length})`);
+    }
+    for (const [model, costs] of modelCosts.entries()) {
+      const modelCost = calculateCost(model, costs.input + costs.cached, costs.output, costs.cached);
+      totalCost += modelCost;
+      logger.debug(`💰 Cost for ${model}: $${modelCost.toFixed(4)} (input: ${costs.input}, cached: ${costs.cached}, output: ${costs.output})`);
+    }
+    
+    const cachedTokens = summary.totalCachedTokens || 0;
+    
     logger.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     logger.info('💰 Request Performance Summary:');
-    logger.info(`   📊 Total Tokens: ${summary.totalTokens.toLocaleString()} (Request: ${summary.requestTokens.toLocaleString()}, Response: ${summary.responseTokens.toLocaleString()})`);
+    // Use actual paid tokens for display
+    const actualTotalTokens = summary.actualTotalTokens || summary.totalTokens;
+    const actualRequestTokens = summary.actualRequestTokens || summary.requestTokens;
+    
+    logger.info(`   📊 Total Tokens: ${actualTotalTokens.toLocaleString()} (Request: ${actualRequestTokens.toLocaleString()}, Response: ${summary.responseTokens.toLocaleString()})`);
+    if (cachedTokens > 0) {
+      logger.info(`   💾 Cached Tokens: ${cachedTokens.toLocaleString()} (${((cachedTokens / summary.requestTokens) * 100).toFixed(1)}% of input)`);
+      logger.info(`   💵 Actual Cost: $${totalCost.toFixed(4)} (Saved: $${(summary.estimatedCacheSavings || 0).toFixed(4)})`);
+    } else {
+      logger.info(`   💵 Estimated Cost: $${totalCost.toFixed(4)}`);
+    }
     logger.info(`   ⏱️  Total Duration: ${durationSeconds}s`);
     logger.info(`   🤖 Agents: ${summary.agentsUsed.length > 0 ? summary.agentsUsed.join(', ') : 'none'}`);
     logger.info(`   🔧 Functions: ${summary.functionsUsed.length > 0 ? summary.functionsUsed.join(', ') : 'none'}`);
     logger.info(`   📞 AI Calls: ${summary.totalAICalls}`);
+    if (summary.cacheHitRate && summary.cacheHitRate > 0) {
+      logger.info(`   🎯 Cache Hit Rate: ${(summary.cacheHitRate * 100).toFixed(1)}%`);
+    }
     logger.info(`   ✅ Status: ${summary.success ? 'Success' : 'Failed'}`);
     if (summary.error) {
       logger.info(`   ❌ Error: ${summary.error}`);

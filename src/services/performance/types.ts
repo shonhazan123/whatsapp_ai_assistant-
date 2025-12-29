@@ -17,9 +17,18 @@ export interface CallLogEntry {
   
   // AI Call Details
   model: string | null;
-  requestTokens: number;
-  responseTokens: number;
-  totalTokens: number;
+  requestTokens: number;  // Total request tokens (including cached) - for analytics
+  responseTokens: number;  // Response tokens (never cached)
+  totalTokens: number;    // Total tokens (including cached) - for analytics
+  
+  // Cache Metrics (Phase 1: Prompt Caching)
+  cachedTokens?: number;
+  cacheHit?: boolean;
+  cacheWriteTokens?: number;
+  
+  // Actual Paid Tokens (requestTokens - cachedTokens)
+  actualRequestTokens?: number;  // Actual paid request tokens
+  actualTotalTokens?: number;    // Actual paid total tokens (totalTokens - cachedTokens)
   
   // Timing
   startTime: string;
@@ -67,9 +76,13 @@ export interface FunctionLogEntry {
   
   // AI Call Details (inherited from parent call)
   model: string | null; // Added: Model used in parent AI call
-  requestTokens: number; // Added: Tokens from parent AI call
+  requestTokens: number; // Added: Tokens from parent AI call (including cached)
   responseTokens: number; // Added: Tokens from parent AI call
-  totalTokens: number; // Added: Total tokens from parent AI call
+  totalTokens: number; // Added: Total tokens from parent AI call (including cached)
+  
+  // Actual Paid Tokens (inherited from parent call)
+  actualRequestTokens?: number; // Actual paid request tokens from parent
+  actualTotalTokens?: number;   // Actual paid total tokens from parent
   
   // Timing
   startTime: string;
@@ -97,10 +110,19 @@ export interface RequestSummary {
   endTime: string;
   totalDurationMs: number;
   
-  // Token Summary
+  // Token Summary (including cached - for analytics)
   totalTokens: number;
   requestTokens: number;
   responseTokens: number;
+  
+  // Actual Paid Tokens (for cost reporting)
+  actualTotalTokens?: number;    // Sum of actual paid total tokens
+  actualRequestTokens?: number;  // Sum of actual paid request tokens
+  
+  // Cache Summary (Phase 1: Prompt Caching)
+  totalCachedTokens?: number;
+  cacheHitRate?: number;
+  estimatedCacheSavings?: number;
   
   // Call Summary
   totalAICalls: number;
@@ -129,6 +151,23 @@ export interface PerformanceContext {
     requestTokens: number;
     responseTokens: number;
     totalTokens: number;
+    cachedTokens?: number;
+    actualRequestTokens?: number;
+    actualTotalTokens?: number;
   };
+}
+
+/**
+ * Cache Statistics for Performance Dashboard
+ * Added in Phase 1: Prompt Caching
+ */
+export interface CachePerformanceStats {
+  date: string;
+  totalRequests: number;
+  cacheHits: number;
+  cacheMisses: number;
+  cacheHitRate: number;
+  totalTokensCached: number;
+  estimatedCostSavings: number;
 }
 

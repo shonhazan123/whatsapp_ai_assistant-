@@ -412,23 +412,76 @@ export class TaskFunction implements IFunction {
 
         case 'delete':
           {
-            const resolved = await resolveTaskId();
-            if (resolved.disambiguation) {
-              return { success: false, error: resolved.disambiguation };
-            }
-            if (!resolved.id) {
+            // Use resolve() directly to get ALL matching tasks, not just one
+            // This allows deleting multiple tasks with the same text without disambiguation
+            const resolver = new QueryResolver();
+            const queryText = params.text || params.taskId;
+            
+            if (!queryText) {
               return { success: false, error: 'Task not found (provide taskId or recognizable text)' };
             }
-            const response = await this.taskService.delete({
-              userPhone: userId,
-              id: resolved.id
-            });
 
-            if (response?.success && response.data?.id) {
-              // Remove deleted task from recent context
+            // If taskId is provided directly (UUID), use it
+            if (params.taskId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(params.taskId)) {
+              const response = await this.taskService.delete({
+                userPhone: userId,
+                id: params.taskId
+              });
+
+              if (response?.success && response.data?.id) {
+                // Remove deleted task from recent context
+                const remaining = this.conversationWindow
+                  .getRecentTasks(userId)
+                  .filter(task => task.id !== response.data.id && task.text !== response.data.text);
+                if (remaining.length === 0) {
+                  this.conversationWindow.clearRecentTasks(userId);
+                } else {
+                  this.conversationWindow.pushRecentTasks(userId, remaining, { replace: true });
+                }
+              }
+
+              return response;
+            }
+
+            // Otherwise, resolve by text and delete ALL matching tasks
+            const resolutionResult = await resolver.resolve(queryText, userId, 'task');
+            if (resolutionResult.candidates.length === 0) {
+              return { success: false, error: 'Task not found (provide taskId or recognizable text)' };
+            }
+
+            // Delete all matching tasks
+            const deleteResults = [];
+            const deleteErrors = [];
+            const deletedIds = new Set<string>();
+
+            for (const candidate of resolutionResult.candidates) {
+              if (!candidate.entity?.id) continue;
+              
+              try {
+                const result = await this.taskService.delete({
+                  userPhone: userId,
+                  id: candidate.entity.id
+                });
+
+                if (result.success && result.data) {
+                  deleteResults.push(result.data);
+                  deletedIds.add(result.data.id);
+                } else {
+                  deleteErrors.push({ taskId: candidate.entity.id, error: result.error });
+                }
+              } catch (error) {
+                deleteErrors.push({ 
+                  taskId: candidate.entity.id, 
+                  error: error instanceof Error ? error.message : 'Unknown error' 
+                });
+              }
+            }
+
+            // Update recent tasks context
+            if (deletedIds.size > 0) {
               const remaining = this.conversationWindow
                 .getRecentTasks(userId)
-                .filter(task => task.id !== response.data.id && task.text !== response.data.text);
+                .filter(task => !deletedIds.has(task.id || ''));
               if (remaining.length === 0) {
                 this.conversationWindow.clearRecentTasks(userId);
               } else {
@@ -436,7 +489,21 @@ export class TaskFunction implements IFunction {
               }
             }
 
-            return response;
+            // Return success if at least one task was deleted
+            if (deleteResults.length > 0) {
+              return {
+                success: deleteErrors.length === 0,
+                data: deleteResults.length === 1 ? deleteResults[0] : { deleted: deleteResults, count: deleteResults.length },
+                error: deleteErrors.length > 0 ? `Some tasks could not be deleted: ${deleteErrors.map(e => e.error).join(', ')}` : undefined
+              };
+            }
+
+            return { 
+              success: false, 
+              error: deleteErrors.length > 0 
+                ? deleteErrors.map(e => e.error).join(', ') 
+                : 'Failed to delete tasks' 
+            };
           }
 
         case 'deleteMultiple':
@@ -448,12 +515,19 @@ export class TaskFunction implements IFunction {
             if ((!ids || ids.length === 0) && Array.isArray(params.tasks)) {
               for (const t of params.tasks) {
                 if (!t?.text) continue;
-                const r = await new QueryResolver().resolveOneOrAsk(t.text, userId, 'task');
-                if (r.disambiguation) {
-                  deleteErrors.push({ taskText: t.text, error: r.disambiguation });
+                // Use resolve() directly to get ALL matching tasks, not just one
+                // This allows deleting multiple tasks with the same text without disambiguation
+                const resolutionResult = await new QueryResolver().resolve(t.text, userId, 'task');
+                if (resolutionResult.candidates.length === 0) {
+                  deleteErrors.push({ taskText: t.text, error: 'Task not found' });
                   continue;
                 }
-                if (r.entity?.id) ids.push(r.entity.id);
+                // Collect IDs from ALL candidates (handles multiple tasks with same text)
+                for (const candidate of resolutionResult.candidates) {
+                  if (candidate.entity?.id && !ids.includes(candidate.entity.id)) {
+                    ids.push(candidate.entity.id);
+                  }
+                }
               }
             }
             if (!ids || ids.length === 0) {
