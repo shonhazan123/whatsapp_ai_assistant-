@@ -94,7 +94,7 @@ if (ENVIRONMENT === 'PRODUCTION') {
   logger.info('⚠️  WhatsApp webhook POST handler skipped (ENVIRONMENT is DEBUG)');
 }
 
-async function handleIncomingMessage(message: WhatsAppMessage): Promise<void> {
+export async function handleIncomingMessage(message: WhatsAppMessage): Promise<void> {
   const startTime = Date.now();
   logger.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   logger.info('📨 NEW MESSAGE RECEIVED');
