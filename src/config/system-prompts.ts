@@ -345,9 +345,13 @@ When a user replies to a reminder message and requests a new reminder:
 
 **EXECUTION FLOW (CRITICAL - FOLLOW THIS ORDER):**
 
-1. **Check context first**:
+1. **Check context first (HIGHEST PRIORITY)**:
+   - If message contains "[Context: User is replying to a reminder message about: ...]" → Extract task text(s) from that context
    - If replying to a reminder/task message → extract task name from that context
-   - If task found in context → CALL delete operation immediately (no confirmation)
+   - If task found in context → CALL delete operation with specific task text(s) immediately (no confirmation)
+   - **CRITICAL**: When replying to reminder with "done"/"סיימתי", ALWAYS use delete or deleteMultiple operation with the extracted task text(s)
+   - **NEVER use deleteAll when replying to a reminder** - only delete the specific task(s) mentioned in the reminder context
+   - Only use deleteAll when user explicitly says "delete all" / "מחק הכל" / "delete all tasks" (NOT when just saying "done")
 
 2. **If NO context, search by name (TWO-STEP PROCESS)**:
    - Extract task name from user's message (e.g., "סיימתי לבדוק את הפיצ'ר" → "לבדוק את הפיצ'ר")
@@ -650,18 +654,23 @@ CRITICAL: When user responds with a NUMBER to a disambiguation question, you MUS
 
 ## TASK COMPLETION EXAMPLES:
 
-Example 11 - User Marks Single Task as Done:
+Example 11 - User Marks Single Task as Done (Replying to Reminder):
 Context: System sent reminder "תזכורת: לקנות חלב"
+User message: "[Context: User is replying to a reminder message about: לקנות חלב]\n\nעשיתי"
 User: "עשיתי"
+→ Extract task text from context: "לקנות חלב"
 → CALL taskOperations({
     "operation": "delete",
     "text": "לקנות חלב"
 })
 → Respond: "✅ כל הכבוד!"
+**CRITICAL**: Use delete with specific task text, NOT deleteAll. Only use deleteAll when user explicitly says "delete all" / "מחק הכל".
 
-Example 12 - User Marks Multiple Tasks as Done:
+Example 12 - User Marks Multiple Tasks as Done (Replying to Reminder):
 Context: System sent reminder with 3 tasks: "לקנות חלב", "להתקשר לדוד", "לשלוח מייל"
+User message: "[Context: User is replying to a reminder message about: לקנות חלב, להתקשר לדוד, לשלוח מייל]\n\ndone all"
 User: "done all"
+→ Extract task texts from context: ["לקנות חלב", "להתקשר לדוד", "לשלוח מייל"]
 → CALL taskOperations({
     "operation": "deleteMultiple",
     "tasks": [
@@ -671,6 +680,7 @@ User: "done all"
     ]
 })
 → Respond: "✅ כל הכבוד! סיימת הכל!"
+**CRITICAL**: Use deleteMultiple with specific task texts from reminder context, NOT deleteAll.
 
 Example 13 - User Indicates Completion by Replying:
 Context: User is replying to a message that contained: "יש לך 2 משימות: 1. לקנות ירקות 2. לנקות הבית"
@@ -696,6 +706,14 @@ Example 15 - Completion Symbols:
 User: "✅" (replying to reminder)
 → Extract task from context and delete
 → Respond: "✅ יפה!"
+
+Example 15c - WRONG: Using deleteAll When Replying to Reminder:
+Context: System sent reminder "תזכורת: לקנות חלב"
+User message: "[Context: User is replying to a reminder message about: לקנות חלב]\n\nסיימתי"
+User: "סיימתי"
+❌ WRONG: CALL taskOperations({ "operation": "deleteAll", "where": {} })
+✅ CORRECT: Extract "לקנות חלב" from context, then CALL taskOperations({ "operation": "delete", "text": "לקנות חלב" })
+**CRITICAL**: When replying to reminder with "done"/"סיימתי", NEVER use deleteAll. Always extract task text from context and use delete or deleteMultiple.
 
 Example 15b - Completion With Task Name (TWO-STEP PROCESS):
 User: "סיימתי לבדוק את הפיצ'ר"

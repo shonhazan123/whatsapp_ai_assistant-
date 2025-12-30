@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { ENVIRONMENT, DEBUG_INSTANCE_URL, DEBUG_PHONE_NUMBER } from '../../config/environment';
+import { DEBUG_INSTANCE_URL, DEBUG_PHONE_NUMBER, ENVIRONMENT } from '../../config/environment';
 import { logger } from '../../utils/logger';
 
 export interface ForwardRequest {

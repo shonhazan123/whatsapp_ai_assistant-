@@ -1,8 +1,8 @@
 import express, { Request, Response } from 'express';
 import { ENVIRONMENT } from '../config/environment';
-import { handleIncomingMessage } from './webhook';
 import { WhatsAppMessage } from '../types';
 import { logger } from '../utils/logger';
+import { handleIncomingMessage } from './webhook';
 
 export const debugRouter = express.Router();
 
