@@ -4,7 +4,8 @@
     "description": "WhatsApp AI Assistant with Calendar, Gmail, and Database integration",
     "main": "dist/index.js",
     "scripts": {
-        "dev": "nodemon src/index.ts",
+        "dev": "npm run build:memo-v2 && nodemon src/index.ts",
+        "build:memo-v2": "cd Memo_v2 && npm run build",
         "build": "tsc",
         "start": "node dist/index.js",
         "db:migrate": "node dist/scripts/migrate.js",

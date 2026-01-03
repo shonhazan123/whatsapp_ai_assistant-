@@ -1,0 +1,295 @@
+/**
+ * Memo V2 LangGraph Definition
+ * 
+ * Main entry point for the LangGraph-based message processing.
+ * 
+ * Key Features:
+ * - Thread-based persistence (thread_id = userPhone)
+ * - Native HITL via interrupt() and Command({ resume })
+ * - MemorySaver checkpointer (Supabase in production)
+ * 
+ * Graph Flow:
+ * 1. context_assembly → Build state from user profile, memory
+ * 2. reply_context → Enrich with reply/image context
+ * 3. planner → Convert message to Plan DSL
+ * 4. hitl_gate → Check confidence, risk, missing fields
+ *    ├── interrupt() → Graph pauses, state saved, await reply
+ *    └── (continue) → resolver_router
+ * 5. resolver_router → Route to capability resolvers, get tool args
+ * 6. executor → Execute tool calls via service adapters
+ * 7. join → Merge execution results
+ * 8. response_formatter → Format dates, categorize
+ * 9. response_writer → Generate final message
+ * 10. memory_update → Update state.recent_messages
+ * 11. END
+ */
+
+import { Command, END, MemorySaver, StateGraph } from '@langchain/langgraph';
+import type { InterruptPayload, TriggerInput } from '../types/index.js';
+import type { MemoState } from './state/MemoState.js';
+import { createInitialState, MemoStateAnnotation } from './state/MemoState.js';
+
+// Node imports
+import { ContextAssemblyNode } from './nodes/ContextAssemblyNode.js';
+import { createExecutorNode } from './nodes/ExecutorNode.js';
+import { createHITLGateNode } from './nodes/HITLGateNode.js';
+import { createJoinNode } from './nodes/JoinNode.js';
+import { createMemoryUpdateNode } from './nodes/MemoryUpdateNode.js';
+import { createPlannerNode } from './nodes/PlannerNode.js';
+import { createReplyContextNode } from './nodes/ReplyContextNode.js';
+import { createResolverRouterNode } from './nodes/ResolverRouterNode.js';
+import { createResponseFormatterNode } from './nodes/ResponseFormatterNode.js';
+import { createResponseWriterNode } from './nodes/ResponseWriterNode.js';
+
+// ============================================================================
+// CHECKPOINTER (State Persistence)
+// ============================================================================
+
+/**
+ * In-memory checkpointer for development
+ * Production: Replace with SupabaseCheckpointer
+ */
+const checkpointer = new MemorySaver();
+
+// ============================================================================
+// GRAPH BUILDER
+// ============================================================================
+
+/**
+ * Build the Memo LangGraph with checkpointer
+ * 
+ * @param input - The trigger input (user message or cron)
+ * @returns Compiled StateGraph ready for execution
+ */
+export function buildMemoGraph(input: TriggerInput) {
+  // Create nodes with input context
+  const contextAssemblyNode = new ContextAssemblyNode(input);
+  
+  // Build the graph using Annotation API (fully type-safe, no "as any" needed)
+  const graph = new StateGraph(MemoStateAnnotation)
+    // ======== NODES ========
+    .addNode('context_assembly', contextAssemblyNode.asNodeFunction())
+    .addNode('reply_context', createReplyContextNode())
+    .addNode('planner', createPlannerNode())
+    .addNode('hitl_gate', createHITLGateNode())
+    
+    // Resolver routing
+    .addNode('resolver_router', createResolverRouterNode())
+    
+    // Executor node (Phase 4)
+    .addNode('executor', createExecutorNode())
+    
+    // Pipeline nodes
+    .addNode('join', createJoinNode())
+    .addNode('response_formatter', createResponseFormatterNode())
+    .addNode('response_writer', createResponseWriterNode())
+    .addNode('memory_update', createMemoryUpdateNode())
+    
+    // ======== EDGES ========
+    .addEdge('__start__', 'context_assembly')
+    .addEdge('context_assembly', 'reply_context')
+    .addEdge('reply_context', 'planner')
+    .addConditionalEdges('planner', plannerRouter)
+    // HITL Gate can interrupt(), so no conditional edge needed
+    // After interrupt resumes, it continues to resolver_router
+    .addEdge('hitl_gate', 'resolver_router')
+    .addEdge('resolver_router', 'executor')
+    .addEdge('executor', 'join')
+    .addEdge('join', 'response_formatter')
+    .addEdge('response_formatter', 'response_writer')
+    .addEdge('response_writer', 'memory_update')
+    .addEdge('memory_update', END);
+  
+  // Compile with checkpointer for state persistence
+  return graph.compile({ checkpointer });
+}
+
+// ============================================================================
+// ROUTING FUNCTIONS
+// ============================================================================
+
+/**
+ * Route from Planner based on intent type
+ */
+function plannerRouter(state: MemoState): string {
+  const plannerOutput = state.plannerOutput;
+  
+  if (!plannerOutput) {
+    return 'hitl_gate'; // Error case, let HITL handle
+  }
+  
+  // Meta requests go directly to response
+  if (plannerOutput.intentType === 'meta') {
+    return 'response_formatter';
+  }
+  
+  // All other intents go through HITL gate
+  return 'hitl_gate';
+}
+
+
+// ============================================================================
+// PUBLIC API
+// ============================================================================
+
+/**
+ * Graph invocation result
+ */
+export interface InvokeResult {
+  response: string;
+  interrupted: boolean;
+  interruptPayload?: InterruptPayload;
+  metadata: MemoState['metadata'];
+}
+
+/**
+ * Check if there's a pending interrupt for a thread
+ * 
+ * @param threadId - The thread ID (usually userPhone)
+ * @returns True if there's a pending interrupt
+ */
+export async function hasPendingInterrupt(threadId: string): Promise<boolean> {
+  try {
+    const graph = buildMemoGraph({ userPhone: threadId, message: '', triggerType: 'user' });
+    const config = { configurable: { thread_id: threadId } };
+    const state = await graph.getState(config);
+    
+    // If there are pending tasks (next nodes to execute), there's a pending interrupt
+    return state?.next?.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Invoke the Memo graph (new message or resume from interrupt)
+ * 
+ * This is the main entry point, called from webhook.ts
+ * 
+ * @param userPhone - User's phone number (used as thread_id)
+ * @param message - User's message
+ * @param options - Additional options
+ * @returns InvokeResult with response and interrupt status
+ */
+export async function invokeMemoGraph(
+  userPhone: string,
+  message: string,
+  options: {
+    whatsappMessageId?: string;
+    replyToMessageId?: string;
+    triggerType?: 'user' | 'cron' | 'nudge' | 'event';
+  } = {}
+): Promise<InvokeResult> {
+  const threadId = userPhone;
+  const config = { configurable: { thread_id: threadId } };
+  
+  // Check if this is a resume from a pending interrupt
+  const isPendingInterrupt = await hasPendingInterrupt(threadId);
+  
+  let result: MemoState;
+  
+  if (isPendingInterrupt) {
+    // Resume from interrupt with user's message as the response
+    console.log(`[MemoGraph] Resuming from interrupt for thread ${threadId}`);
+    
+    const graph = buildMemoGraph({ userPhone, message, triggerType: options.triggerType || 'user' });
+    result = await graph.invoke(new Command({ resume: message }), config) as unknown as MemoState;
+  } else {
+    // Fresh invocation
+    console.log(`[MemoGraph] Fresh invocation for thread ${threadId}`);
+    
+    const input: TriggerInput = {
+      userPhone,
+      message,
+      triggerType: options.triggerType || 'user',
+      whatsappMessageId: options.whatsappMessageId,
+      replyToMessageId: options.replyToMessageId,
+    };
+    
+    const graph = buildMemoGraph(input);
+    
+    // Execute graph with initial state
+    const initialState = createInitialState({
+      user: {
+        phone: userPhone,
+        timezone: 'Asia/Jerusalem',
+        language: 'he',
+        planTier: 'free',
+        googleConnected: false,
+        capabilities: {
+          calendar: false,
+          gmail: false,
+          database: true,
+          secondBrain: true,
+        },
+      },
+      input: {
+        message,
+        triggerType: options.triggerType || 'user',
+        whatsappMessageId: options.whatsappMessageId,
+        replyToMessageId: options.replyToMessageId,
+      },
+    });
+    
+    try {
+      result = await graph.invoke(initialState, config) as unknown as MemoState;
+    } catch (error: any) {
+      // Check if this is an interrupt (not an error)
+      if (error?.name === 'GraphInterrupt' || error?.interrupts) {
+        const interrupts = error.interrupts || [];
+        const interruptPayload = interrupts[0]?.value as InterruptPayload | undefined;
+        
+        console.log(`[MemoGraph] Graph interrupted for thread ${threadId}`);
+        
+        return {
+          response: interruptPayload?.question || 'I need more information.',
+          interrupted: true,
+          interruptPayload,
+          metadata: {
+            startTime: Date.now(),
+            nodeExecutions: [],
+            llmCalls: 0,
+            totalTokens: 0,
+            totalCost: 0,
+          },
+        };
+      }
+      throw error;
+    }
+  }
+  
+  // Log execution metadata
+  console.log(`[MemoGraph] Completed in ${Date.now() - result.metadata.startTime}ms`);
+  console.log(`[MemoGraph] LLM calls: ${result.metadata.llmCalls}`);
+  console.log(`[MemoGraph] Total tokens: ${result.metadata.totalTokens}`);
+  console.log(`[MemoGraph] Total cost: $${result.metadata.totalCost.toFixed(4)}`);
+  
+  return {
+    response: result.finalResponse || 'No response generated',
+    interrupted: false,
+    metadata: result.metadata,
+  };
+}
+
+/**
+ * Simple invocation that returns just the response string
+ * For backward compatibility with existing code
+ */
+export async function invokeMemoGraphSimple(
+  userPhone: string,
+  message: string,
+  options: {
+    whatsappMessageId?: string;
+    replyToMessageId?: string;
+    triggerType?: 'user' | 'cron' | 'nudge' | 'event';
+  } = {}
+): Promise<string> {
+  const result = await invokeMemoGraph(userPhone, message, options);
+  return result.response;
+}
+
+// Export types and state
+export { createInitialState, MemoStateAnnotation } from './state/MemoState.js';
+export type { ExecutionMetadata, MemoState } from './state/MemoState.js';
+export { checkpointer };
+

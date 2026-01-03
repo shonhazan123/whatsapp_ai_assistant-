@@ -4,6 +4,9 @@ import { ENVIRONMENT } from '../config/environment';
 import { RequestContext } from '../core/context/RequestContext';
 import { ConversationWindow } from '../core/memory/ConversationWindow';
 import { processMessageV2 } from '../index-v2';
+// Memo V2 import (LangGraph-based)
+// Import from compiled dist folder to avoid ts-node module resolution issues
+import { invokeMemoGraphSimple } from '../../Memo_v2/dist/index';
 import { OpenAIService } from '../services/ai/OpenAIService';
 import { UserService } from '../services/database/UserService';
 import { DebugForwarderService } from '../services/debug/DebugForwarderService';
@@ -292,12 +295,29 @@ export async function handleIncomingMessage(message: WhatsAppMessage): Promise<v
     context.performanceRequestId = performanceRequestId;
 
     logger.info(`🤖 AI Processing: "${messageText}"`);
-    const response = await RequestContext.run(context, () => 
-      processMessageV2(userPhone, messageText, {
-        whatsappMessageId: message.id,
-        replyToMessageId: replyToMessageId
-      })
-    );
+    
+    // Use Memo V2 (LangGraph) or V1 based on environment variable
+    const useMemoV2 = process.env.USE_MEMO_V2 === 'true';
+    
+    let response: string;
+    if (useMemoV2) {
+      logger.info('🆕 Using Memo V2 (LangGraph)');
+      response = await RequestContext.run(context, () => 
+        invokeMemoGraphSimple(userPhone, messageText, {
+          whatsappMessageId: message.id,
+          replyToMessageId: replyToMessageId,
+          triggerType: 'user'
+        })
+      );
+    } else {
+      // V1 processing (existing flow)
+      response = await RequestContext.run(context, () => 
+        processMessageV2(userPhone, messageText, {
+          whatsappMessageId: message.id,
+          replyToMessageId: replyToMessageId
+        })
+      );
+    }
     logger.info(`💡 AI Response: "${response}"`);
 
     // Step 4: Send agent response back to user first
