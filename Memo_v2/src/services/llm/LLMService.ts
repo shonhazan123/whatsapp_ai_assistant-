@@ -17,16 +17,23 @@ function getOpenAIService(): any {
   if (!_OpenAIService) {
     try {
       // Get logger first
+      // Path calculation: From Memo_v2/dist/services/llm/ to workspace root src/utils/logger
+      // Up 4 levels: dist/services/llm/ -> dist/services/ -> dist/ -> Memo_v2/ -> workspace root
       if (!_logger) {
-        const loggerModule = require('../../../src/utils/logger');
+        const loggerModule = require('../../../../src/utils/logger');
         _logger = loggerModule.logger;
       }
       
       // Get OpenAIService
-      const openAIModule = require('../../../src/services/ai/OpenAIService');
+      // Path calculation: From Memo_v2/dist/services/llm/ to workspace root src/services/ai/OpenAIService
+      const openAIModule = require('../../../../src/services/ai/OpenAIService');
       _OpenAIService = new openAIModule.OpenAIService(_logger);
     } catch (error) {
       console.error('[LLMService] Failed to load OpenAIService:', error);
+      console.error('[LLMService] Error details:', error instanceof Error ? error.message : String(error));
+      if (error instanceof Error && 'stack' in error) {
+        console.error('[LLMService] Stack:', error.stack);
+      }
       return null;
     }
   }

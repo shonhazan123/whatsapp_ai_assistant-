@@ -49,6 +49,11 @@ export interface MessageInput {
   whatsappMessageId?: string;
   replyToMessageId?: string;
   imageContext?: ImageContext;
+  
+  // Added for EntityResolutionNode context building
+  userPhone: string;
+  timezone?: string;
+  language?: 'he' | 'en' | 'other';
 }
 
 // ============================================================================
@@ -60,6 +65,7 @@ export interface TimeContext {
   iso: string;
   timezone: string;
   dayOfWeek: number; // 0-6 (Sunday-Saturday)
+  date: Date; // Actual Date object for easy manipulation
 }
 
 // ============================================================================
@@ -80,11 +86,23 @@ export interface ConversationMessage {
 }
 
 export interface DisambiguationContext {
-  type: 'calendar_event' | 'task' | 'list' | 'email';
-  candidates: Array<{ id: string; displayText: string; [key: string]: any }>;
+  type: 'calendar' | 'database' | 'gmail' | 'second-brain' | 'error';
+  
+  // For disambiguation
+  candidates?: Array<{ id: string; displayText: string; entity?: any; score?: number; metadata?: Record<string, any>; [key: string]: any }>;
+  question?: string;
+  allowMultiple?: boolean;  // "which one or both?"
+  
+  // For errors
+  error?: string;
+  searchedFor?: string;
+  suggestions?: string[];
+  
+  // State tracking
   resolverStepId: string;
-  userSelection?: string;  // Filled after interrupt() resumes
-  resolved: boolean;       // True after user responds
+  originalArgs?: Record<string, any>;
+  userSelection?: string | number | number[];  // Filled after interrupt() resumes
+  resolved?: boolean;       // True after user responds
 }
 
 // ============================================================================
@@ -92,6 +110,7 @@ export interface DisambiguationContext {
 // ============================================================================
 
 export type InterruptType = 'disambiguation' | 'clarification' | 'confirmation' | 'approval';
+export type HITLReason = 'disambiguation' | 'not_found' | 'clarification' | 'confirmation' | 'approval' | 'low_confidence' | 'high_risk';
 
 export interface InterruptPayload {
   type: InterruptType;

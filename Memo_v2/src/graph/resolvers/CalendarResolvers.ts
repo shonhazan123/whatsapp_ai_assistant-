@@ -169,8 +169,8 @@ Output only the JSON, no explanation.`;
     };
   }
   
-  protected getEntityType(): 'calendar_event' {
-    return 'calendar_event';
+  protected getEntityType(): 'calendar' | 'database' | 'gmail' | 'second-brain' | 'error' {
+    return 'calendar';
   }
 }
 
@@ -536,8 +536,8 @@ Output only the JSON, no explanation.`;
     return endDate.toISOString();
   }
   
-  protected getEntityType(): 'calendar_event' {
-    return 'calendar_event';
+  protected getEntityType(): 'calendar' | 'database' | 'gmail' | 'second-brain' | 'error' {
+    return 'calendar';
   }
 }
 

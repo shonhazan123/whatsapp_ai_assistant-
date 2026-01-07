@@ -91,6 +91,7 @@ LangGraph provides:
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
 │                         USER-TRIGGERED FLOW                              │
+│                      (Updated January 2026)                              │
 └──────────────────────────────────────────────────────────────────────────┘
 
 WhatsApp Message
@@ -116,27 +117,15 @@ WhatsApp Message
          ▼
 ┌──────────────────┐
 │   HITL Gate      │  ← Confidence check, missing fields, risk level
-│     Node         │    Uses interrupt() for clarification
+│     Node         │    Uses interrupt() for clarification (Planner HITL)
 └────────┬─────────┘
          │
     ┌────┴────────────────────────────────────┐
-    │ (needs clarification?)                   │
-    │                                          │
+    │ (needs clarification from Planner?)      │
     ▼ NO                                   YES ▼
-    │                              ┌──────────────────┐
-    │                              │   interrupt()    │ → Graph pauses
-    │                              │   Returns to     │   State saved
-    │                              │   webhook        │
-    │                              └──────────────────┘
+    │                              [interrupt() → User replies → resume]
     │                                          │
-    │                              [User replies]
-    │                                          │
-    │                              ┌──────────────────┐
-    │                              │ Command({resume})│ → Graph resumes
-    │                              │   Continue here  │
-    │                              └────────┬─────────┘
-    │                                       │
-    └───────────────┬───────────────────────┘
+    └───────────────┬──────────────────────────┘
                     │
                     ▼
 ┌──────────────────┐
@@ -147,14 +136,39 @@ WhatsApp Message
     ┌────┴────┬────────────┐
     ▼         ▼            ▼
 ┌────────┐ ┌────────┐ ┌────────┐
-│Calendar│ │Database│ │ Gmail  │  ← LLM: PlanStep → Tool args
-│Resolver│ │Resolver│ │Resolver│    Uses QueryResolver for entity lookup
+│Calendar│ │Database│ │ Gmail  │  ← LLM: PlanStep → Semantic args
+│Resolver│ │Resolver│ │Resolver│    (NO ID resolution here!)
 └───┬────┘ └───┬────┘ └───┬────┘
     │          │          │
-    ▼          ▼          ▼
+    └────┬─────┴──────────┘
+         │
+         ▼
+┌──────────────────┐
+│ EntityResolution │  ← Code: Fuzzy match, ID lookup, V1 logic
+│     Node         │    Smart disambiguation (same text + diff fields)
+└────────┬─────────┘
+         │
+    ┌────┴────────────────────────────────────┐
+    │ (needs disambiguation?)                  │
+    ▼ NO                                   YES ▼
+    │                              ┌──────────────────┐
+    │                              │   HITL Gate      │ ← interrupt() for
+    │                              │   (Resolver)     │   entity disambiguation
+    │                              └────────┬─────────┘
+    │                                       │
+    │                              [User replies with selection]
+    │                                       │
+    │                              ┌──────────────────┐
+    │                              │ EntityResolution │ ← Apply user selection
+    │                              │  (apply select)  │   Continue resolution
+    │                              └────────┬─────────┘
+    │                                       │
+    └───────────────┬───────────────────────┘
+                    │
+                    ▼
 ┌────────┐ ┌────────┐ ┌────────┐
-│Calendar│ │Database│ │ Gmail  │  ← Code: Execute tool calls
-│Executor│ │Executor│ │Executor│    No LLM here
+│Calendar│ │Database│ │ Gmail  │  ← Code: Execute with resolved IDs
+│Executor│ │Executor│ │Executor│    No LLM, no ID resolution here
 └───┬────┘ └───┬────┘ └───┬────┘
     │          │          │
     └────┬─────┴──────────┘
@@ -524,29 +538,30 @@ function loadLLMConfigFromEnv(): Partial<LLMUsageConfig> {
 
 ### 5.1 Node Registry
 
-| Node                     | Type     | LLM? | Purpose                                        |
-| ------------------------ | -------- | ---- | ---------------------------------------------- |
-| `ContextAssemblyNode`    | Code     | ❌   | Build clean state from user profile, memory    |
-| `ReplyContextNode`       | Code     | ❌   | Handle reply-to, numbered lists, image context |
-| `PlannerNode`            | LLM      | ✅   | Natural language → Plan DSL                    |
-| `HITLGateNode`           | Code     | ❌   | Confidence/risk check, pause if needed         |
-| `ResolverRouterNode`     | Code     | ❌   | Build DAG, route to resolvers                  |
-| `CalendarFindResolver`   | LLM      | ✅   | Calendar search/get → tool args                |
-| `CalendarMutateResolver` | LLM      | ✅   | Calendar create/update/delete → tool args      |
-| `DatabaseTaskResolver`   | LLM      | ✅   | Task CRUD → tool args                          |
-| `DatabaseListResolver`   | LLM      | ✅   | List CRUD → tool args                          |
-| `GmailResolver`          | LLM      | ✅   | Email operations → tool args                   |
-| `SecondBrainResolver`    | LLM      | ✅   | Memory store/search → tool args                |
-| `GeneralResolver`        | LLM      | ✅   | Conversation response (no tools)               |
-| `MetaResolver`           | Template | ❌   | Predefined capability descriptions             |
-| `CalendarExecutor`       | Code     | ❌   | Execute calendar API calls                     |
-| `DatabaseExecutor`       | Code     | ❌   | Execute database operations                    |
-| `GmailExecutor`          | Code     | ❌   | Execute Gmail API calls                        |
-| `SecondBrainExecutor`    | Code     | ❌   | Execute RAG operations                         |
-| `JoinNode`               | Code     | ❌   | Merge parallel results                         |
-| `ResponseFormatterNode`  | Code     | ❌   | Format dates, categorize, extract metadata     |
-| `ResponseWriterNode`     | LLM      | ✅   | Generate final user message                    |
-| `MemoryUpdateNode`       | Code     | ❌   | Update state.recent_messages                   |
+| Node                       | Type     | LLM?   | Purpose                                          |
+| -------------------------- | -------- | ------ | ------------------------------------------------ |
+| `ContextAssemblyNode`      | Code     | ❌     | Build clean state from user profile, memory      |
+| `ReplyContextNode`         | Code     | ❌     | Handle reply-to, numbered lists, image context   |
+| `PlannerNode`              | LLM      | ✅     | Natural language → Plan DSL                      |
+| `HITLGateNode`             | Code     | ❌     | Confidence/risk check, pause if needed           |
+| `ResolverRouterNode`       | Code     | ❌     | Build DAG, route to resolvers                    |
+| `CalendarFindResolver`     | LLM      | ✅     | Calendar search/get → semantic args              |
+| `CalendarMutateResolver`   | LLM      | ✅     | Calendar create/update/delete → semantic args    |
+| `DatabaseTaskResolver`     | LLM      | ✅     | Task CRUD → semantic args                        |
+| `DatabaseListResolver`     | LLM      | ✅     | List CRUD → semantic args                        |
+| `GmailResolver`            | LLM      | ✅     | Email operations → semantic args                 |
+| `SecondBrainResolver`      | LLM      | ✅     | Memory store/search → semantic args              |
+| `GeneralResolver`          | LLM      | ✅     | Conversation response (no tools)                 |
+| `MetaResolver`             | Template | ❌     | Predefined capability descriptions               |
+| **`EntityResolutionNode`** | **Code** | **❌** | **ID lookup, fuzzy match, smart disambiguation** |
+| `CalendarExecutor`         | Code     | ❌     | Execute calendar API calls                       |
+| `DatabaseExecutor`         | Code     | ❌     | Execute database operations                      |
+| `GmailExecutor`            | Code     | ❌     | Execute Gmail API calls                          |
+| `SecondBrainExecutor`      | Code     | ❌     | Execute RAG operations                           |
+| `JoinNode`                 | Code     | ❌     | Merge parallel results                           |
+| `ResponseFormatterNode`    | Code     | ❌     | Format dates, categorize, extract metadata       |
+| `ResponseWriterNode`       | LLM      | ✅     | Generate final user message                      |
+| `MemoryUpdateNode`         | Code     | ❌     | Update state.recent_messages                     |
 
 ### 5.2 Node Details
 
@@ -1300,92 +1315,174 @@ const taskOperationsSchema = {
 // - reminderMinutesBefore (anyOf: [number, null])
 ```
 
-### 8.4 QueryResolver Reuse
+### 8.4 EntityResolution Architecture (Updated January 2026)
 
-V1's `QueryResolver` is reused inside Resolver Nodes:
+> **CRITICAL CHANGE**: ID resolution has been moved OUT of Resolver Nodes into a dedicated `EntityResolutionNode`.
+>
+> **Resolvers**: LLM extracts semantic params from user intent (NO ID lookup)
+> **EntityResolutionNode**: Code performs fuzzy matching, ID resolution, smart disambiguation
+> **HITL Gate**: Handles disambiguation interrupts
+
+This architecture:
+
+1. Keeps LLM work focused on understanding intent (Resolvers)
+2. Uses V1's proven resolution logic in code (EntityResolutionNode)
+3. Provides consistent HITL behavior across all domains
+4. Supports smart disambiguation (same text + different fields)
+
+#### EntityResolver Interface
 
 ```typescript
-// Inside CalendarMutateResolver
-async function resolve(
-	step: PlanStep,
-	state: MemoState
-): Promise<ResolverResult> {
-	const queryResolver = new QueryResolver();
+// Memo_v2/src/services/resolution/types.ts
 
-	// If action is update/delete and no eventId, use QueryResolver
-	if (step.action === "update_event" && !step.constraints.eventId) {
-		const result = await queryResolver.resolveOneOrAsk(
-			step.constraints.summary,
-			state.user.phone,
-			"event"
-		);
+export interface IEntityResolver {
+	readonly domain: EntityDomain;
 
-		if (result.disambiguation) {
-			// Store candidates in state for HITL
-			return {
-				stepId: step.id,
-				type: "clarify",
-				question: queryResolver.formatDisambiguation(
-					"event",
-					result.disambiguation.candidates,
-					state.user.language
-				),
-				options: result.disambiguation.candidates.map((c, i) => `${i + 1}`),
-			};
-		}
+	// Resolve entities from args
+	// Returns: resolved IDs, disambiguation request, or error
+	resolve(
+		operation: string,
+		args: Record<string, any>,
+		context: EntityResolverContext
+	): Promise<ResolutionOutput>;
 
-		if (result.entity) {
-			step.constraints.eventId = result.entity.id;
-		}
-	}
+	// Apply user's disambiguation selection
+	applySelection(
+		selection: number | number[] | string,
+		candidates: ResolutionCandidate[],
+		args: Record<string, any>
+	): Promise<ResolutionOutput>;
+}
 
-	// Continue to build tool args...
-	return {
-		stepId: step.id,
-		type: "execute",
-		args: buildCalendarUpdateArgs(step),
-	};
+export type ResolutionOutputType =
+	| "resolved"
+	| "disambiguation"
+	| "not_found"
+	| "clarify_query";
+
+export interface ResolutionOutput {
+	type: ResolutionOutputType;
+	resolvedIds?: string[];
+	args?: Record<string, any>;
+	candidates?: ResolutionCandidate[];
+	question?: string;
+	allowMultiple?: boolean;
+	error?: string;
 }
 ```
 
-### 8.5 Disambiguation Flow
+#### Domain-Specific Resolvers
+
+| Resolver                    | Domain       | V1 Logic Ported                                     |
+| --------------------------- | ------------ | --------------------------------------------------- |
+| `CalendarEntityResolver`    | calendar     | deriveWindow(), findEventByCriteria(), FuzzyMatcher |
+| `DatabaseEntityResolver`    | database     | QueryResolver, smart task disambiguation            |
+| `GmailEntityResolver`       | gmail        | Email search, fuzzy matching                        |
+| `SecondBrainEntityResolver` | second-brain | Vector similarity search                            |
+
+#### Smart Disambiguation Rules
+
+For **tasks/lists** (DatabaseEntityResolver):
+
+1. **Exactly same text AND same fields** → Treat as identical, delete/update all without asking
+2. **Same text but DIFFERENT fields** (recurring vs normal) → Ask user to choose one
+3. **Similar text** (fuzzy match) → Ask "which one or both?"
+4. **High confidence single match** → Use directly
+
+For **calendar events** (CalendarEntityResolver):
+
+1. **Same recurring series** → Update/delete master event
+2. **Multiple matches** → Pick nearest upcoming (for update), or ask (for delete)
+3. **Window-based delete** → Delete all matching (exclude specified summaries)
+
+#### Resolution Thresholds (from V1)
+
+```typescript
+// Memo_v2/src/services/resolution/resolution-config.ts
+
+export const RESOLUTION_THRESHOLDS = {
+	FUZZY_MATCH_MIN: 0.6, // Minimum score to consider
+	HIGH_CONFIDENCE: 0.85, // Auto-resolve single match
+	EXACT_MATCH: 0.95, // Text considered identical
+	DISAMBIGUATION_GAP: 0.15, // Gap between top 2 to avoid asking
+	CALENDAR_DELETE_THRESHOLD: 0.6, // V1's CalendarFunction threshold
+};
+```
+
+### 8.5 EntityResolution Flow
 
 ```
-User: "Update the meeting"
+User: "Delete meeting notes"
          │
          ▼
     PlannerNode
-    → plan: [{ action: "update_event", constraints: { summary: "meeting" } }]
+    → plan: [{ action: "delete_task", constraints: { text: "meeting notes" } }]
          │
          ▼
-    CalendarMutateResolver
-    → QueryResolver.resolveOneOrAsk("meeting", userId, "event")
-    → Returns disambiguation (3 candidates)
+    ResolverRouterNode + DatabaseTaskResolver
+    → Returns: { type: "execute", args: { operation: "delete", text: "meeting notes" } }
+    → Note: NO ID resolution here, just semantic extraction
          │
          ▼
-    HITLGateNode
-    → state.disambiguation = { candidates: [...], type: "calendar_event" }
-    → state.should_pause = true
-    → Response: "מצאתי 3 פגישות:\n1. פגישה עם דנה\n2. פגישה צוות\n3. פגישה עם לקוח\nנא לבחור מספר."
+    EntityResolutionNode (DatabaseEntityResolver)
+    → Fetches all tasks for user
+    → FuzzyMatcher.search("meeting notes", tasks, ['text'])
+    → Finds 2 matches:
+      1. "meeting notes" (score: 0.95, reminderType: 'nudge')
+      2. "meeting notes" (score: 0.95, reminderType: 'none')
+    → Smart disambiguation: Same text, DIFFERENT fields!
+    → Returns: { type: 'disambiguation', candidates: [...], question: "..." }
+         │
+         ▼
+    HITLGateNode (from EntityResolution)
+    → state.needsHITL = true
+    → interrupt({ question: "I found tasks with same name but different settings:\n1. meeting notes (nudge)\n2. meeting notes (no reminder)\nWhich one?" })
          │
          ▼
     [Graph Pauses]
          │
          ▼
-User: "2"
+User: "1"
          │
          ▼
-    ReplyContextNode
-    → Detects numbered reply
-    → Maps "2" → candidate[1].id
-    → state.refs.selected_event_id = "uuid-..."
-    → state.disambiguation = null
+    HITLGateNode (resumes)
+    → state.disambiguation.userSelection = 1
+    → state.disambiguation.resolved = true
          │
          ▼
-    CalendarMutateResolver (resumes)
-    → Uses state.refs.selected_event_id
-    → Returns { type: "execute", args: { eventId: "uuid-...", ... } }
+    EntityResolutionNode (applies selection)
+    → DatabaseEntityResolver.applySelection(1, candidates, args)
+    → Returns: { type: 'resolved', args: { taskId: "uuid-...", operation: "delete" } }
+         │
+         ▼
+    DatabaseExecutor
+    → taskService.delete({ userPhone, id: "uuid-..." })
 ```
+
+### 8.6 V1 Logic Preservation
+
+The EntityResolution architecture preserves ALL V1 logic:
+
+**From CalendarFunctions.ts:**
+
+- `deriveWindow()` → Infer time window from params/phrase
+- `findEventByCriteria()` → Multi-strategy event finder
+- `deleteByWindow()` → Bulk delete with exclusions
+- `FuzzyMatcher.search()` → Fuzzy matching with threshold
+- `buildDisambiguationMessage()` → Localized messages
+
+**From DatabaseFunctions.ts:**
+
+- `QueryResolver.resolveWithDisambiguationHandling()` → Smart resolution
+- Delete ALL matches behavior (V1's delete deletes all candidates)
+- Field comparison for identical vs different tasks
+- ConversationWindow context (via state.recentMessages)
+
+**From QueryResolver.ts:**
+
+- Fuzzy matching with configurable thresholds
+- Candidate scoring and ranking
+- Disambiguation formatting
 
 ---
 
@@ -1609,7 +1706,8 @@ Memo_v2/
 │   │   │   ├── JoinNode.ts
 │   │   │   ├── ResponseFormatterNode.ts
 │   │   │   ├── ResponseWriterNode.ts
-│   │   │   └── MemoryUpdateNode.ts
+│   │   │   ├── MemoryUpdateNode.ts
+│   │   │   └── EntityResolutionNode.ts  # ID resolution, disambiguation
 │   │   │
 │   │   ├── resolvers/
 │   │   │   ├── CalendarFindResolver.ts
@@ -1645,13 +1743,22 @@ Memo_v2/
 │   │   └── ResponseWriterPrompt.ts
 │   │
 │   ├── services/
-│   │   └── adapters/             # Thin wrappers calling V1 services
+│   │   ├── adapters/             # Thin wrappers calling V1 services
+│   │   │   ├── index.ts
+│   │   │   ├── CalendarServiceAdapter.ts
+│   │   │   ├── TaskServiceAdapter.ts
+│   │   │   ├── ListServiceAdapter.ts
+│   │   │   ├── GmailServiceAdapter.ts
+│   │   │   └── SecondBrainServiceAdapter.ts
+│   │   │
+│   │   └── resolution/           # Entity resolution (ID lookup, disambiguation)
 │   │       ├── index.ts
-│   │       ├── CalendarServiceAdapter.ts
-│   │       ├── TaskServiceAdapter.ts
-│   │       ├── ListServiceAdapter.ts
-│   │       ├── GmailServiceAdapter.ts
-│   │       └── SecondBrainServiceAdapter.ts
+│   │       ├── types.ts          # Resolution types and interfaces
+│   │       ├── resolution-config.ts  # Thresholds, behaviors, messages
+│   │       ├── CalendarEntityResolver.ts  # V1 calendar logic
+│   │       ├── DatabaseEntityResolver.ts  # V1 task/list logic
+│   │       ├── GmailEntityResolver.ts
+│   │       └── SecondBrainEntityResolver.ts
 │   │
 │   ├── utils/                    # Adapted from V1
 │   │   ├── index.ts              # Re-exports all utilities

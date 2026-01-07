@@ -221,8 +221,8 @@ RULES:
     };
   }
   
-  protected getEntityType(): 'email' {
-    return 'email';
+  protected getEntityType(): 'calendar' | 'database' | 'gmail' | 'second-brain' | 'error' {
+    return 'gmail';
   }
 }
 

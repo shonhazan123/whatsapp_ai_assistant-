@@ -39,7 +39,8 @@ RESPONSE GUIDELINES:
 3. Keep responses concise unless detailed explanation is needed
 4. If you don't understand, ask for clarification politely
 
-OUTPUT FORMAT:
+OUTPUT FORMAT (MUST BE VALID JSON):
+You MUST respond with ONLY valid JSON, no additional text or explanation.
 {
   "response": "Your natural language response here",
   "language": "he" | "en"
@@ -67,27 +68,40 @@ RULES:
   }
   
   async resolve(step: PlanStep, state: MemoState): Promise<ResolverOutput> {
-    const { action, constraints } = step;
-    
-    // For general responses, we generate a response based on context
-    // The actual LLM call will happen in the executor
-    
-    const args: Record<string, any> = {
-      action,
-      userMessage: state.input.message,
-      language: state.user.language,
-      recentContext: this.extractRecentContext(state),
-    };
-    
-    // Add any specific response hints from planner
-    if (constraints.responseHint) args.responseHint = constraints.responseHint;
-    if (constraints.topic) args.topic = constraints.topic;
-    
-    return {
-      stepId: step.id,
-      type: 'execute',
-      args,
-    };
+    // Use LLM to generate the conversational response
+    // This follows the architecture: Resolver uses LLM, Executor just returns the result
+    try {
+      const llmResult = await this.callLLM(step, state);
+      
+      // LLM returns { response: string, language: string } via function calling
+      const args: Record<string, any> = {
+        action: step.action,
+        response: llmResult.response,
+        language: llmResult.language || state.user.language,
+      };
+      
+      return {
+        stepId: step.id,
+        type: 'execute',
+        args,
+      };
+    } catch (error: any) {
+      console.error(`[${this.name}] LLM call failed, using fallback:`, error);
+      // Fallback: return generic response
+      const fallbackResponse = state.user.language === 'he' 
+        ? 'לא הבנתי. אפשר לנסח אחרת?'
+        : "I didn't understand. Could you rephrase?";
+      
+      return {
+        stepId: step.id,
+        type: 'execute',
+        args: {
+          action: step.action,
+          response: fallbackResponse,
+          language: state.user.language,
+        },
+      };
+    }
   }
   
   private extractRecentContext(state: MemoState): string {

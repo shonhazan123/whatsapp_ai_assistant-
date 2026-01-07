@@ -210,7 +210,41 @@ export class ResponseFormatterNode extends CodeNode {
     const capability = primaryStep?.capability || 'general';
     const action = primaryStep?.action || 'respond';
     
-    // Collect all execution data
+    // Skip formatting for general responses (no function calls, already LLM-generated)
+    // General responses come from GeneralResolver and already have response text in data.response
+    if (capability === 'general') {
+      console.log('[ResponseFormatter] Skipping formatting for general response (already LLM-generated)');
+      
+      // Pass through the response directly
+      const allData: any[] = [];
+      for (const [stepId, result] of executionResults) {
+        if (result.success && result.data) {
+          allData.push(result.data);
+        }
+      }
+      
+      // For general responses, we still create a FormattedResponse but with minimal processing
+      const formattedResponse: FormattedResponse = {
+        agent: capability,
+        operation: action,
+        entityType: 'message',
+        rawData: allData,
+        formattedData: allData, // No date formatting needed
+        context: {
+          isRecurring: false,
+          isNudge: false,
+          hasDueDate: false,
+          isToday: false,
+          isTomorrowOrLater: false,
+        },
+      };
+      
+      return {
+        formattedResponse,
+      };
+    }
+    
+    // For function call results (calendar, database, gmail, second-brain), format dates and categorize
     const allData: any[] = [];
     for (const [stepId, result] of executionResults) {
       if (result.success && result.data) {

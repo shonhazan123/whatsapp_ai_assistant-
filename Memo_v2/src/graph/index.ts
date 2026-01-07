@@ -31,6 +31,7 @@ import { createInitialState, MemoStateAnnotation } from './state/MemoState.js';
 
 // Node imports
 import { ContextAssemblyNode } from './nodes/ContextAssemblyNode.js';
+import { createEntityResolutionNode } from './nodes/EntityResolutionNode.js';
 import { createExecutorNode } from './nodes/ExecutorNode.js';
 import { createHITLGateNode } from './nodes/HITLGateNode.js';
 import { createJoinNode } from './nodes/JoinNode.js';
@@ -76,6 +77,9 @@ export function buildMemoGraph(input: TriggerInput) {
     // Resolver routing
     .addNode('resolver_router', createResolverRouterNode())
     
+    // Entity Resolution (ID lookup, disambiguation handling)
+    .addNode('entity_resolution', createEntityResolutionNode())
+    
     // Executor node (Phase 4)
     .addNode('executor', createExecutorNode())
     
@@ -93,7 +97,9 @@ export function buildMemoGraph(input: TriggerInput) {
     // HITL Gate can interrupt(), so no conditional edge needed
     // After interrupt resumes, it continues to resolver_router
     .addEdge('hitl_gate', 'resolver_router')
-    .addEdge('resolver_router', 'executor')
+    .addEdge('resolver_router', 'entity_resolution')
+    // Entity Resolution can trigger HITL for disambiguation
+    .addConditionalEdges('entity_resolution', entityResolutionRouter)
     .addEdge('executor', 'join')
     .addEdge('join', 'response_formatter')
     .addEdge('response_formatter', 'response_writer')
@@ -125,6 +131,20 @@ function plannerRouter(state: MemoState): string {
   
   // All other intents go through HITL gate
   return 'hitl_gate';
+}
+
+/**
+ * Route from EntityResolution based on HITL needs
+ */
+function entityResolutionRouter(state: MemoState): string {
+  // If disambiguation/clarification needed, go to HITL gate to handle interrupt
+  if (state.needsHITL) {
+    console.log(`[Graph] EntityResolution needs HITL: ${state.hitlReason}`);
+    return 'hitl_gate';
+  }
+  
+  // All resolved, proceed to executor
+  return 'executor';
 }
 
 
@@ -166,6 +186,11 @@ export async function hasPendingInterrupt(threadId: string): Promise<boolean> {
  * 
  * This is the main entry point, called from webhook.ts
  * 
+ * Per official LangGraph docs (https://docs.langchain.com/oss/javascript/langgraph/interrupts):
+ * - Interrupt payloads surface as result.__interrupt__ (NOT as thrown errors)
+ * - Resume with Command({ resume: value })
+ * - The resume value becomes the return value of interrupt()
+ * 
  * @param userPhone - User's phone number (used as thread_id)
  * @param message - User's message
  * @param options - Additional options
@@ -186,14 +211,16 @@ export async function invokeMemoGraph(
   // Check if this is a resume from a pending interrupt
   const isPendingInterrupt = await hasPendingInterrupt(threadId);
   
-  let result: MemoState;
+  // Result type includes __interrupt__ field per LangGraph spec
+  let result: MemoState & { __interrupt__?: Array<{ value: InterruptPayload }> };
   
   if (isPendingInterrupt) {
     // Resume from interrupt with user's message as the response
+    // The resume value becomes the return value of interrupt() in the node
     console.log(`[MemoGraph] Resuming from interrupt for thread ${threadId}`);
     
     const graph = buildMemoGraph({ userPhone, message, triggerType: options.triggerType || 'user' });
-    result = await graph.invoke(new Command({ resume: message }), config) as unknown as MemoState;
+    result = await graph.invoke(new Command({ resume: message }), config) as typeof result;
   } else {
     // Fresh invocation
     console.log(`[MemoGraph] Fresh invocation for thread ${threadId}`);
@@ -228,37 +255,39 @@ export async function invokeMemoGraph(
         triggerType: options.triggerType || 'user',
         whatsappMessageId: options.whatsappMessageId,
         replyToMessageId: options.replyToMessageId,
+        userPhone,
+        timezone: 'Asia/Jerusalem',
+        language: 'he',
       },
     });
     
-    try {
-      result = await graph.invoke(initialState, config) as unknown as MemoState;
-    } catch (error: any) {
-      // Check if this is an interrupt (not an error)
-      if (error?.name === 'GraphInterrupt' || error?.interrupts) {
-        const interrupts = error.interrupts || [];
-        const interruptPayload = interrupts[0]?.value as InterruptPayload | undefined;
-        
-        console.log(`[MemoGraph] Graph interrupted for thread ${threadId}`);
-        
-        return {
-          response: interruptPayload?.question || 'I need more information.',
-          interrupted: true,
-          interruptPayload,
-          metadata: {
-            startTime: Date.now(),
-            nodeExecutions: [],
-            llmCalls: 0,
-            totalTokens: 0,
-            totalCost: 0,
-          },
-        };
-      }
-      throw error;
-    }
+    result = await graph.invoke(initialState, config) as typeof result;
   }
   
-  // Log execution metadata
+  // ========================================================================
+  // Check for interrupt via __interrupt__ field (per official LangGraph docs)
+  // Interrupt payloads surface as result.__interrupt__, NOT as thrown errors
+  // ========================================================================
+  if (result.__interrupt__ && result.__interrupt__.length > 0) {
+    const interruptPayload = result.__interrupt__[0]?.value;
+    
+    console.log(`[MemoGraph] Graph interrupted for thread ${threadId}`);
+    
+    return {
+      response: interruptPayload?.question || 'I need more information.',
+      interrupted: true,
+      interruptPayload,
+      metadata: result.metadata || {
+        startTime: Date.now(),
+        nodeExecutions: [],
+        llmCalls: 0,
+        totalTokens: 0,
+        totalCost: 0,
+      },
+    };
+  }
+  
+  // Normal completion
   console.log(`[MemoGraph] Completed in ${Date.now() - result.metadata.startTime}ms`);
   console.log(`[MemoGraph] LLM calls: ${result.metadata.llmCalls}`);
   console.log(`[MemoGraph] Total tokens: ${result.metadata.totalTokens}`);

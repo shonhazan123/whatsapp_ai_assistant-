@@ -174,9 +174,9 @@ RULES:
     };
   }
   
-  // Override - no specific entity type for memories
-  protected getEntityType(): 'task' {
-    return 'task'; // Using task as fallback, could add 'memory' type
+  // Override - uses second-brain domain type
+  protected getEntityType(): 'calendar' | 'database' | 'gmail' | 'second-brain' | 'error' {
+    return 'second-brain';
   }
 }
 

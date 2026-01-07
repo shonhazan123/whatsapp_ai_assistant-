@@ -9,16 +9,17 @@
 
 import { Annotation } from '@langchain/langgraph';
 import type {
-    ConversationMessage,
-    DisambiguationContext,
-    ExecutionResult,
-    FormattedResponse,
-    MessageInput,
-    PlannerOutput,
-    ResolverResult,
-    StateRefs,
-    TimeContext,
-    UserContext,
+  ConversationMessage,
+  DisambiguationContext,
+  ExecutionResult,
+  FormattedResponse,
+  HITLReason,
+  MessageInput,
+  PlannerOutput,
+  ResolverResult,
+  StateRefs,
+  TimeContext,
+  UserContext,
 } from '../../types/index.js';
 
 // ============================================================================
@@ -59,6 +60,7 @@ const defaultUser: UserContext = {
 const defaultInput: MessageInput = {
   message: '',
   triggerType: 'user',
+  userPhone: '',
 };
 
 const defaultNow: TimeContext = {
@@ -66,6 +68,7 @@ const defaultNow: TimeContext = {
   iso: new Date().toISOString(),
   timezone: 'Asia/Jerusalem',
   dayOfWeek: new Date().getDay(),
+  date: new Date(),
 };
 
 const defaultMetadata: ExecutionMetadata = {
@@ -143,6 +146,17 @@ export const MemoStateAnnotation = Annotation.Root({
     },
   }),
 
+  // === EXECUTOR ARGS (resolved from EntityResolutionNode) ===
+  executorArgs: Annotation<Map<string, any>>({
+    default: () => new Map(),
+    reducer: (existing, incoming) => {
+      if (!incoming || incoming.size === 0) return existing;
+      const merged = new Map(existing);
+      incoming.forEach((v, k) => merged.set(k, v));
+      return merged;
+    },
+  }),
+
   // === EXECUTION RESULTS ===
   executionResults: Annotation<Map<string, ExecutionResult>>({
     default: () => new Map(),
@@ -175,6 +189,17 @@ export const MemoStateAnnotation = Annotation.Root({
   // === CONTROL ===
   // Note: shouldPause/pauseReason REMOVED - using LangGraph interrupt() instead
   error: Annotation<string | undefined>({
+    default: () => undefined,
+    reducer: (_, update) => update,
+  }),
+
+  // === HITL FLAGS (set by EntityResolutionNode) ===
+  needsHITL: Annotation<boolean>({
+    default: () => false,
+    reducer: (_, update) => update,
+  }),
+
+  hitlReason: Annotation<HITLReason | undefined>({
     default: () => undefined,
     reducer: (_, update) => update,
   }),
@@ -220,17 +245,21 @@ export function createInitialState(partial: Partial<MemoState> = {}): MemoState 
       ...defaultNow,
       iso: new Date().toISOString(),
       dayOfWeek: new Date().getDay(),
+      date: new Date(),
     },
     recentMessages: partial.recentMessages || [],
     longTermSummary: partial.longTermSummary,
     plannerOutput: partial.plannerOutput,
     disambiguation: partial.disambiguation,
     resolverResults: partial.resolverResults || new Map(),
+    executorArgs: partial.executorArgs || new Map(),
     executionResults: partial.executionResults || new Map(),
     refs: partial.refs || {},
     formattedResponse: partial.formattedResponse,
     finalResponse: partial.finalResponse,
     error: partial.error,
+    needsHITL: partial.needsHITL || false,
+    hitlReason: partial.hitlReason,
     metadata: partial.metadata || { ...defaultMetadata, startTime: Date.now() },
   };
 }

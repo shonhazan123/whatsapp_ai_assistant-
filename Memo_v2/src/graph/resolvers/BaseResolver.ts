@@ -148,17 +148,20 @@ export abstract class BaseResolver {
   
   /**
    * Get the entity type for disambiguation
+   * Updated to use new domain types: 'calendar' | 'database' | 'gmail' | 'second-brain' | 'error'
    */
-  protected getEntityType(): 'calendar_event' | 'task' | 'list' | 'email' {
+  protected getEntityType(): 'calendar' | 'database' | 'gmail' | 'second-brain' | 'error' {
     switch (this.capability) {
       case 'calendar':
-        return 'calendar_event';
+        return 'calendar';
       case 'database':
-        return 'task'; // Could also be 'list', subclasses can override
+        return 'database';
       case 'gmail':
-        return 'email';
+        return 'gmail';
+      case 'second-brain':
+        return 'second-brain';
       default:
-        return 'task';
+        return 'database';
     }
   }
   
@@ -232,26 +235,45 @@ export abstract class LLMResolver extends BaseResolver {
     step: PlanStep,
     state: MemoState
   ): Promise<Record<string, any>> {
+    console.log(`[${this.name}] callLLM() invoked for step ${step.id}`);
+    
     // Map capability to resolver node type for getNodeModel
     const resolverNodeType = this.capability === 'calendar' ? 'calendar' :
                              this.capability === 'database' ? 'database' :
                              this.capability === 'gmail' ? 'gmail' :
                              this.capability === 'second-brain' ? 'secondBrain' :
                              'general';
-    const modelConfig = getNodeModel(resolverNodeType, true);
+    
+    console.log(`[${this.name}] Resolver node type: ${resolverNodeType}`);
+    
+    let modelConfig;
+    try {
+      modelConfig = getNodeModel(resolverNodeType, true);
+      console.log(`[${this.name}] Model config: ${modelConfig.model}`);
+    } catch (error: any) {
+      console.error(`[${this.name}] Failed to get model config:`, error);
+      throw new Error(`Failed to get model config: ${error.message}`);
+    }
+    
     const systemPrompt = this.getSystemPrompt();
     const schemaSlice = this.getSchemaSlice();
     
+    console.log(`[${this.name}] System prompt length: ${systemPrompt.length}, Schema name: ${(schemaSlice as any).name}`);
+    
     // Build user message from step and state
     const userMessage = this.buildUserMessage(step, state);
+    console.log(`[${this.name}] User message length: ${userMessage.length}`);
     
     // Get requestId from state input metadata if available
     const requestId = (state.input as any).requestId;
     
     try {
+      console.log(`[${this.name}] Importing LLMService...`);
       // Import LLM service
       const { callLLM: callLLMService } = await import('../../services/llm/LLMService.js');
+      console.log(`[${this.name}] LLMService imported successfully`);
       
+      console.log(`[${this.name}] Calling LLM with model: ${modelConfig.model}`);
       // Call LLM with function calling
       const response = await callLLMService({
         messages: [
@@ -265,22 +287,29 @@ export abstract class LLMResolver extends BaseResolver {
         functionCall: { name: (schemaSlice as any).name },
       }, requestId);
       
+      console.log(`[${this.name}] LLM response received, has functionCall: ${!!response.functionCall}, has toolCalls: ${!!(response.toolCalls && response.toolCalls.length > 0)}`);
+      
       // Extract function call arguments
       if (response.functionCall) {
-        return JSON.parse(response.functionCall.arguments);
+        const parsed = JSON.parse(response.functionCall.arguments);
+        console.log(`[${this.name}] Parsed function call arguments:`, Object.keys(parsed));
+        return parsed;
       }
       
       if (response.toolCalls && response.toolCalls.length > 0) {
-        return JSON.parse(response.toolCalls[0].function.arguments);
+        const parsed = JSON.parse(response.toolCalls[0].function.arguments);
+        console.log(`[${this.name}] Parsed tool call arguments:`, Object.keys(parsed));
+        return parsed;
       }
       
       // Fallback to constraints if no function call
       console.warn(`[${this.name}] No function call in LLM response, using constraints`);
       return step.constraints;
     } catch (error: any) {
-      console.error(`[${this.name}] LLM call failed, using constraints:`, error);
-      // Fallback to constraints on error
-      return step.constraints;
+      console.error(`[${this.name}] LLM call failed, error type: ${error?.constructor?.name}, message: ${error?.message}`);
+      console.error(`[${this.name}] Error stack:`, error?.stack);
+      // Re-throw to be caught by resolve() method
+      throw error;
     }
   }
   

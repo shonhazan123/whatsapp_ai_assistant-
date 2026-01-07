@@ -33,6 +33,18 @@ export class HITLGateNode extends CodeNode {
   readonly name = 'hitl_gate';
   
   protected async process(state: MemoState): Promise<Partial<MemoState>> {
+    // Check if we're resuming from an interrupt (disambiguation already resolved)
+    if (state.disambiguation?.resolved) {
+      // User already responded, continue with their selection
+      return { needsHITL: false };
+    }
+    
+    // Check if EntityResolutionNode triggered HITL (disambiguation/not_found/clarification)
+    if (state.needsHITL && state.disambiguation) {
+      console.log(`[HITLGateNode] EntityResolution requested HITL: ${state.hitlReason}`);
+      return this.handleEntityResolutionHITL(state);
+    }
+    
     const plannerOutput = state.plannerOutput;
     
     if (!plannerOutput) {
@@ -42,13 +54,7 @@ export class HITLGateNode extends CodeNode {
       };
     }
     
-    // Check if we're resuming from an interrupt (disambiguation already resolved)
-    if (state.disambiguation?.resolved) {
-      // User already responded, continue with their selection
-      return {};
-    }
-    
-    // Check HITL conditions
+    // Check HITL conditions from planner
     const hitlCheck = this.checkHITLConditions(state);
     
     if (hitlCheck.shouldInterrupt) {
@@ -77,17 +83,98 @@ export class HITLGateNode extends CodeNode {
           userSelection: userResponse as string,
           resolved: true,
         } : {
-          type: 'calendar_event',
+          type: 'calendar',
           candidates: [],
           resolverStepId: '',
           userSelection: userResponse as string,
           resolved: true,
         },
+        needsHITL: false,
       };
     }
     
     // No HITL needed, continue to resolver router
-    return {};
+    return { needsHITL: false };
+  }
+  
+  /**
+   * Handle HITL triggered by EntityResolutionNode
+   */
+  private handleEntityResolutionHITL(state: MemoState): Partial<MemoState> {
+    const disambiguation = state.disambiguation!;
+    const language = state.user.language;
+    
+    // Build payload based on disambiguation type
+    let question: string;
+    let options: string[] | undefined;
+    
+    if (disambiguation.type === 'error') {
+      // Not found or clarify query - ask user to clarify
+      question = disambiguation.error || (language === 'he' 
+        ? 'לא הצלחתי למצוא מה שחיפשת. אפשר לנסות לנסח אחרת?' 
+        : 'I couldn\'t find what you\'re looking for. Can you try rephrasing?');
+      
+      if (disambiguation.suggestions && disambiguation.suggestions.length > 0) {
+        question += '\n\n' + (language === 'he' ? 'הצעות:' : 'Suggestions:');
+        question += '\n• ' + disambiguation.suggestions.join('\n• ');
+      }
+    } else {
+      // Disambiguation with candidates
+      question = disambiguation.question || this.getDisambiguationMessage(language, disambiguation);
+      options = disambiguation.candidates?.map((c, i) => `${i + 1}. ${c.displayText}`);
+    }
+    
+    const payload: InterruptPayload = {
+      type: disambiguation.type === 'error' ? 'clarification' : 'disambiguation',
+      question,
+      options,
+      metadata: {
+        stepId: disambiguation.resolverStepId,
+        entityType: disambiguation.type,
+        candidates: disambiguation.candidates,
+      },
+    };
+    
+    // Interrupt and wait for user response
+    const userResponse = interrupt(payload);
+    
+    // === CODE BELOW RUNS AFTER USER REPLIES ===
+    
+    // Parse user response
+    const selection = this.parseUserSelection(userResponse as string);
+    
+    return {
+      disambiguation: {
+        ...disambiguation,
+        userSelection: selection,
+        resolved: true,
+      },
+      needsHITL: false,
+    };
+  }
+  
+  /**
+   * Parse user's selection from their response
+   */
+  private parseUserSelection(response: string): string | number | number[] {
+    const trimmed = response.trim().toLowerCase();
+    
+    // Check for "both" / "all"
+    if (trimmed === 'both' || trimmed === 'all' || trimmed === 'שניהם' || trimmed === 'כולם') {
+      return trimmed;
+    }
+    
+    // Check for number(s)
+    const numbers = trimmed.match(/\d+/g);
+    if (numbers) {
+      if (numbers.length === 1) {
+        return parseInt(numbers[0], 10);
+      }
+      return numbers.map(n => parseInt(n, 10));
+    }
+    
+    // Return as-is for text selection
+    return response;
   }
   
   // ========================================================================
@@ -258,7 +345,7 @@ export class HITLGateNode extends CodeNode {
     language: 'he' | 'en' | 'other',
     context: MemoState['disambiguation']
   ): string {
-    if (!context) {
+    if (!context || !context.candidates || context.candidates.length === 0) {
       return language === 'he' ? 'איזה אחד?' : 'Which one?';
     }
     
@@ -302,6 +389,7 @@ export class HITLGateNode extends CodeNode {
   
   private describeField(field: string, language: 'he' | 'en' | 'other'): string {
     const fieldDescriptions: Record<string, Record<string, string>> = {
+      // Standard fields
       date: { he: 'תאריך', en: 'date' },
       time: { he: 'שעה', en: 'time' },
       title: { he: 'כותרת', en: 'title' },
@@ -310,6 +398,24 @@ export class HITLGateNode extends CodeNode {
       attendees: { he: 'משתתפים', en: 'attendees' },
       category: { he: 'קטגוריה', en: 'category' },
       priority: { he: 'עדיפות', en: 'priority' },
+      
+      // Special planner fields
+      google_connection_required: { 
+        he: 'כדי להשתמש ביומן או במייל, צריך לחבר את חשבון Google שלך. שלחתי לך קישור בהודעה נפרדת 🔗', 
+        en: 'To use calendar or email, you need to connect your Google account. I sent you a link in a separate message 🔗' 
+      },
+      what_to_delete: { 
+        he: 'מה בדיוק למחוק?', 
+        en: 'What exactly should I delete?' 
+      },
+      target_item: { 
+        he: 'איזה פריט התכוונת?', 
+        en: 'Which item did you mean?' 
+      },
+      unclear_intent: { 
+        he: 'לא הבנתי בדיוק מה לעשות. אפשר לנסח אחרת?', 
+        en: 'I didn\'t understand exactly what to do. Can you rephrase?' 
+      },
     };
     
     const lang = language === 'other' ? 'en' : language;

@@ -54,6 +54,9 @@ export class ContextAssemblyNode extends CodeNode {
         triggerType: this.input.triggerType,
         whatsappMessageId: this.input.whatsappMessageId,
         replyToMessageId: this.input.replyToMessageId,
+        userPhone: this.input.userPhone,
+        timezone: user.timezone,
+        language,
       },
       now,
       recentMessages,
@@ -78,18 +81,56 @@ export class ContextAssemblyNode extends CodeNode {
         return this.getDefaultUserContext(phone);
       }
       
-      // Check Google OAuth connection
-      const googleConnected = !!(user.google_access_token && user.google_refresh_token);
+      // CRITICAL: Google tokens are in a SEPARATE table (user_google_tokens)
+      // Must fetch them explicitly using getGoogleTokens(userId)
+      let googleConnected = false;
+      let hasCalendar = false;
+      let hasGmail = false;
+      
+      try {
+        const googleTokens = await userService.getGoogleTokens(user.id);
+        
+        if (googleTokens?.access_token && googleTokens?.refresh_token) {
+          googleConnected = true;
+          
+          // Check token expiry - if expired more than buffer, mark as needs refresh
+          // but still consider connected (will be refreshed on actual API call)
+          const expiresAt = googleTokens.expires_at ? new Date(googleTokens.expires_at).getTime() : null;
+          const isExpired = expiresAt ? expiresAt < Date.now() : false;
+          
+          // If expired but has refresh token, still consider connected
+          // The actual service will refresh when needed
+          if (!isExpired || googleTokens.refresh_token) {
+            googleConnected = true;
+          }
+          
+          // Check scopes to determine specific capabilities
+          const scopes = googleTokens.scope || [];
+          hasCalendar = scopes.some((s: string) => s.includes('calendar'));
+          hasGmail = scopes.some((s: string) => s.includes('gmail'));
+          
+          // If no scopes stored, assume full access based on plan
+          if (scopes.length === 0 && googleConnected) {
+            hasCalendar = user.plan_type === 'standard' || user.plan_type === 'pro';
+            hasGmail = user.plan_type === 'pro';
+          }
+        }
+        
+        console.log(`[ContextAssemblyNode] User ${user.id}: googleConnected=${googleConnected}, calendar=${hasCalendar}, gmail=${hasGmail}`);
+      } catch (tokenError) {
+        console.warn('[ContextAssemblyNode] Error fetching Google tokens:', tokenError);
+        // Continue with googleConnected = false
+      }
       
       return {
-        phone: user.phone,
+        phone: user.whatsapp_number,
         timezone: user.timezone || 'Asia/Jerusalem',
-        language: user.language || 'he',
-        planTier: user.plan_tier || 'free',
+        language: 'he', // Will be overridden by detectLanguage()
+        planTier: user.plan_type || 'free',
         googleConnected,
         capabilities: {
-          calendar: googleConnected,
-          gmail: googleConnected,
+          calendar: hasCalendar,
+          gmail: hasGmail,
           database: true,
           secondBrain: true,
         },
@@ -175,6 +216,7 @@ export class ContextAssemblyNode extends CodeNode {
       iso: isoString,
       timezone,
       dayOfWeek: now.getDay(),
+      date: now,
     };
   }
   

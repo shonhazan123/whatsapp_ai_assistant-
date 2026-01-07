@@ -295,7 +295,7 @@ Output only the JSON, no explanation. NEVER include IDs you don't have.`;
           // Default reminder to "0 minutes" if dueDate but no reminder specified
           args.reminder = constraints.reminder || '0 minutes';
         }
-        if (constraints.reminderRecurrence) {
+        if (constraints.recurring) {
           args.reminderRecurrence = this.normalizeReminderRecurrence(constraints.reminderRecurrence);
         }
         break;
@@ -417,8 +417,8 @@ Output only the JSON, no explanation. NEVER include IDs you don't have.`;
     return normalized;
   }
   
-  protected getEntityType(): 'task' {
-    return 'task';
+  protected getEntityType(): 'calendar' | 'database' | 'gmail' | 'second-brain' | 'error' {
+    return 'database';
   }
 }
 
@@ -613,8 +613,8 @@ Output only the JSON, no explanation.`;
     };
   }
   
-  protected getEntityType(): 'list' {
-    return 'list';
+  protected getEntityType(): 'calendar' | 'database' | 'gmail' | 'second-brain' | 'error' {
+    return 'database';
   }
 }
 

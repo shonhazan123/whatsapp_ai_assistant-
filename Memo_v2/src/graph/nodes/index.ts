@@ -28,5 +28,5 @@ export {
 export {
     categorizeTasks, createResponseFormatterNode, formatDate, formatDatesInObject, formatRelativeDate, ResponseFormatterNode
 } from './ResponseFormatterNode.js';
-export { createResponseWriterNode, ResponseWriterNode, TEMPLATES } from './ResponseWriterNode.js';
+export { createResponseWriterNode, ResponseWriterNode } from './ResponseWriterNode.js';
 
