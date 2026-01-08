@@ -33,9 +33,12 @@ export class HITLGateNode extends CodeNode {
   readonly name = 'hitl_gate';
   
   protected async process(state: MemoState): Promise<Partial<MemoState>> {
+    console.log(`[HITLGateNode] Processing - disambiguation.resolved: ${state.disambiguation?.resolved}, needsHITL: ${state.needsHITL}`);
+    
     // Check if we're resuming from an interrupt (disambiguation already resolved)
     if (state.disambiguation?.resolved) {
       // User already responded, continue with their selection
+      console.log(`[HITLGateNode] Resuming from resolved disambiguation`);
       return { needsHITL: false };
     }
     
@@ -49,6 +52,7 @@ export class HITLGateNode extends CodeNode {
     
     if (!plannerOutput) {
       // No planner output - should not happen, but handle gracefully
+      console.error(`[HITLGateNode] No planner output in state!`);
       return {
         error: 'HITLGateNode received state without planner output',
       };
@@ -56,10 +60,12 @@ export class HITLGateNode extends CodeNode {
     
     // Check HITL conditions from planner
     const hitlCheck = this.checkHITLConditions(state);
+    console.log(`[HITLGateNode] HITL check: shouldInterrupt=${hitlCheck.shouldInterrupt}, reason=${hitlCheck.reason}, details=${hitlCheck.details}`);
     
     if (hitlCheck.shouldInterrupt) {
       // Build interrupt payload
       const payload = this.buildInterruptPayload(hitlCheck, state);
+      console.log(`[HITLGateNode] Triggering interrupt with question: "${payload.question?.substring(0, 100)}..."`);
       
       // Store disambiguation context before interrupt
       const updatedState: Partial<MemoState> = {
@@ -74,10 +80,13 @@ export class HITLGateNode extends CodeNode {
       const userResponse = interrupt(payload);
       
       // === CODE BELOW RUNS AFTER USER REPLIES ===
+      console.log(`[HITLGateNode] Resumed from interrupt with user response: "${userResponse}"`);
       
       // Update state with user's selection
+      // IMPORTANT: Clear any previous error state when resuming successfully
       return {
         ...updatedState,
+        error: undefined, // Clear error on successful resume
         disambiguation: updatedState.disambiguation ? {
           ...updatedState.disambiguation,
           userSelection: userResponse as string,
@@ -94,6 +103,7 @@ export class HITLGateNode extends CodeNode {
     }
     
     // No HITL needed, continue to resolver router
+    console.log(`[HITLGateNode] No HITL needed, proceeding to resolver`);
     return { needsHITL: false };
   }
   

@@ -5,8 +5,11 @@
  * - Execution timing
  * - Error handling
  * - Metadata tracking
+ * 
+ * IMPORTANT: Does NOT catch GraphInterrupt - that's intentional control flow
  */
 
+import { GraphInterrupt } from '@langchain/langgraph';
 import type { MemoState } from '../state/MemoState.js';
 
 export interface NodeExecutionResult<T = Partial<MemoState>> {
@@ -68,6 +71,12 @@ export abstract class BaseNode {
         },
       };
     } catch (error) {
+      // CRITICAL: Re-throw GraphInterrupt - it's not an error, it's intentional HITL control flow
+      // LangGraph needs to catch this to pause the graph and persist state
+      if (error instanceof GraphInterrupt) {
+        throw error;
+      }
+      
       const endTime = Date.now();
       console.error(`[${this.name}] Error:`, error);
       

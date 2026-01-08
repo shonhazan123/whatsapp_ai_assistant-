@@ -169,7 +169,22 @@ export class TaskServiceAdapter {
       return result;
     }
     
-    const tasks = result.data || [];
+    // Handle different response formats from V1 TaskService:
+    // - result.data could be an array directly
+    // - result.data could be an object with a 'tasks' or 'items' property
+    // - result.data could be null/undefined
+    let tasks: any[] = [];
+    if (Array.isArray(result.data)) {
+      tasks = result.data;
+    } else if (result.data?.tasks && Array.isArray(result.data.tasks)) {
+      tasks = result.data.tasks;
+    } else if (result.data?.items && Array.isArray(result.data.items)) {
+      tasks = result.data.items;
+    } else if (result.data && typeof result.data === 'object') {
+      // If it's an object but not recognized format, log for debugging
+      console.warn('[TaskServiceAdapter] Unexpected getAll response format:', Object.keys(result.data));
+    }
+    
     const found = tasks.find((t: any) => 
       (args.taskId && t.id === args.taskId) ||
       (args.text && t.text?.toLowerCase().includes(args.text.toLowerCase()))

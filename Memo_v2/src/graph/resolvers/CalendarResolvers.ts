@@ -3,16 +3,12 @@
  * 
  * Converts calendar-related PlanSteps into calendarOperations arguments.
  * 
+ * Each resolver uses its OWN LLM call with domain-specific prompts to:
+ * 1. Determine the specific operation (get, create, update, delete, etc.)
+ * 2. Extract all required fields from the user's natural language
+ * 
  * Based on V1: src/agents/functions/CalendarFunctions.ts
  *              src/config/system-prompts.ts (getCalendarAgentPrompt)
- * 
- * CRITICAL V1 RULES:
- * - Calendar handles ALL time-based tasks/events (even without "calendar" keyword)
- * - Event reminders (reminderMinutesBefore) are different from standalone reminders
- * - All-day multi-day events vs time-specific events
- * - Forward-looking behavior for day-of-week references
- * - Natural language resolution (summary-based, never rely on eventId from user)
- * - searchCriteria for updates/deletes
  */
 
 import type { Capability, PlanStep } from '../../types/index.js';
@@ -26,19 +22,35 @@ import { LLMResolver, type ResolverOutput } from './BaseResolver.js';
 /**
  * CalendarFindResolver - Read-only calendar operations
  * 
- * Actions: find_event, list_events, check_conflicts, get_recurring
+ * Uses LLM to determine operation and extract search parameters.
  */
 export class CalendarFindResolver extends LLMResolver {
   readonly name = 'calendar_find_resolver';
   readonly capability: Capability = 'calendar';
-  readonly actions = ['find_event', 'list_events', 'check_conflicts', 'get_recurring', 'analyze_schedule'];
+  readonly actions = [
+    'calendar_operation',  // Generic - LLM will determine specific operation
+    'find_event', 
+    'list_events', 
+    'check_conflicts', 
+    'get_recurring', 
+    'analyze_schedule'
+  ];
   
   getSystemPrompt(): string {
     return `YOU ARE A CALENDAR SEARCH AND ANALYSIS AGENT.
 
 ## YOUR ROLE:
-Convert natural language queries into calendar search parameters.
-You can also analyze schedules to answer questions about availability, hours, patterns.
+Analyze the user's natural language request and convert it into calendar search parameters.
+You handle calendar queries, schedule viewing, and event finding.
+
+## OPERATION SELECTION
+Analyze the user's intent to determine the correct operation:
+- User wants to SEE events/schedule → "getEvents"
+- User asks "מה יש לי"/"what do I have" → "getEvents"
+- User looking for SPECIFIC event → "get"
+- User asks about AVAILABILITY/CONFLICTS → "checkConflicts"
+- User asks about RECURRING instances → "getRecurringInstances"
+- User asks "how many hours"/"כמה שעות" → "getEvents" (analysis mode)
 
 ## AVAILABLE OPERATIONS:
 - **get**: Get a specific event by summary and time window
@@ -49,7 +61,7 @@ You can also analyze schedules to answer questions about availability, hours, pa
 ## CRITICAL RULES:
 
 ### Natural Language Resolution:
-- ALWAYS provide event summary/title in every call
+- ALWAYS provide event summary/title when searching for specific event
 - NEVER request or rely on eventId from user - let runtime resolve it
 - Include timeMin/timeMax derived from user's phrasing
 
@@ -63,6 +75,7 @@ When user mentions a day name (e.g., "Tuesday", "שלישי"):
 - For "today's events", use today 00:00 to 23:59
 - For "tomorrow's events", use tomorrow 00:00 to 23:59
 - For "this week", use Monday 00:00 to Sunday 23:59
+- For "next week", use next Monday to Sunday
 
 ## OUTPUT FORMAT:
 {
@@ -77,24 +90,33 @@ When user mentions a day name (e.g., "Tuesday", "שלישי"):
 
 Example 1 - Get today's events:
 User: "מה האירועים שלי היום?"
+Current time: Thursday, 02/01/2025 14:00
 → { "operation": "getEvents", "timeMin": "2025-01-02T00:00:00+02:00", "timeMax": "2025-01-02T23:59:59+02:00" }
 
 Example 2 - Find specific event:
 User: "מתי הפגישה עם דנה?"
 → { "operation": "get", "summary": "פגישה עם דנה", "timeMin": "2025-01-02T00:00:00+02:00", "timeMax": "2025-01-09T23:59:59+02:00" }
 
-Example 3 - Check conflicts:
+Example 3 - Check conflicts/availability:
 User: "האם יש לי משהו ביום שני בערב?"
 → { "operation": "checkConflicts", "timeMin": "2025-01-06T18:00:00+02:00", "timeMax": "2025-01-06T22:00:00+02:00" }
 
 Example 4 - This week excluding work:
 User: "מה יש לי השבוע חוץ מעבודה?"
-→ { "operation": "getEvents", "timeMin": "...", "timeMax": "...", "excludeSummaries": ["עבודה"] }
+→ { "operation": "getEvents", "timeMin": "2025-01-06T00:00:00+02:00", "timeMax": "2025-01-12T23:59:59+02:00", "excludeSummaries": ["עבודה"] }
 
 Example 5 - Schedule analysis:
 User: "כמה שעות עבודה יש לי השבוע?"
-→ { "operation": "getEvents", "timeMin": "...", "timeMax": "..." }
+→ { "operation": "getEvents", "timeMin": "2025-01-06T00:00:00+02:00", "timeMax": "2025-01-12T23:59:59+02:00" }
 Note: After getting events, system will analyze and count work hours.
+
+Example 6 - Tomorrow's schedule:
+User: "What's on my calendar tomorrow?"
+→ { "operation": "getEvents", "timeMin": "2025-01-03T00:00:00+02:00", "timeMax": "2025-01-03T23:59:59+02:00" }
+
+Example 7 - Find recurring:
+User: "show me all instances of my weekly team meeting"
+→ { "operation": "getRecurringInstances", "summary": "team meeting" }
 
 Output only the JSON, no explanation.`;
   }
@@ -111,8 +133,8 @@ Output only the JSON, no explanation.`;
           },
           eventId: { type: 'string', description: 'Event ID (only if known from prior lookup)' },
           summary: { type: 'string', description: 'Event title to search' },
-          timeMin: { type: 'string', description: 'Range start (ISO)' },
-          timeMax: { type: 'string', description: 'Range end (ISO)' },
+          timeMin: { type: 'string', description: 'Range start (ISO datetime)' },
+          timeMax: { type: 'string', description: 'Range end (ISO datetime)' },
           excludeSummaries: { 
             type: 'array', 
             items: { type: 'string' },
@@ -125,48 +147,55 @@ Output only the JSON, no explanation.`;
   }
   
   async resolve(step: PlanStep, state: MemoState): Promise<ResolverOutput> {
-    const { action, constraints } = step;
-    
-    // Map semantic action to operation
-    const operationMap: Record<string, string> = {
-      'find_event': 'get',
-      'list_events': 'getEvents',
-      'check_conflicts': 'checkConflicts',
-      'get_recurring': 'getRecurringInstances',
-      'analyze_schedule': 'getEvents',
-    };
-    
-    const operation = operationMap[action] || 'getEvents';
-    
-    // Build args from constraints
-    const args: Record<string, any> = {
-      operation,
-    };
-    
-    // Add time range if not specified, default to next 7 days
-    if (!constraints.timeMin && !constraints.timeMax) {
+    // Use LLM to extract operation and search parameters
+    try {
+      console.log(`[${this.name}] Calling LLM to extract calendar search params`);
+      
+      const args = await this.callLLM(step, state);
+      
+      // Validate operation
+      if (!args.operation) {
+        console.warn(`[${this.name}] LLM did not return operation, defaulting to 'getEvents'`);
+        args.operation = 'getEvents';
+      }
+      
+      // Apply time defaults if not specified
+      if (!args.timeMin && !args.timeMax) {
+        const now = new Date();
+        now.setHours(0, 0, 0, 0);
+        args.timeMin = now.toISOString();
+        const weekLater = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+        weekLater.setHours(23, 59, 59, 999);
+        args.timeMax = weekLater.toISOString();
+      }
+      
+      console.log(`[${this.name}] LLM determined operation: ${args.operation}`);
+      
+      return {
+        stepId: step.id,
+        type: 'execute',
+        args,
+      };
+    } catch (error: any) {
+      console.error(`[${this.name}] LLM call failed:`, error.message);
+      
+      // Fallback: default to getEvents with 7 day window
       const now = new Date();
-      // Set to start of today
       now.setHours(0, 0, 0, 0);
-      args.timeMin = now.toISOString();
       const weekLater = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
       weekLater.setHours(23, 59, 59, 999);
-      args.timeMax = weekLater.toISOString();
-    } else {
-      if (constraints.timeMin) args.timeMin = constraints.timeMin;
-      if (constraints.timeMax) args.timeMax = constraints.timeMax;
+      
+      return {
+        stepId: step.id,
+        type: 'execute',
+        args: {
+          operation: 'getEvents',
+          timeMin: now.toISOString(),
+          timeMax: weekLater.toISOString(),
+          _fallback: true,
+        },
+      };
     }
-    
-    // Add search criteria
-    if (constraints.summary) args.summary = constraints.summary;
-    if (constraints.eventId) args.eventId = constraints.eventId;
-    if (constraints.excludeSummaries) args.excludeSummaries = constraints.excludeSummaries;
-    
-    return {
-      stepId: step.id,
-      type: 'execute',
-      args,
-    };
   }
   
   protected getEntityType(): 'calendar' | 'database' | 'gmail' | 'second-brain' | 'error' {
@@ -181,13 +210,13 @@ Output only the JSON, no explanation.`;
 /**
  * CalendarMutateResolver - Write calendar operations
  * 
- * Actions: create_event, update_event, delete_event, create_recurring, 
- *          create_multiple_events, truncate_recurring
+ * Uses LLM to determine operation and extract all event fields.
  */
 export class CalendarMutateResolver extends LLMResolver {
   readonly name = 'calendar_mutate_resolver';
   readonly capability: Capability = 'calendar';
   readonly actions = [
+    'calendar_operation',  // Generic - LLM determines specific operation
     'create_event', 
     'update_event', 
     'delete_event', 
@@ -201,8 +230,17 @@ export class CalendarMutateResolver extends LLMResolver {
     return `YOU ARE A CALENDAR MANAGEMENT AGENT.
 
 ## YOUR ROLE:
-Convert natural language into calendar modification parameters.
+Analyze the user's natural language request and convert it into calendar modification parameters.
 You handle ALL time-based event creation, even without explicit "calendar" keyword.
+
+## OPERATION SELECTION
+Analyze the user's intent to determine the correct operation:
+- User wants to CREATE new event → "create"
+- User mentions MULTIPLE separate events → "createMultiple"
+- User wants WEEKLY/MONTHLY recurring → "createRecurring"
+- User wants to CHANGE/MOVE event → "update"
+- User wants to DELETE/CANCEL event → "delete" or "deleteBySummary"
+- User wants to END recurring series → "truncateRecurring"
 
 ## AVAILABLE OPERATIONS:
 - **create**: Create single event
@@ -239,13 +277,6 @@ When user requests events spanning multiple days WITH specific time:
 - Use createMultiple with separate events for each day
 - Use full ISO datetime
 
-Example: "gym every morning at 10 from tomorrow till Friday"
-→ { "operation": "createMultiple", "events": [
-    { "summary": "Gym", "start": "2025-01-03T10:00:00+02:00", "end": "2025-01-03T11:00:00+02:00" },
-    { "summary": "Gym", "start": "2025-01-04T10:00:00+02:00", "end": "2025-01-04T11:00:00+02:00" },
-    ...
-  ]}
-
 ### Recurring Events (ONLY when explicitly requested):
 Indicators: "every week", "כל שבוע", "weekly", "recurring", "repeat"
 - Weekly: days array with day NAMES (English): ["Monday", "Tuesday"]
@@ -254,15 +285,12 @@ Indicators: "every week", "כל שבוע", "weekly", "recurring", "repeat"
 Example weekly: "עבודה כל יום א', ג', ד' מ-9 עד 18"
 → { "operation": "createRecurring", "summary": "עבודה", "startTime": "09:00", "endTime": "18:00", "days": ["Sunday", "Tuesday", "Wednesday"] }
 
-Example monthly: "בכל 10 לחודש לבדוק משכורת"
-→ { "operation": "createRecurring", "summary": "לבדוק משכורת", "startTime": "10:00", "endTime": "11:00", "days": ["10"] }
-
 ### Updates (searchCriteria + updateFields):
 NEVER use eventId from user. Use searchCriteria to find event.
 
 Example: "תזיז את הפגישה עם דנה מחר לשעה 18:30"
 → { "operation": "update", 
-    "searchCriteria": { "summary": "פגישה עם דנה", "timeMin": "2025-01-03T00:00:00+02:00", "timeMax": "2025-01-03T23:59:59+02:00" },
+    "searchCriteria": { "summary": "פגישה עם דנה", "timeMin": "...", "timeMax": "..." },
     "updateFields": { "start": "2025-01-03T18:30:00+02:00", "end": "2025-01-03T19:30:00+02:00" } }
 
 ### Defaults:
@@ -280,13 +308,15 @@ Example: "תזיז את הפגישה עם דנה מחר לשעה 18:30"
   "location": "optional",
   "attendees": ["email1@example.com"],
   "reminderMinutesBefore": 30,
-  "allDay": true/false
+  "allDay": true/false,
+  "language": "he" | "en"
 }
 
 ## EXAMPLES:
 
 Example 1 - Simple event:
 User: "תוסיף ליומן פגישה עם ג'ון מחר ב-14:00"
+Current time: Thursday, 02/01/2025 14:00
 → { "operation": "create", "summary": "פגישה עם ג'ון", "start": "2025-01-03T14:00:00+02:00", "end": "2025-01-03T15:00:00+02:00", "language": "he" }
 
 Example 2 - Event with reminder:
@@ -297,7 +327,7 @@ Example 3 - Multi-day vacation (all-day):
 User: "צימר בצפון מ-2 עד 6 בינואר"
 → { "operation": "create", "summary": "צימר בצפון", "start": "2025-01-02", "end": "2025-01-07", "allDay": true, "location": "צפון", "language": "he" }
 
-Example 4 - Multiple events:
+Example 4 - Multiple separate events:
 User: "create meetings on Monday, Tuesday, and Wednesday at 2pm"
 → { "operation": "createMultiple", "events": [
     { "summary": "Meeting", "start": "2025-01-06T14:00:00+02:00", "end": "2025-01-06T15:00:00+02:00" },
@@ -319,6 +349,10 @@ User: "move tomorrow's meeting with Dana to 6:30pm"
 Example 7 - Delete event:
 User: "תמחק את האירוע של החתונה"
 → { "operation": "deleteBySummary", "summary": "חתונה", "language": "he" }
+
+Example 8 - Event with location:
+User: "Schedule coffee with Tom at Cafe Noir on Friday at 3pm"
+→ { "operation": "create", "summary": "Coffee with Tom", "start": "2025-01-03T15:00:00+02:00", "end": "2025-01-03T16:00:00+02:00", "location": "Cafe Noir", "language": "en" }
 
 Output only the JSON, no explanation.`;
   }
@@ -346,7 +380,7 @@ Output only the JSON, no explanation.`;
           // For recurring
           startTime: { type: 'string', description: 'HH:mm for recurring events' },
           endTime: { type: 'string', description: 'HH:mm for recurring events' },
-          days: { type: 'array', items: { type: 'string' }, description: 'Days for recurring: ["Monday"] or ["10"] for monthly' },
+          days: { type: 'array', items: { type: 'string' }, description: 'Days for recurring' },
           until: { type: 'string', description: 'End date for recurring series' },
           // For multiple events
           events: { 
@@ -357,7 +391,7 @@ Output only the JSON, no explanation.`;
           recurringEvents: { 
             type: 'array', 
             items: { type: 'object' },
-            description: 'Array of recurring events for createMultipleRecurring' 
+            description: 'Array of recurring events' 
           },
           // For update
           searchCriteria: {
@@ -367,8 +401,6 @@ Output only the JSON, no explanation.`;
               summary: { type: 'string' },
               timeMin: { type: 'string' },
               timeMax: { type: 'string' },
-              dayOfWeek: { type: 'string' },
-              startTime: { type: 'string' },
             },
           },
           updateFields: {
@@ -393,129 +425,48 @@ Output only the JSON, no explanation.`;
   }
   
   async resolve(step: PlanStep, state: MemoState): Promise<ResolverOutput> {
-    const { action, constraints, changes } = step;
     const language = state.user.language === 'he' ? 'he' : 'en';
     
-    // Use LLM to extract structured arguments from natural language
-    // This is similar to V1's CalendarAgent using function calling
-    let args: Record<string, any>;
-    
+    // Use LLM to extract operation and all fields
     try {
-      // Call LLM with function calling to extract structured data
-      args = await this.callLLM(step, state);
+      console.log(`[${this.name}] Calling LLM to extract calendar mutation params`);
+      
+      const args = await this.callLLM(step, state);
       args.language = language;
       
-      // Ensure operation is set
+      // Validate operation
       if (!args.operation) {
-        // Map semantic action to operation as fallback
-        const operationMap: Record<string, string> = {
-          'create_event': 'create',
-          'update_event': 'update',
-          'delete_event': 'delete',
-          'create_recurring': 'createRecurring',
-          'create_multiple_events': 'createMultiple',
-          'create_multiple_recurring': 'createMultipleRecurring',
-          'truncate_recurring': 'truncateRecurring',
-        };
-        args.operation = operationMap[action] || 'create';
+        console.warn(`[${this.name}] LLM did not return operation, defaulting to 'create'`);
+        args.operation = 'create';
       }
-    } catch (error: any) {
-      console.error(`[${this.name}] LLM call failed, using constraint-based fallback:`, error);
-      // Fallback to constraint-based resolution
-      const operationMap: Record<string, string> = {
-        'create_event': 'create',
-        'update_event': 'update',
-        'delete_event': 'delete',
-        'create_recurring': 'createRecurring',
-        'create_multiple_events': 'createMultiple',
-        'create_multiple_recurring': 'createMultipleRecurring',
-        'truncate_recurring': 'truncateRecurring',
+      
+      // Calculate end time if not provided
+      if (args.operation === 'create' && args.start && !args.end) {
+        args.end = this.calculateEnd(args.start);
+      }
+      
+      console.log(`[${this.name}] LLM determined operation: ${args.operation}`);
+      
+      return {
+        stepId: step.id,
+        type: 'execute',
+        args,
       };
+    } catch (error: any) {
+      console.error(`[${this.name}] LLM call failed:`, error.message);
       
-      const operation = operationMap[action] || 'create';
-      args = { operation, language };
-      
-      // Fill in args from constraints (fallback logic)
-      switch (operation) {
-        case 'create':
-          args.summary = constraints.summary || changes.summary;
-          args.start = constraints.start || changes.start;
-          args.end = constraints.end || changes.end || this.calculateEnd(args.start);
-          if (constraints.description) args.description = constraints.description;
-          if (constraints.location) args.location = constraints.location;
-          if (constraints.attendees) args.attendees = constraints.attendees;
-          if (constraints.reminderMinutesBefore) args.reminderMinutesBefore = constraints.reminderMinutesBefore;
-          if (constraints.allDay) args.allDay = true;
-          break;
-          
-        case 'createMultiple':
-          args.events = (constraints.events || []).map((event: any) => ({
-            summary: event.summary,
-            start: event.start,
-            end: event.end || this.calculateEnd(event.start),
-            description: event.description,
-            location: event.location,
-            attendees: event.attendees,
-            reminderMinutesBefore: event.reminderMinutesBefore,
-          }));
-          break;
-          
-        case 'createRecurring':
-          args.summary = constraints.summary;
-          args.startTime = constraints.startTime;
-          args.endTime = constraints.endTime;
-          args.days = constraints.days;
-          if (constraints.until) args.until = constraints.until;
-          if (constraints.location) args.location = constraints.location;
-          break;
-          
-        case 'createMultipleRecurring':
-          args.recurringEvents = constraints.recurringEvents;
-          break;
-          
-        case 'update':
-          if (constraints.eventId) {
-            args.eventId = constraints.eventId;
-          } else {
-            args.searchCriteria = {};
-            if (constraints.summary) args.searchCriteria.summary = constraints.summary;
-            if (constraints.timeMin) args.searchCriteria.timeMin = constraints.timeMin;
-            if (constraints.timeMax) args.searchCriteria.timeMax = constraints.timeMax;
-            if (constraints.dayOfWeek) args.searchCriteria.dayOfWeek = constraints.dayOfWeek;
-            if (constraints.startTime) args.searchCriteria.startTime = constraints.startTime;
-          }
-          args.updateFields = {};
-          if (changes.summary) args.updateFields.summary = changes.summary;
-          if (changes.start) args.updateFields.start = changes.start;
-          if (changes.end) args.updateFields.end = changes.end;
-          if (changes.description) args.updateFields.description = changes.description;
-          if (changes.location) args.updateFields.location = changes.location;
-          if (constraints.isRecurring) args.isRecurring = true;
-          break;
-          
-        case 'delete':
-          if (constraints.eventId) {
-            args.eventId = constraints.eventId;
-          } else {
-            args.operation = 'deleteBySummary';
-            args.summary = constraints.summary;
-            if (constraints.timeMin) args.timeMin = constraints.timeMin;
-            if (constraints.timeMax) args.timeMax = constraints.timeMax;
-          }
-          break;
-          
-        case 'truncateRecurring':
-          args.summary = constraints.summary;
-          args.until = constraints.until;
-          break;
-      }
+      // Fallback: basic create with message as summary
+      return {
+        stepId: step.id,
+        type: 'execute',
+        args: {
+          operation: 'create',
+          summary: step.constraints.rawMessage || state.input.message,
+          language,
+          _fallback: true,
+        },
+      };
     }
-    
-    return {
-      stepId: step.id,
-      type: 'execute',
-      args,
-    };
   }
   
   /**
@@ -526,7 +477,6 @@ Output only the JSON, no explanation.`;
     
     // Check if it's a date-only (all-day) format
     if (/^\d{4}-\d{2}-\d{2}$/.test(start)) {
-      // For all-day, just return the date (Google handles it)
       return start;
     }
     

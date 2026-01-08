@@ -1,19 +1,24 @@
 /**
  * ResolverRouterNode
  * 
- * Routes PlanSteps to appropriate Resolvers based on capability and action.
+ * Routes PlanSteps to appropriate Resolvers based on capability.
  * Builds a dependency DAG and determines parallel execution groups.
+ * 
+ * NEW ARCHITECTURE (January 2026):
+ * - Planner only routes to capability (not specific action)
+ * - Uses intent hint to select between resolvers (e.g., CalendarFind vs CalendarMutate)
+ * - Each resolver uses its own LLM to determine operation
  * 
  * Responsibilities:
  * - Read plan from PlannerOutput
  * - Build dependency graph from depends_on
  * - Determine which steps can run in parallel
- * - Route each step to the correct resolver
+ * - Route each step to the correct resolver using smart selection
  * - Collect resolver results
  */
 
 import type { PlanStep, ResolverResult } from '../../types/index.js';
-import { findResolver, RESOLVER_REGISTRY } from '../resolvers/index.js';
+import { findResolver, RESOLVER_REGISTRY, selectResolver } from '../resolvers/index.js';
 import type { MemoState } from '../state/MemoState.js';
 import { CodeNode } from './BaseNode.js';
 
@@ -66,9 +71,6 @@ export class ResolverRouterNode extends CodeNode {
       for (const result of groupResults) {
         allResults.set(result.stepId, result.result);
       }
-      
-      // Check for clarification needs - interrupt happens inside resolver
-      // If a resolver triggered interrupt(), the graph will pause here
     }
     
     return {
@@ -181,29 +183,32 @@ export class ResolverRouterNode extends CodeNode {
   
   /**
    * Route a single step to its resolver and execute
+   * 
+   * Uses smart selection based on capability and intent hint from Planner
    */
   private async routeAndExecute(step: PlanStep, state: MemoState): Promise<RoutingResult> {
-    const resolver = findResolver(step.capability, step.action);
+    // Get intent hint from step.action (which now contains rough intent from Planner)
+    const intentHint = step.action || '';
+    
+    // Smart resolver selection using capability + intent hint
+    let resolver = selectResolver(step.capability, intentHint);
+    
+    // Fallback: try exact match with action
+    if (!resolver) {
+      resolver = findResolver(step.capability, step.action);
+    }
+    
+    // Last resort: any resolver for capability
+    if (!resolver) {
+      const fallbackResolvers = RESOLVER_REGISTRY.filter(r => r.capability === step.capability);
+      if (fallbackResolvers.length > 0) {
+        resolver = fallbackResolvers[0];
+        console.log(`[ResolverRouter] Using fallback resolver: ${resolver.name}`);
+      }
+    }
     
     if (!resolver) {
       console.warn(`[ResolverRouter] No resolver found for ${step.capability}:${step.action}`);
-      
-      // Try to find a fallback resolver for the capability
-      const fallbackResolvers = RESOLVER_REGISTRY.filter(r => r.capability === step.capability);
-      
-      if (fallbackResolvers.length > 0) {
-        const fallback = fallbackResolvers[0];
-        console.log(`[ResolverRouter] Using fallback resolver: ${fallback.name}`);
-        
-        const result = await fallback.resolve(step, state);
-        return {
-          stepId: step.id,
-          resolverName: fallback.name,
-          result,
-        };
-      }
-      
-      // No resolver at all - return error
       return {
         stepId: step.id,
         resolverName: 'none',
@@ -211,14 +216,14 @@ export class ResolverRouterNode extends CodeNode {
           stepId: step.id,
           type: 'execute',
           args: { 
-            error: `No resolver found for ${step.capability}:${step.action}`,
+            error: `No resolver found for ${step.capability}`,
             _fallback: true,
           },
         },
       };
     }
     
-    console.log(`[ResolverRouter] Routing ${step.id} to ${resolver.name}`);
+    console.log(`[ResolverRouter] Routing ${step.id} (${step.capability}) to ${resolver.name}`);
     
     const result = await resolver.resolve(step, state);
     
@@ -238,5 +243,3 @@ export function createResolverRouterNode() {
   const node = new ResolverRouterNode();
   return node.asNodeFunction();
 }
-
-

@@ -1,8 +1,10 @@
 # Memo V2 — LangGraph Architecture Blueprint
 
-> **Status**: Draft v1.1  
+> **Status**: Draft v1.2  
 > **Last Updated**: January 2026  
 > **Purpose**: Complete technical specification for migration from V1 to LangGraph-based V2
+>
+> **Architecture Update v1.2**: Simplified Planner → each resolver now uses its own LLM
 
 ---
 
@@ -91,7 +93,10 @@ LangGraph provides:
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
 │                         USER-TRIGGERED FLOW                              │
-│                      (Updated January 2026)                              │
+│                      (Updated January 2026 - v1.2)                       │
+│                                                                          │
+│   KEY CHANGE: Each resolver now uses its OWN LLM to determine           │
+│   the specific operation and extract all fields.                         │
 └──────────────────────────────────────────────────────────────────────────┘
 
 WhatsApp Message
@@ -110,8 +115,9 @@ WhatsApp Message
          │
          ▼
 ┌──────────────────┐
-│   Planner Node   │  ← LLM: Natural language → Plan DSL
-│      (LLM)       │    Outputs intent_type, confidence, plan[]
+│   Planner Node   │  ← LLM: PLANS execution (decompose + route + dependsOn)
+│      (LLM)       │    NOT specific operation: resolvers decide create/update/delete
+│                  │    Outputs intentType, confidence, plan[] with constraints.rawMessage
 └────────┬─────────┘
          │
          ▼
@@ -129,16 +135,17 @@ WhatsApp Message
                     │
                     ▼
 ┌──────────────────┐
-│ ResolverRouter   │  ← Build DAG from plan[], route to resolvers
-│     Node         │    Determines parallel execution
+│ ResolverRouter   │  ← Build DAG from plan[], route using smart selection
+│     Node         │    Uses capability + intent hint to pick resolver
 └────────┬─────────┘
          │
     ┌────┴────┬────────────┐
     ▼         ▼            ▼
 ┌────────┐ ┌────────┐ ┌────────┐
-│Calendar│ │Database│ │ Gmail  │  ← LLM: PlanStep → Semantic args
-│Resolver│ │Resolver│ │Resolver│    (NO ID resolution here!)
-└───┬────┘ └───┬────┘ └───┬────┘
+│Calendar│ │Database│ │ Gmail  │  ← EACH RESOLVER CALLS ITS OWN LLM:
+│Resolver│ │Resolver│ │Resolver│    - Determines specific operation
+│ (LLM)  │ │ (LLM)  │ │ (LLM)  │    - Extracts all fields from rawMessage
+└───┬────┘ └───┬────┘ └───┬────┘    - Returns operation + args
     │          │          │
     └────┬─────┴──────────┘
          │
@@ -538,30 +545,32 @@ function loadLLMConfigFromEnv(): Partial<LLMUsageConfig> {
 
 ### 5.1 Node Registry
 
-| Node                       | Type     | LLM?   | Purpose                                          |
-| -------------------------- | -------- | ------ | ------------------------------------------------ |
-| `ContextAssemblyNode`      | Code     | ❌     | Build clean state from user profile, memory      |
-| `ReplyContextNode`         | Code     | ❌     | Handle reply-to, numbered lists, image context   |
-| `PlannerNode`              | LLM      | ✅     | Natural language → Plan DSL                      |
-| `HITLGateNode`             | Code     | ❌     | Confidence/risk check, pause if needed           |
-| `ResolverRouterNode`       | Code     | ❌     | Build DAG, route to resolvers                    |
-| `CalendarFindResolver`     | LLM      | ✅     | Calendar search/get → semantic args              |
-| `CalendarMutateResolver`   | LLM      | ✅     | Calendar create/update/delete → semantic args    |
-| `DatabaseTaskResolver`     | LLM      | ✅     | Task CRUD → semantic args                        |
-| `DatabaseListResolver`     | LLM      | ✅     | List CRUD → semantic args                        |
-| `GmailResolver`            | LLM      | ✅     | Email operations → semantic args                 |
-| `SecondBrainResolver`      | LLM      | ✅     | Memory store/search → semantic args              |
-| `GeneralResolver`          | LLM      | ✅     | Conversation response (no tools)                 |
-| `MetaResolver`             | Template | ❌     | Predefined capability descriptions               |
-| **`EntityResolutionNode`** | **Code** | **❌** | **ID lookup, fuzzy match, smart disambiguation** |
-| `CalendarExecutor`         | Code     | ❌     | Execute calendar API calls                       |
-| `DatabaseExecutor`         | Code     | ❌     | Execute database operations                      |
-| `GmailExecutor`            | Code     | ❌     | Execute Gmail API calls                          |
-| `SecondBrainExecutor`      | Code     | ❌     | Execute RAG operations                           |
-| `JoinNode`                 | Code     | ❌     | Merge parallel results                           |
-| `ResponseFormatterNode`    | Code     | ❌     | Format dates, categorize, extract metadata       |
-| `ResponseWriterNode`       | LLM      | ✅     | Generate final user message                      |
-| `MemoryUpdateNode`         | Code     | ❌     | Update state.recent_messages                     |
+| Node                       | Type     | LLM?   | Purpose                                                |
+| -------------------------- | -------- | ------ | ------------------------------------------------------ |
+| `ContextAssemblyNode`      | Code     | ❌     | Build clean state from user profile, memory            |
+| `ReplyContextNode`         | Code     | ❌     | Handle reply-to, numbered lists, image context         |
+| `PlannerNode`              | LLM      | ✅     | **Plan execution**: decompose, route, set dependencies |
+| `HITLGateNode`             | Code     | ❌     | Confidence/risk check, pause if needed                 |
+| `ResolverRouterNode`       | Code     | ❌     | Build DAG, route to resolvers using smart selection    |
+| `CalendarFindResolver`     | LLM      | ✅     | **Own LLM**: Calendar search/get → operation + args    |
+| `CalendarMutateResolver`   | LLM      | ✅     | **Own LLM**: Calendar CRUD → operation + args          |
+| `DatabaseTaskResolver`     | LLM      | ✅     | **Own LLM**: Task CRUD → operation + args              |
+| `DatabaseListResolver`     | LLM      | ✅     | **Own LLM**: List CRUD → operation + args              |
+| `GmailResolver`            | LLM      | ✅     | **Own LLM**: Email ops → operation + args              |
+| `SecondBrainResolver`      | LLM      | ✅     | **Own LLM**: Memory ops → operation + args             |
+| `GeneralResolver`          | LLM      | ✅     | Conversation response (no tools)                       |
+| `MetaResolver`             | Template | ❌     | Predefined capability descriptions                     |
+| **`EntityResolutionNode`** | **Code** | **❌** | **ID lookup, fuzzy match, smart disambiguation**       |
+| `CalendarExecutor`         | Code     | ❌     | Execute calendar API calls                             |
+| `DatabaseExecutor`         | Code     | ❌     | Execute database operations                            |
+| `GmailExecutor`            | Code     | ❌     | Execute Gmail API calls                                |
+| `SecondBrainExecutor`      | Code     | ❌     | Execute RAG operations                                 |
+| `JoinNode`                 | Code     | ❌     | Merge parallel results                                 |
+| `ResponseFormatterNode`    | Code     | ❌     | Format dates, categorize, extract metadata             |
+| `ResponseWriterNode`       | LLM      | ✅     | Generate final user message                            |
+| `MemoryUpdateNode`         | Code     | ❌     | Update state.recent_messages                           |
+
+> **Note (v1.2)**: Resolvers now use their **own LLM calls** to determine operation and extract all fields. The Planner only routes to capabilities.
 
 ### 5.2 Node Details
 
@@ -649,14 +658,43 @@ function replyContext(state: MemoState): MemoState {
 
 #### PlannerNode
 
-**Purpose**: Convert natural language → Plan DSL  
+**Purpose**: Central Planning Engine - converts natural language into executable plans  
 **Model**: gpt-4o-mini (cacheable system prompt)
+
+**Architecture Update (v1.2)**:
+The Planner is a reasoning engine that creates structured execution plans. Each resolver then uses its own LLM to determine specific operations and extract schema fields. This separation ensures:
+
+- Planner focuses on WHAT and WHEN (planning, dependencies)
+- Resolvers focus on HOW (specific operations, schema fields)
+- Better accuracy with domain-specific prompts
+
+**Prompt Philosophy (v1.2)**:
+The Planner system prompt is intentionally **compact**:
+
+- Encodes **core principles** (routing rules, bulk planning, dependencies, HITL signals)
+- Includes only a few **high-leverage complex examples** (simpler cases should be derivable)
+
+**What Planner Does**:
+
+1. Understands complex, multi-part requests
+2. Decomposes requests into logical steps
+3. Assigns each step to the correct capability
+4. Determines execution order via dependencies (dependsOn field)
+5. Extracts step-specific user context
+6. Assesses risk levels and confidence
+
+**What Planner Does NOT Do**:
+
+- Determine specific operations (create vs update vs delete) - resolvers do this
+- Extract exact schema fields - resolvers do this
+- Resolve IDs or lookup entities - EntityResolutionNode does this
 
 **Input Message Structure**:
 
 ```
 [System Prompt - Static, Cacheable]
-[Recent Context - Last 4 messages]
+[User Capabilities - calendar/gmail connected?]
+[Recent Context - Last 6 messages for reference resolution]
 [User Message with Time Context]
 ```
 
@@ -664,16 +702,16 @@ function replyContext(state: MemoState): MemoState {
 
 ```typescript
 interface PlannerOutput {
-	intent_type: "operation" | "conversation" | "meta";
+	intentType: "operation" | "conversation" | "meta";
 	confidence: number; // 0.0 - 1.0
-	risk_level: "low" | "medium" | "high";
-	needs_approval: boolean;
-	missing_fields: string[];
+	riskLevel: "low" | "medium" | "high";
+	needsApproval: boolean;
+	missingFields: string[];
 	plan: PlanStep[];
 }
 
 interface PlanStep {
-	id: string;
+	id: string; // "A", "B", "C"...
 	capability:
 		| "calendar"
 		| "database"
@@ -681,22 +719,91 @@ interface PlanStep {
 		| "second-brain"
 		| "general"
 		| "meta";
-	action: string; // Semantic action like 'create_event', 'find_task', 'draft_email'
-	constraints: Record<string, any>;
+	action: string; // Intent description: "create reminder", "find event", "delete task"
+	constraints: {
+		rawMessage: string; // User text for this specific step
+		extractedInfo?: {
+			// Key information planner identified
+			[key: string]: any;
+		};
+	};
 	changes: Record<string, any>;
-	depends_on: string[];
+	dependsOn: string[]; // CRITICAL: IDs of steps this depends on
 }
 ```
 
+**Dependency Logic (dependsOn)**:
+
+The `dependsOn` field controls execution order in ResolverRouterNode:
+
+- `dependsOn: []` → Can run immediately / in parallel
+- `dependsOn: ["A"]` → Must wait for step A to complete
+- `dependsOn: ["A", "B"]` → Must wait for both A and B
+
+**When to use dependencies:**
+
+- "Find meeting and delete it" → B depends on A (needs found event ID)
+- "Search for task and mark complete" → B depends on A (needs found task)
+
+**When NOT to use dependencies (PARALLEL):**
+
+- "Create event at 10 and remind me 1 hour before" → BOTH run parallel
+  - Event: 10:00, Reminder: 9:00 - times computable from message
+  - Shared context doesn't require dependency!
+- "Delete meeting and create reminder" → Both independent
+
+**Routing Rules (Calendar vs Database)**:
+
+| Has "remind me"? | Has time? | Route to            |
+| ---------------- | --------- | ------------------- |
+| YES              | YES/NO    | DATABASE (reminder) |
+| NO               | YES       | CALENDAR (event)    |
+| NO               | NO        | DATABASE (task)     |
+
+Examples:
+
+- "תזכיר לי מחר ב-8" → DATABASE (has "remind me")
+- "מחר בבוקר חדר כושר" → CALENDAR (time given, no "remind me")
+- "לתקן את הדלת, לעשות קניות" → DATABASE (no time = tasks)
+
 **Planner Rules**:
 
-1. Never choose tool schemas or arguments
-2. Policy checks happen in code AFTER Planner:
-   - Reminder vs calendar distinction
-   - Task/reminder priority over memory
-3. intent_type = 'conversation' for pure questions
-4. intent_type = 'meta' for "what can you do?"
-5. intent_type = 'operation' for actions (including mixed)
+1. **BULK = ONE STEP**: Multiple items of same operation type = ONE step
+   - "לתקן דלת, קניות, להתקשר" → ONE step (tasks, no time)
+   - "מחר: חדר כושר, פגישה, קפה" → ONE step (calendar, has time)
+   - "תזכיר לי: חלב, אמא, חשבון" → ONE step (reminders, has "remind me")
+2. **DIFFERENT OPS = MULTIPLE STEPS**: Different operation types = separate steps
+   - "מחק X ותזכיר לי Y" → TWO steps (delete + create)
+3. Mark dependencies when steps need each other's results
+4. Pass rawMessage + extractedInfo in constraints
+5. Check user capabilities before routing to calendar/gmail
+6. Set low confidence if info is missing or ambiguous
+7. Use recent conversation to resolve "it", "that", "זה"
+8. intentType = 'conversation' for greetings/questions
+9. intentType = 'meta' for "what can you do?"
+10. intentType = 'operation' for actions (single or multi-step)
+
+**Ambiguity Guard (time present but could be note/idea)**:
+If a message includes a time/window but does not clearly express “schedule/add to calendar”, the Planner should still route per rules,
+but **punish confidence** and set `missingFields` to include `intent_unclear` so HITL can confirm intent.
+
+**Conversation-context rules (completion / delete reminders)**:
+
+- \"I'm done\" / \"סיימתי\" is usually a **database task/reminder completion** intent.
+  - If the target cannot be resolved from recent conversation, the Planner should set low confidence and include `target_unclear` (HITL).
+- \"תמחק את התזכורות\" / \"delete reminders\" routes to **database** (bulk delete reminders).
+
+**General fallback (out-of-capability requests)**:
+If the user request is not actionable by tools (calendar/database/gmail/second-brain), route to `general` (conversation/advice).
+Later follow-ups like \"add this to my calendar\" should use recent conversation context to extract the items and then route to the correct capability.
+
+**Canonical action hints (reasoning-first, router-compatible)**:
+The Planner should set `plan[].action` to one of these canonical hints (preferred):
+
+- `calendar_query` (read/search/check calendar)
+- `calendar_write` (create/update/delete calendar events)
+- `database_list` (list operations)
+- `database_task` (tasks/reminders/nudges)
 
 #### HITLGateNode (Native LangGraph Interrupts)
 
@@ -1142,12 +1249,39 @@ async function handleMessage(userPhone: string, message: string) {
 
 ## 8. Resolver Strategy
 
+> ⚠️ **ARCHITECTURE UPDATE (v1.2)**: Each resolver now uses its own LLM call.
+> The Planner only routes to capabilities; resolvers determine specific operations.
+>
 > ⚠️ **CRITICAL**: All resolver schemas MUST be based on V1's function definitions.
 > Source files: `src/agents/functions/CalendarFunctions.ts`, `src/agents/functions/DatabaseFunctions.ts`
 >
 > ⚠️ **V1 System Prompt Integration (January 2026)**:
 > Resolver system prompts now incorporate proven logic from `src/config/system-prompts.ts`.
 > See [RESOLVER_SPECS.md](./RESOLVER_SPECS.md) for detailed specifications.
+
+### 8.0a New Resolver Architecture (v1.2)
+
+**Flow Change**:
+
+```
+OLD: Planner (LLM) → specific action + constraints → Resolver (code mapping) → Executor
+NEW: Planner (LLM) → capability + intent hint → Resolver (LLM) → operation + args → Executor
+```
+
+**Key Benefits**:
+
+1. **Resolvers own their schemas** - No sync issues between Planner and Resolvers
+2. **Domain-specific prompts** - Each resolver has detailed examples for its domain
+3. **Better accuracy** - LLM sees full context with domain-specific instructions
+4. **Simpler Planner** - Just routes, doesn't parse complex fields
+
+**Resolver LLM Call**:
+Each resolver's `resolve()` method calls `this.callLLM(step, state)` which:
+
+1. Uses the resolver's `getSystemPrompt()` - comprehensive domain-specific prompt
+2. Uses the resolver's `getSchemaSlice()` - function calling schema
+3. Passes `step.constraints.rawMessage` - original user message
+4. Returns structured args including `operation` field
 
 ### 8.0 V1 System Prompt Integration
 
@@ -1196,53 +1330,61 @@ The resolvers now include the complete logic from V1's system prompts:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                      RESOLVER REGISTRY                              │
-│           (All schemas derived from V1 function definitions)        │
+│                      RESOLVER REGISTRY (v1.2)                       │
+│   Each resolver uses its OWN LLM to determine operation + extract   │
+│   fields. Planner only routes to capability with intent hint.       │
 └─────────────────────────────────────────────────────────────────────┘
 
 CALENDAR (from V1: CalendarFunction.parameters)
 ├── CalendarFindResolver
-│   └── Actions: get, getEvents, checkConflicts, getRecurringInstances
-│   └── Schema: Read-only subset of V1 calendarOperations
+│   └── LLM determines: get, getEvents, checkConflicts, getRecurringInstances
+│   └── System prompt: Time defaults, forward-looking, schedule analysis
+│   └── Selected when: intent contains "list", "find", "show", "מה יש"
 │
 └── CalendarMutateResolver
-    └── Actions: create, createMultiple, createRecurring, createMultipleRecurring,
-    │            update, delete, deleteBySummary, truncateRecurring
-    └── Schema: Write subset of V1 calendarOperations
-    └── Special: excludeSummaries, searchCriteria, updateFields (from V1)
+    └── LLM determines: create, createMultiple, createRecurring, update, delete...
+    └── System prompt: All-day events, recurring rules, reminderMinutesBefore
+    └── Selected when: intent contains "create", "add", "delete", "move"
 
 DATABASE (from V1: TaskFunction.parameters + ListFunction.parameters)
 ├── DatabaseTaskResolver
-│   └── Actions: create, createMultiple, get, getAll, update, updateMultiple,
-│   │            delete, deleteMultiple, deleteAll, updateAll, complete, completeAll, addSubtask
-│   └── Schema: EXACT copy of V1 taskOperations
-│   └── Special: reminderRecurrence, reminderDetails, nudge support (from V1)
+│   └── LLM determines: create, createMultiple, get, getAll, update, delete...
+│   └── System prompt: NUDGE vs DAILY rules, reminder detection, completion=deletion
+│   └── Selected when: capability=database AND NOT explicit "list"/"רשימה"
 │
 └── DatabaseListResolver
-    └── Actions: create, createMultiple, get, getAll, update, updateMultiple,
-    │            delete, deleteMultiple, addItem, toggleItem, deleteItem
-    └── Schema: EXACT copy of V1 listOperations
+    └── LLM determines: create, get, getAll, addItem, toggleItem, delete...
+    └── System prompt: List keyword detection, checklist default
+    └── Selected when: capability=database AND explicit "list"/"רשימה"
 
 GMAIL (from V1: GmailFunction.parameters)
 └── GmailResolver
-    └── Actions: search, read, compose, send, reply, forward, label, archive, delete, markRead
-    └── Schema: gmailOperations (from V1)
+    └── LLM determines: listEmails, getLatestEmail, sendPreview, replyPreview...
+    └── System prompt: Always preview before send, filter-based search
+    └── Selected when: capability=gmail
 
 SECOND-BRAIN (from V1: SecondBrainFunction.parameters)
 └── SecondBrainResolver
-    └── Actions: store, search, update, delete, summarize
-    └── Schema: memoryOperations (from V1)
+    └── LLM determines: storeMemory, searchMemory, updateMemory, deleteMemory...
+    └── System prompt: Extract key info for store, semantic search queries
+    └── Selected when: capability=second-brain
 
 GENERAL (no tools)
 └── GeneralResolver
-    └── Actions: respond (pure LLM conversation)
-    └── Schema: None
+    └── Handles: conversation responses
+    └── Selected when: capability=general
 
 META (template-based)
 └── MetaResolver
-    └── Actions: describe_capabilities
-    └── Schema: None (uses predefined text)
+    └── Handles: describe_capabilities
+    └── Selected when: capability=meta
 ```
+
+**Smart Resolver Selection** (`selectResolver` function):
+
+- Uses capability + intent hint to pick correct resolver
+- For calendar: distinguishes read (Find) vs write (Mutate) operations
+- For database: distinguishes task vs list by explicit keyword
 
 ### 8.3 V1 Schema Extraction Example
 

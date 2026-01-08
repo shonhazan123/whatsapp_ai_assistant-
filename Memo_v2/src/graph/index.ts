@@ -121,15 +121,18 @@ function plannerRouter(state: MemoState): string {
   const plannerOutput = state.plannerOutput;
   
   if (!plannerOutput) {
+    console.log(`[plannerRouter] No planner output, routing to hitl_gate`);
     return 'hitl_gate'; // Error case, let HITL handle
   }
   
   // Meta requests go directly to response
   if (plannerOutput.intentType === 'meta') {
+    console.log(`[plannerRouter] Meta intent, routing to response_formatter`);
     return 'response_formatter';
   }
   
   // All other intents go through HITL gate
+  console.log(`[plannerRouter] Intent: ${plannerOutput.intentType}, routing to hitl_gate`);
   return 'hitl_gate';
 }
 
@@ -170,13 +173,16 @@ export interface InvokeResult {
  */
 export async function hasPendingInterrupt(threadId: string): Promise<boolean> {
   try {
+    console.log(`[MemoGraph] Checking pending interrupt for thread ${threadId}`);
     const graph = buildMemoGraph({ userPhone: threadId, message: '', triggerType: 'user' });
+    console.log(`[MemoGraph] Graph built, getting state...`);
     const config = { configurable: { thread_id: threadId } };
     const state = await graph.getState(config);
+    console.log(`[MemoGraph] State retrieved, next: ${state?.next?.length || 0} pending`);
     
-    // If there are pending tasks (next nodes to execute), there's a pending interrupt
     return state?.next?.length > 0;
-  } catch {
+  } catch (error) {
+    console.error(`[MemoGraph] hasPendingInterrupt error:`, error);
     return false;
   }
 }
@@ -187,7 +193,7 @@ export async function hasPendingInterrupt(threadId: string): Promise<boolean> {
  * This is the main entry point, called from webhook.ts
  * 
  * Per official LangGraph docs (https://docs.langchain.com/oss/javascript/langgraph/interrupts):
- * - Interrupt payloads surface as result.__interrupt__ (NOT as thrown errors)
+ * - Interrupt payloads surface as `__interrupt__` in the result (requires v0.4.0+)
  * - Resume with Command({ resume: value })
  * - The resume value becomes the return value of interrupt()
  * 
@@ -211,12 +217,12 @@ export async function invokeMemoGraph(
   // Check if this is a resume from a pending interrupt
   const isPendingInterrupt = await hasPendingInterrupt(threadId);
   
-  // Result type includes __interrupt__ field per LangGraph spec
-  let result: MemoState & { __interrupt__?: Array<{ value: InterruptPayload }> };
+  // Result type per LangGraph docs - __interrupt__ contains interrupt payloads
+  let result: MemoState & { __interrupt__?: Array<{ value: InterruptPayload; resumable?: boolean; ns?: string[] }> };
   
   if (isPendingInterrupt) {
     // Resume from interrupt with user's message as the response
-    // The resume value becomes the return value of interrupt() in the node
+    // Per docs: "Command({ resume }) returns that value from interrupt() in the node"
     console.log(`[MemoGraph] Resuming from interrupt for thread ${threadId}`);
     
     const graph = buildMemoGraph({ userPhone, message, triggerType: options.triggerType || 'user' });
@@ -265,13 +271,14 @@ export async function invokeMemoGraph(
   }
   
   // ========================================================================
-  // Check for interrupt via __interrupt__ field (per official LangGraph docs)
-  // Interrupt payloads surface as result.__interrupt__, NOT as thrown errors
+  // Check for interrupt via __interrupt__ field (LangGraph v0.4.0+)
+  // Per docs: "Interrupt payloads surface as __interrupt__"
   // ========================================================================
   if (result.__interrupt__ && result.__interrupt__.length > 0) {
     const interruptPayload = result.__interrupt__[0]?.value;
     
     console.log(`[MemoGraph] Graph interrupted for thread ${threadId}`);
+    console.log(`[MemoGraph] Interrupt payload: ${JSON.stringify(interruptPayload)}`);
     
     return {
       response: interruptPayload?.question || 'I need more information.',

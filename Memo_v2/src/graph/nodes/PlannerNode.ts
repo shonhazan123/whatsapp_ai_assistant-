@@ -1,306 +1,238 @@
 /**
- * PlannerNode - Central reasoning node
+ * PlannerNode - Central Planning Engine
  * 
- * Converts natural language → execution intent (Plan DSL)
+ * The Planner is the brain of the system. It:
+ * 1. Understands complex, multi-step user requests
+ * 2. Decomposes them into executable steps
+ * 3. Assigns each step to the correct capability
+ * 4. Determines execution order via dependencies
+ * 5. Extracts step-specific constraints
+ * 6. Assesses risk and confidence levels
  * 
- * What it does well:
- * - Detects ambiguity
- * - Breaks multi-intent requests into steps
- * - Declares dependencies between steps
- * - Decides if HITL is required
- * - Separates WHAT from HOW
+ * What it does:
+ * - PLANS the execution by breaking down requests
+ * - ROUTES steps to correct capabilities
+ * - DECLARES dependencies between steps (for parallel/sequential execution)
+ * - DETECTS ambiguity and missing information
+ * - DECIDES if HITL is required
  * 
  * What it NEVER does:
- * - No tool calls
- * - No schema selection
- * - No API args
- * - No guessing execution success
+ * - No specific operation selection (resolvers determine create/update/delete/etc)
+ * - No schema field extraction (resolvers extract exact fields)
+ * - No API calls
+ * - No ID resolution
  * 
- * ✅ Uses LLM
+ * ✅ Uses LLM for intelligent planning
  */
 
 import { getNodeModel } from '../../config/llm-config.js';
 import { callLLMJSON } from '../../services/llm/LLMService.js';
-import type { Capability, PlannerOutput } from '../../types/index.js';
+import type { Capability, PlannerOutput, PlanStep } from '../../types/index.js';
 import type { MemoState } from '../state/MemoState.js';
 import { LLMNode } from './BaseNode.js';
 
 // ============================================================================
-// SYSTEM PROMPT - Comprehensive with exact field specifications
+// SYSTEM PROMPT - Comprehensive Planning Engine
 // ============================================================================
 
-const PLANNER_SYSTEM_PROMPT = `You are Memo's Planner. Your job is to understand user intent and create an execution plan.
+const PLANNER_SYSTEM_PROMPT = `You are Memo's Planner (the Planning Brain).
 
-## OUTPUT FORMAT
-You MUST respond with ONLY valid JSON using camelCase field names:
+## PERSONALITY / IDENTITY (HOW YOU THINK)
+- You are a **high-precision execution planner** for a WhatsApp assistant.
+- You **know all capabilities** (calendar/database/gmail/second-brain/general/meta) and their responsibilities.
+- You **plan safely**: prefer HITL when intent is ambiguous, risky, or under-specified.
+- You do **NOT** execute tools, do **NOT** resolve IDs, and do **NOT** invent data.
+- Your output must be **deterministic and router-compatible** (so code can run it).
 
+## YOUR SPECIALTY
+Convert the user request into a minimal list of steps that the system can execute:
+- Choose **capability** per step (routing)
+- Choose an **action hint** per step (only a hint; resolvers decide exact operation)
+- Set **dependsOn** only when a later step needs an earlier step’s result
+- Decide if HITL is required using **confidence** + **missingFields**
+
+Output ONLY valid JSON that matches the schema below.
+
+## OUTPUT SCHEMA (MUST MATCH)
 {
   "intentType": "operation" | "conversation" | "meta",
   "confidence": 0.0-1.0,
   "riskLevel": "low" | "medium" | "high",
   "needsApproval": true | false,
-  "missingFields": ["field1", "field2"],
+  "missingFields": string[],
   "plan": [
     {
       "id": "A",
-      "capability": "database",
-      "action": "create_task",
-      "constraints": { "text": "what user said" },
-      "changes": {},
-      "dependsOn": []
+      "capability": "calendar" | "database" | "gmail" | "second-brain" | "general" | "meta",
+      "action": string,
+      "constraints": { "rawMessage": string, "extractedInfo"?: object },
+      "changes": object,
+      "dependsOn": string[]
     }
   ]
 }
 
-## FIELD DESCRIPTIONS AND CALCULATION RULES
+## CORE PRINCIPLES
 
-### intentType (REQUIRED)
-- "operation": User wants to DO something (create, update, delete, search)
-- "conversation": User wants to CHAT (greetings, questions, advice)
-- "meta": User asks WHAT you can do ("מה אתה יכול?", "help")
+### 1) Routing: Calendar vs Database (ORDERED RULES)
+Use this decision tree:
+- If user says **\"I'm done\" / \"im done\" / \"done\" / \"סיימתי\"** → capability = **database** (task/reminder completion intent).
+- If user says **\"delete reminders\" / \"תמחק את התזכורות\" / \"תמחק תזכורות\"** → capability = **database** (bulk delete reminders).
+- If user says **\"remind me\" / \"תזכיר לי\"** → capability = **database** (a WhatsApp reminder), even if time exists.
+- Else if **any time/window exists** (tomorrow, morning, next week, date/time) → capability = **calendar** (a Google Calendar event).
+- Else (no time/window) → capability = **database** (task/to-do).
 
-### confidence (REQUIRED, 0.0-1.0)
-Calculate based on clarity:
-- 0.9-1.0: All info present, clear intent (e.g., "תזכיר לי מחר ב-8 לקנות חלב")
-- 0.7-0.89: Minor details missing but intent clear (e.g., "תזכיר לי לקנות חלב" - no time)
-- 0.5-0.69: Intent unclear, multiple interpretations (e.g., "תמחק את זה" - what is "it"?)
-- <0.5: Cannot determine intent at all
+### 1b) If the request is NOT actionable by tools → route to general
+If the user asks for something that does not map to any tool capability (calendar/database/gmail/second-brain),
+route to **general** (conversation/advice/brainstorming). Examples:
+- \"Help me create a plan to finish my goals\" → general
+- \"Give me advice / help me think\" → general
 
-⚠️ CRITICAL: If confidence < 0.7, add missing info to missingFields array.
+IMPORTANT: later the user may say \"add this to my calendar\" / \"תוסיף את זה ליומן\".
+In that case, use **Recent Conversation** to extract the relevant items and route to the correct capability.
 
-### riskLevel (REQUIRED)
-- "low": Read-only, create new items
-- "medium": Update existing items
-- "high": Delete items, bulk operations, irreversible actions
+#### Ambiguity guard (punish confidence + HITL)
+If a message contains a time/window but **does NOT clearly express scheduling** (could be an idea/note), still route by the rules above,
+but **lower confidence** and include **\"intent_unclear\"** in missingFields.
 
-### needsApproval (REQUIRED)
-Set to true if:
-- riskLevel is "high"
-- Bulk operation (affects multiple items)
-- Involves sending email
+Examples of “clear scheduling language” (not exhaustive):
+- EN: add, schedule, book, put on calendar
+- HE: קבע, תוסיף לי, שים ביומן, תזמן, שריין, קבע לי
 
-### missingFields (REQUIRED, array)
-List what's missing when confidence < 0.7:
-- "what_to_delete" - if delete action but target unclear
-- "time" - if reminder/event but no time specified
-- "date" - if date is unclear
-- "target_item" - if update/delete but which item is unclear
-- "google_connection_required" - if calendar/gmail needed but user not connected
+Examples of “might be a note/idea”:
+- Short statements like: \" חדר כושר\" (could be plan, could be a note)
 
-### plan (REQUIRED, array of steps)
-Each step has:
-- id: Single letter "A", "B", "C"...
-- capability: MUST be one of: "calendar", "database", "gmail", "second-brain", "general", "meta"
-- action: MUST match resolver actions (see list below)
-- constraints: What user mentioned (search criteria)
-- changes: What to modify (new values)
-- dependsOn: Array of step IDs this depends on (e.g., ["A"] if B needs result of A)
+### 2) BULK rule (most important)
+If user lists multiple items that are the **same operation type**, it is **ONE step** (bulk). Do NOT split.
+Examples of “one-step bulk”: create many tasks, create many events, delete many reminders.
 
-## VALID ACTIONS BY CAPABILITY
+### 3) Split into multiple steps ONLY for different operations or different capabilities
+Examples: delete + create, find + update, calendar + database.
 
-### calendar (requires Google connection)
-- find_event: Search for events
-- list_events: List events in date range
-- create_event: Create calendar event
-- update_event: Modify existing event
-- delete_event: Remove event
+### 4) Dependencies (dependsOn)
+Add dependency ONLY when step B needs step A’s RESULT (e.g. find→act, or update/delete the found item).
+Do NOT add dependency when both steps can be decided from the original message (parallel is OK).
 
-### database (always available)
-- create_task: Create reminder/task (use for: תזכורת, משימה, תזכיר לי)
-- list_tasks: Show tasks/reminders
-- update_task: Modify task
-- delete_task: Remove task
-- complete_task: Mark as done
+### 5) Action hints must be compatible with routing code
+Choose an action hint based on **reasoning about the user’s goal**, not keyword hunting.
 
-### gmail (requires Google connection)
-- list_emails: Search/list emails
-- get_email: Get specific email
-- send_email: Compose and send email
-- reply_email: Reply to email
+First classify the step’s goal:
+- Calendar: is the user **asking a question / searching / listing** (read) vs **changing the calendar** (write)?
+- Database: is the user managing a **named list** vs creating/updating/deleting **tasks/reminders/nudges**?
 
-### second-brain (always available)
-- store_memory: Save note/information
-- search_memory: Find saved info
-- update_memory: Modify saved info
-- delete_memory: Remove saved info
+Then emit an action hint that the Router can understand:
+- Calendar read/search/list → use an action like: "list events" or "find event"
+- Calendar create/update/delete → use an action like: "create event" / "update event" / "delete event"
+- Database list management → include "list" or "רשימה" in the action (so it routes to the list resolver)
+- Database tasks/reminders → use an action like: "create task" / "create reminder" / "update task" / "delete reminder"
 
-### general (always available)
-- respond: Conversational response (greetings, questions, chitchat)
+### 6) HITL signals (missingFields)
+If critical info is unclear, keep confidence low and include one or more:
+- \"target_unclear\", \"time_unclear\", \"which_one\", \"google_connection_required\", \"intent_unclear\"
 
-### meta (always available)
-- describe_capabilities: Explain what Memo can do
+IMPORTANT: \"target_unclear\" should ONLY be used when:
+- User says something vague like \"delete the reminders\" / \"תמחק את התזכורות\" without naming WHICH one
+- User says \"I'm done\" / \"סיימתי\" but doesn't specify with what
+- The target cannot be determined from the message OR Recent Conversation
 
-## HEBREW PATTERN RECOGNITION
+DO NOT use \"target_unclear\" when:
+- User explicitly names the task/event: \"תמחק את המשימה לבדוק אותך\" → target IS \"לבדוק אותך\"
+- User provides a description: \"delete the meeting with Dan\" → target IS \"meeting with Dan\"
+- Any identifiable name/description is given in the message
 
-### Reminders/Tasks (→ database)
-- "תזכיר לי" / "תזכורת" / "להזכיר" → create_task
-- "כל יום/בוקר/ערב ב..." → create_task with recurring
-- "כל X דקות/שעות" → create_task with nudge
-- "מחק/בטל/הסר תזכורת" → delete_task
-- "מה התזכורות שלי" / "מה יש לי" → list_tasks
-- "סמן כבוצע" / "עשיתי" → complete_task
+### 7) Risk/approval
+- riskLevel: low=create/read, medium=update, high=delete/send email/bulk delete.
+- needsApproval = true for any high-risk step (especially delete or sending email).
 
-### Calendar (→ calendar, check connection first!)
-- "פגישה" / "אירוע" / "meeting" → calendar operations
-- "מה יש ביומן" / "לוח הזמנים" → list_events
-- "קבע פגישה" / "schedule" → create_event
+## COMPLEX EXAMPLES (derive simpler cases from these)
 
-### Memory (→ second-brain)
-- "תזכור ש..." / "זכור ש..." / "שמור" → store_memory
-- "מה אמרתי על..." / "מה שמרתי" → search_memory
-
-### General conversation (→ general)
-- "שלום" / "היי" / "מה שלומך" → respond
-- "תודה" / "מעולה" → respond
-
-## HANDLING UNAVAILABLE CAPABILITIES
-
-If user requests calendar/gmail but capabilities show "not connected":
-1. Set confidence to 0.6
-2. Add "google_connection_required" to missingFields
-3. Set capability to what they need anyway (calendar/gmail)
-
-This will trigger HITL to inform user they need to connect Google.
-
-## EXAMPLES
-
-### Example 1: Daily recurring reminder (Hebrew)
-User: "תעשה לי תזכורת כל בוקר ב-8 לקחת ויטמינים"
-→ {
-  "intentType": "operation",
-  "confidence": 0.95,
-  "riskLevel": "low",
-  "needsApproval": false,
-  "missingFields": [],
-  "plan": [{
-    "id": "A",
-    "capability": "database",
-    "action": "create_task",
-    "constraints": { "text": "לקחת ויטמינים", "recurring": "daily", "time": "08:00" },
-    "changes": {},
-    "dependsOn": []
+### A) Bulk tasks (NO time) → ONE database step
+User: \"לתקן את הדלת, לעשות קניות, להתקשר לאמא\"
+{
+  \"intentType\": \"operation\",
+  \"confidence\": 0.9,
+  \"riskLevel\": \"low\",
+  \"needsApproval\": false,
+  \"missingFields\": [],
+  \"plan\": [{
+    \"id\": \"A\",
+    \"capability\": \"database\",
+    \"action\": \"create multiple tasks\",
+    \"constraints\": { \"rawMessage\": \"לתקן את הדלת, לעשות קניות, להתקשר לאמא\" },
+    \"changes\": {},
+    \"dependsOn\": []
   }]
 }
 
-### Example 2: Ambiguous delete
-User: "תמחק את זה"
-→ {
-  "intentType": "operation",
-  "confidence": 0.4,
-  "riskLevel": "high",
-  "needsApproval": true,
-  "missingFields": ["what_to_delete", "target_item"],
-  "plan": [{
-    "id": "A",
-    "capability": "database",
-    "action": "delete_task",
-    "constraints": {},
-    "changes": {},
-    "dependsOn": []
+### B) Bulk calendar (HAS time, NO “remind me”) → ONE calendar step
+User: \"מחר בבוקר: חדר כושר, פגישה עם דני, קפה עם שרה\"
+{
+  \"intentType\": \"operation\",
+  \"confidence\": 0.9,
+  \"riskLevel\": \"low\",
+  \"needsApproval\": false,
+  \"missingFields\": [],
+  \"plan\": [{
+    \"id\": \"A\",
+    \"capability\": \"calendar\",
+    \"action\": \"create multiple events\",
+    \"constraints\": { \"rawMessage\": \"מחר בבוקר: חדר כושר, פגישה עם דני, קפה עם שרה\" },
+    \"changes\": {},
+    \"dependsOn\": []
   }]
 }
 
-### Example 3: Calendar query (user connected)
-User capabilities: Calendar: connected
-User: "מה יש לי מחר?"
-→ {
-  "intentType": "operation",
-  "confidence": 0.9,
-  "riskLevel": "low",
-  "needsApproval": false,
-  "missingFields": [],
-  "plan": [{
-    "id": "A",
-    "capability": "calendar",
-    "action": "list_events",
-    "constraints": { "date": "tomorrow" },
-    "changes": {},
-    "dependsOn": []
+### C) Delete SPECIFIC task (target IS named) → NO target_unclear
+User: \"תמחק את המשימה לבדוק אותך\"
+{
+  \"intentType\": \"operation\",
+  \"confidence\": 0.85,
+  \"riskLevel\": \"high\",
+  \"needsApproval\": true,
+  \"missingFields\": [],
+  \"plan\": [{
+    \"id\": \"A\",
+    \"capability\": \"database\",
+    \"action\": \"delete task\",
+    \"constraints\": { \"rawMessage\": \"תמחק את המשימה לבדוק אותך\" },
+    \"changes\": {},
+    \"dependsOn\": []
   }]
 }
+Note: The user explicitly named the task \"לבדוק אותך\" - target IS clear, so missingFields is EMPTY.
 
-### Example 4: Calendar but not connected
-User capabilities: Calendar: not connected
-User: "מה יש לי מחר ביומן?"
-→ {
-  "intentType": "operation",
-  "confidence": 0.6,
-  "riskLevel": "low",
-  "needsApproval": false,
-  "missingFields": ["google_connection_required"],
-  "plan": [{
-    "id": "A",
-    "capability": "calendar",
-    "action": "list_events",
-    "constraints": { "date": "tomorrow" },
-    "changes": {},
-    "dependsOn": []
-  }]
-}
-
-### Example 5: Multi-step with dependency
-User: "קבע לי פגישה עם דני מחר ב-10 ותזכיר לי שעה לפני"
-→ {
-  "intentType": "operation",
-  "confidence": 0.9,
-  "riskLevel": "low",
-  "needsApproval": false,
-  "missingFields": [],
-  "plan": [
-    {
-      "id": "A",
-      "capability": "calendar",
-      "action": "create_event",
-      "constraints": { "summary": "פגישה עם דני", "date": "tomorrow", "time": "10:00" },
-      "changes": {},
-      "dependsOn": []
-    },
-    {
-      "id": "B",
-      "capability": "database",
-      "action": "create_task",
-      "constraints": { "text": "פגישה עם דני", "reminderBefore": "1 hour" },
-      "changes": {},
-      "dependsOn": ["A"]
-    }
+### D) Mixed ops (delete + create) → TWO steps, no dependency
+User: \"תמחק את התזכורת של מחר בבוקר ותזכיר לי לעשות בדיקה בחמישי\"
+{
+  \"intentType\": \"operation\",
+  \"confidence\": 0.8,
+  \"riskLevel\": \"high\",
+  \"needsApproval\": true,
+  \"missingFields\": [],
+  \"plan\": [
+    { \"id\": \"A\", \"capability\": \"database\", \"action\": \"delete reminder\", \"constraints\": { \"rawMessage\": \"תמחק את התזכורת של מחר בבוקר\" }, \"changes\": {}, \"dependsOn\": [] },
+    { \"id\": \"B\", \"capability\": \"database\", \"action\": \"create reminder\", \"constraints\": { \"rawMessage\": \"תזכיר לי לעשות בדיקה בחמישי\" }, \"changes\": {}, \"dependsOn\": [] }
   ]
 }
 
-### Example 6: Greeting (conversation)
-User: "היי מה קורה?"
-→ {
-  "intentType": "conversation",
-  "confidence": 0.95,
-  "riskLevel": "low",
-  "needsApproval": false,
-  "missingFields": [],
-  "plan": [{
-    "id": "A",
-    "capability": "general",
-    "action": "respond",
-    "constraints": {},
-    "changes": {},
-    "dependsOn": []
-  }]
+### E) Find → act (dependency required)
+User: \"Find my meeting with Sarah and move it to 3pm\"
+{
+  \"intentType\": \"operation\",
+  \"confidence\": 0.8,
+  \"riskLevel\": \"medium\",
+  \"needsApproval\": false,
+  \"missingFields\": [],
+  \"plan\": [
+    { \"id\": \"A\", \"capability\": \"calendar\", \"action\": \"find event\", \"constraints\": { \"rawMessage\": \"meeting with Sarah\" }, \"changes\": {}, \"dependsOn\": [] },
+    { \"id\": \"B\", \"capability\": \"calendar\", \"action\": \"update event\", \"constraints\": { \"rawMessage\": \"move it to 3pm\" }, \"changes\": { \"time\": \"3pm\" }, \"dependsOn\": [\"A\"] }
+  ]
 }
 
-### Example 7: Meta question
-User: "מה אתה יכול לעשות?"
-→ {
-  "intentType": "meta",
-  "confidence": 0.95,
-  "riskLevel": "low",
-  "needsApproval": false,
-  "missingFields": [],
-  "plan": []
-}
-
-## CRITICAL RULES
-1. ALWAYS use camelCase for JSON fields (intentType, NOT intent_type)
-2. NEVER output anything except valid JSON
-3. ALWAYS check user capabilities before routing to calendar/gmail
-4. If intent is unclear, set low confidence AND populate missingFields
-5. Use recent conversation to resolve ambiguous references ("it", "that", "זה")`;
+## HARD RULES
+- Output ONLY JSON (no markdown, no comments).
+- Always include constraints.rawMessage for every step.
+- Never invent IDs.`;
 
 // ============================================================================
 // PLANNER NODE
@@ -322,7 +254,7 @@ export class PlannerNode extends LLMNode {
     // Build user message with full context
     const userMessage = this.buildUserMessage(state);
     
-    // Make actual LLM call
+    // Make LLM call for planning
     const plannerOutput = await this.callLLM(userMessage, state, modelConfig);
     
     return {
@@ -333,32 +265,34 @@ export class PlannerNode extends LLMNode {
   private buildUserMessage(state: MemoState): string {
     const message = state.input.enhancedMessage || state.input.message;
     
-    let userMessage = `${state.now.formatted}\n\n`;
+    let userMessage = `Current time: ${state.now.formatted}\n\n`;
     
-    // Add user capabilities (CRITICAL for calendar/gmail routing)
-    userMessage += `User capabilities:\n`;
-    userMessage += `- Calendar: ${state.user.capabilities.calendar ? 'connected' : 'NOT connected'}\n`;
-    userMessage += `- Gmail: ${state.user.capabilities.gmail ? 'connected' : 'NOT connected'}\n`;
-    userMessage += `- Database: available\n`;
-    userMessage += `- Second Brain: available\n\n`;
+    // User capabilities - CRITICAL for routing decisions
+    userMessage += `## User Capabilities\n`;
+    userMessage += `- Calendar: ${state.user.capabilities.calendar ? 'CONNECTED ✓' : 'NOT CONNECTED ✗'}\n`;
+    userMessage += `- Gmail: ${state.user.capabilities.gmail ? 'CONNECTED ✓' : 'NOT CONNECTED ✗'}\n`;
+    userMessage += `- Database (reminders/tasks): ALWAYS AVAILABLE ✓\n`;
+    userMessage += `- Second Brain (memory): ALWAYS AVAILABLE ✓\n\n`;
     
-    // Add recent conversation context (CRITICAL for resolving "it", "that", etc.)
+    // Recent conversation - CRITICAL for context understanding and resolving references like "it", "that", "סיימתי"
     if (state.recentMessages && state.recentMessages.length > 0) {
-      userMessage += `Recent conversation (use this to understand references like "זה", "it", "that"):\n`;
-      const recent = state.recentMessages.slice(-5);
+      userMessage += `## Recent Conversation (use to resolve references like "it", "that", "זה")\n`;
+      // Provide a larger window so the Planner can understand context, not just the last input
+      const recent = state.recentMessages.slice(-10);
       for (const msg of recent) {
-        const preview = msg.content.length > 150 ? msg.content.substring(0, 150) + '...' : msg.content;
+        const preview = msg.content.length > 200 ? msg.content.substring(0, 200) + '...' : msg.content;
         userMessage += `[${msg.role}]: ${preview}\n`;
       }
       userMessage += '\n';
     }
     
-    // Add long-term context if available
+    // Long-term context if available
     if (state.longTermSummary) {
-      userMessage += `User context: ${state.longTermSummary}\n\n`;
+      userMessage += `## User Context\n${state.longTermSummary}\n\n`;
     }
     
-    userMessage += `User message: ${message}`;
+    // The actual user message
+    userMessage += `## User Message\n${message}`;
     
     return userMessage;
   }
@@ -369,42 +303,43 @@ export class PlannerNode extends LLMNode {
     modelConfig: { model: string; temperature?: number; maxTokens?: number }
   ): Promise<PlannerOutput> {
     try {
-      // Get requestId from state input metadata if available
       const requestId = (state.input as any).requestId;
       
-      // Call LLM
       const response = await callLLMJSON<any>({
         messages: [
           { role: 'system', content: PLANNER_SYSTEM_PROMPT },
           { role: 'user', content: userMessage },
         ],
         model: modelConfig.model,
-        temperature: modelConfig.temperature || 0.3, // Lower temperature for more consistent output
-        maxTokens: modelConfig.maxTokens || 2000,
+        temperature: modelConfig.temperature || 0.3,
+        maxTokens: modelConfig.maxTokens || 2500,
       }, requestId);
       
-      // Normalize response (handle both snake_case and camelCase just in case)
-      const normalized = this.normalizeResponse(response);
+      // Normalize and validate response
+      const normalized = this.normalizeResponse(response, state);
       
       // Validate response structure
       if (!normalized.intentType || !Array.isArray(normalized.plan)) {
         console.warn('[PlannerNode] Invalid LLM response structure, using fallback');
-        console.warn('[PlannerNode] Response was:', JSON.stringify(response));
+        console.warn('[PlannerNode] Response:', JSON.stringify(response).substring(0, 500));
         return this.createFallbackOutput(state.input.enhancedMessage || state.input.message, state);
       }
       
-      // Validate confidence range
+      // Validate and clamp confidence
       normalized.confidence = Math.max(0, Math.min(1, normalized.confidence ?? 0.7));
       
       // Validate riskLevel
       if (!['low', 'medium', 'high'].includes(normalized.riskLevel)) {
-        normalized.riskLevel = 'low';
+        normalized.riskLevel = this.inferRiskLevel(normalized.plan);
       }
       
       // Ensure arrays exist
       normalized.missingFields = normalized.missingFields || [];
       
-      console.log(`[PlannerNode] Intent: ${normalized.intentType}, Confidence: ${normalized.confidence}, Plan steps: ${normalized.plan.length}`);
+      // Validate plan steps
+      normalized.plan = this.validatePlanSteps(normalized.plan, state);
+      
+      console.log(`[PlannerNode] Intent: ${normalized.intentType}, Confidence: ${normalized.confidence}, Steps: ${normalized.plan.length}, Risk: ${normalized.riskLevel}`);
       
       return normalized as PlannerOutput;
     } catch (error: any) {
@@ -414,9 +349,11 @@ export class PlannerNode extends LLMNode {
   }
   
   /**
-   * Normalize LLM response - handle both snake_case and camelCase
+   * Normalize LLM response to match expected schema
    */
-  private normalizeResponse(response: any): any {
+  private normalizeResponse(response: any, state: MemoState): any {
+    const message = state.input.enhancedMessage || state.input.message;
+    
     return {
       intentType: response.intentType || response.intent_type,
       confidence: response.confidence,
@@ -426,8 +363,12 @@ export class PlannerNode extends LLMNode {
       plan: (response.plan || []).map((step: any) => ({
         id: step.id,
         capability: step.capability,
-        action: step.action,
-        constraints: step.constraints || {},
+        action: step.action || step.intent || 'process',
+        constraints: {
+          ...step.constraints,
+          // Ensure rawMessage is always present
+          rawMessage: step.constraints?.rawMessage || message,
+        },
         changes: step.changes || {},
         dependsOn: step.dependsOn || step.depends_on || [],
       })),
@@ -435,13 +376,74 @@ export class PlannerNode extends LLMNode {
   }
   
   /**
+   * Validate and fix plan steps
+   */
+  private validatePlanSteps(plan: PlanStep[], state: MemoState): PlanStep[] {
+    const validCapabilities: Capability[] = ['calendar', 'database', 'gmail', 'second-brain', 'general', 'meta'];
+    const message = state.input.enhancedMessage || state.input.message;
+    
+    return plan.map((step, index) => {
+      // Ensure valid capability
+      if (!validCapabilities.includes(step.capability)) {
+        console.warn(`[PlannerNode] Invalid capability '${step.capability}', defaulting to 'general'`);
+        step.capability = 'general';
+      }
+      
+      // Ensure ID exists
+      if (!step.id) {
+        step.id = String.fromCharCode(65 + index); // A, B, C...
+      }
+      
+      // Ensure rawMessage exists in constraints
+      if (!step.constraints.rawMessage) {
+        step.constraints.rawMessage = message;
+      }
+      
+      // Ensure dependsOn is array
+      if (!Array.isArray(step.dependsOn)) {
+        step.dependsOn = [];
+      }
+      
+      // Validate dependsOn references exist
+      const validIds = plan.map(p => p.id);
+      step.dependsOn = step.dependsOn.filter(depId => {
+        if (!validIds.includes(depId)) {
+          console.warn(`[PlannerNode] Invalid dependency '${depId}' in step ${step.id}`);
+          return false;
+        }
+        return true;
+      });
+      
+      return step;
+    });
+  }
+  
+  /**
+   * Infer risk level from plan steps
+   */
+  private inferRiskLevel(plan: PlanStep[]): 'low' | 'medium' | 'high' {
+    for (const step of plan) {
+      const action = (step.action || '').toLowerCase();
+      
+      // High risk: delete, send email
+      if (/delete|remove|cancel|מחק|בטל|הסר|send.*email|שלח.*מייל/i.test(action)) {
+        return 'high';
+      }
+      
+      // Medium risk: update, modify
+      if (/update|modify|change|move|edit|שנה|עדכן|הזז/i.test(action)) {
+        return 'medium';
+      }
+    }
+    
+    return 'low';
+  }
+  
+  /**
    * Create fallback output when LLM fails
-   * Unlike the old stub, this returns low confidence to trigger HITL
    */
   private createFallbackOutput(message: string, state: MemoState): PlannerOutput {
-    const lowerMessage = message.toLowerCase();
-    
-    // Meta intent - user asks what we can do
+    // Meta intent
     if (this.matchesMetaIntent(message)) {
       return {
         intentType: 'meta',
@@ -453,7 +455,7 @@ export class PlannerNode extends LLMNode {
       };
     }
     
-    // Greeting patterns
+    // Greeting
     if (this.matchesGreeting(message)) {
       return {
         intentType: 'conversation',
@@ -464,162 +466,90 @@ export class PlannerNode extends LLMNode {
         plan: [{
           id: 'A',
           capability: 'general' as Capability,
-          action: 'respond',
-          constraints: {},
+          action: 'greeting response',
+          constraints: { rawMessage: message },
           changes: {},
           dependsOn: [],
         }],
       };
     }
     
-    // Reminder/Task patterns (Hebrew + English)
-    if (this.matchesReminderIntent(message)) {
-      const isDelete = /מחק|בטל|הסר|delete|remove|cancel/i.test(message);
-      const isComplete = /סיימתי|עשיתי|בוצע|done|complete|finish/i.test(message);
-      const isList = /מה יש|מה התזכורות|הראה|show|list|what.*remind/i.test(message);
-      
-      let action: string;
-      let riskLevel: 'low' | 'medium' | 'high' = 'low';
-      
-      if (isDelete) {
-        action = 'delete_task';
-        riskLevel = 'high';
-      } else if (isComplete) {
-        action = 'complete_task';
-      } else if (isList) {
-        action = 'list_tasks';
-      } else {
-        action = 'create_task';
-      }
-      
-      return {
-        intentType: 'operation',
-        confidence: 0.85,
-        riskLevel,
-        needsApproval: isDelete,
-        missingFields: [],
-        plan: [{
-          id: 'A',
-          capability: 'database' as Capability,
-          action,
-          constraints: { text: message },
-          changes: {},
-          dependsOn: [],
-        }],
-      };
-    }
+    // Determine capability from keywords
+    const capability = this.inferCapability(message, state);
+    const riskLevel = this.inferRiskFromMessage(message);
     
-    // Calendar patterns
-    if (this.matchesCalendarIntent(message)) {
-      // Check if user has calendar connected
-      if (!state.user.capabilities.calendar) {
-        return {
-          intentType: 'operation',
-          confidence: 0.6,
-          riskLevel: 'low',
-          needsApproval: false,
-          missingFields: ['google_connection_required'],
-          plan: [{
-            id: 'A',
-            capability: 'calendar' as Capability,
-            action: 'list_events',
-            constraints: {},
-            changes: {},
-            dependsOn: [],
-          }],
-        };
-      }
-      
-      const isCreate = /קבע|צור|schedule|create|add/i.test(message);
-      const isDelete = /בטל|מחק|delete|cancel/i.test(message);
-      
-      return {
-        intentType: 'operation',
-        confidence: 0.8,
-        riskLevel: isDelete ? 'high' : 'low',
-        needsApproval: isDelete,
-        missingFields: [],
-        plan: [{
-          id: 'A',
-          capability: 'calendar' as Capability,
-          action: isCreate ? 'create_event' : isDelete ? 'delete_event' : 'list_events',
-          constraints: { summary: message },
-          changes: {},
-          dependsOn: [],
-        }],
-      };
-    }
-    
-    // Memory patterns
-    if (this.matchesMemoryIntent(message)) {
-      const isStore = /תזכור|זכור|שמור|remember|save|store/i.test(message);
-      
-      return {
-        intentType: 'operation',
-        confidence: 0.8,
-        riskLevel: 'low',
-        needsApproval: false,
-        missingFields: [],
-        plan: [{
-          id: 'A',
-          capability: 'second-brain' as Capability,
-          action: isStore ? 'store_memory' : 'search_memory',
-          constraints: { text: message },
-          changes: {},
-          dependsOn: [],
-        }],
-      };
-    }
-    
-    // DEFAULT: Return low confidence to trigger HITL clarification
-    // Instead of routing to "general" and giving a generic response
-    console.log('[PlannerNode] Could not determine intent, returning low confidence for HITL');
     return {
       intentType: 'operation',
-      confidence: 0.5, // This will trigger HITL
-      riskLevel: 'low',
-      needsApproval: false,
-      missingFields: ['unclear_intent'],
+      confidence: 0.7, // Fallback has medium confidence
+      riskLevel,
+      needsApproval: riskLevel === 'high',
+      missingFields: [],
       plan: [{
         id: 'A',
-        capability: 'general' as Capability,
-        action: 'respond',
-        constraints: {},
+        capability,
+        action: 'process request',
+        constraints: { rawMessage: message },
         changes: {},
         dependsOn: [],
       }],
     };
   }
   
-  // ========================================================================
-  // Pattern matchers
-  // ========================================================================
+  /**
+   * Infer capability from message keywords
+   */
+  private inferCapability(message: string, state: MemoState): Capability {
+    // Calendar patterns
+    if (/פגישה|אירוע|יומן|לוז|meeting|event|calendar|schedule|appointment/i.test(message)) {
+      return state.user.capabilities.calendar ? 'calendar' : 'database';
+    }
+    
+    // Email patterns
+    if (/מייל|אימייל|email|mail|inbox/i.test(message)) {
+      return state.user.capabilities.gmail ? 'gmail' : 'general';
+    }
+    
+    // Memory patterns (remember facts)
+    if (/תזכור ש|זכור ש|שמור.*ש|remember that|save.*that/i.test(message)) {
+      return 'second-brain';
+    }
+    
+    // Reminder/task patterns
+    if (/תזכיר|תזכורת|להזכיר|משימה|רשימה|remind|reminder|task|todo|list/i.test(message)) {
+      return 'database';
+    }
+    
+    // Default to general
+    return 'general';
+  }
   
+  /**
+   * Infer risk level from message keywords
+   */
+  private inferRiskFromMessage(message: string): 'low' | 'medium' | 'high' {
+    if (/מחק|בטל|הסר|delete|remove|cancel|שלח.*מייל|send.*mail/i.test(message)) {
+      return 'high';
+    }
+    if (/שנה|עדכן|הזז|update|change|move|modify/i.test(message)) {
+      return 'medium';
+    }
+    return 'low';
+  }
+  
+  // Pattern matchers
   private matchesMetaIntent(message: string): boolean {
     return /what can you do|מה אתה יכול|help|עזרה|capabilities|יכולות/i.test(message);
   }
   
   private matchesGreeting(message: string): boolean {
-    return /^(שלום|היי|הי|בוקר טוב|ערב טוב|hello|hi|hey|good morning|good evening)[\s!?]*$/i.test(message.trim());
-  }
-  
-  private matchesReminderIntent(message: string): boolean {
-    // Comprehensive Hebrew and English patterns for reminders/tasks
-    return /תזכיר|תזכורת|להזכיר|משימה|remind|reminder|task|todo|to-do|כל יום|כל בוקר|כל ערב|every day|every morning/i.test(message);
-  }
-  
-  private matchesCalendarIntent(message: string): boolean {
-    return /פגישה|אירוע|יומן|לוח זמנים|meeting|calendar|event|schedule|appointment/i.test(message);
-  }
-  
-  private matchesMemoryIntent(message: string): boolean {
-    return /תזכור ש|זכור ש|שמור|מה אמרתי|מה שמרתי|remember that|save|store|what did i say|what.*saved/i.test(message);
+    return /^(שלום|היי|הי|בוקר טוב|ערב טוב|hello|hi|hey|good morning|good evening|תודה|thanks)[\s!?]*$/i.test(message.trim());
   }
 }
 
-/**
- * Factory function for LangGraph node registration
- */
+// ============================================================================
+// FACTORY FUNCTION
+// ============================================================================
+
 export function createPlannerNode() {
   const node = new PlannerNode();
   return node.asNodeFunction();

@@ -12,7 +12,7 @@
  * - Handle Hebrew/English formatting differences
  */
 
-import type { FormattedResponse, ResponseContext } from '../../types/index.js';
+import type { FailedOperationContext, FormattedResponse, PlanStep, ResponseContext } from '../../types/index.js';
 import type { MemoState } from '../state/MemoState.js';
 import { CodeNode } from './BaseNode.js';
 
@@ -210,18 +210,26 @@ export class ResponseFormatterNode extends CodeNode {
     const capability = primaryStep?.capability || 'general';
     const action = primaryStep?.action || 'respond';
     
+    // Collect successful data AND failed operations
+    const allData: any[] = [];
+    const failedOperations: FailedOperationContext[] = [];
+    
+    for (const [stepId, result] of executionResults) {
+      if (result.success && result.data) {
+        allData.push(result.data);
+      } else if (!result.success) {
+        // Build failed operation context
+        const step = plan.find(s => s.id === stepId);
+        const failedOp = this.buildFailedOperationContext(stepId, result.error || 'Unknown error', step, state);
+        failedOperations.push(failedOp);
+        console.log(`[ResponseFormatter] Captured failed operation: ${failedOp.capability}/${failedOp.operation} - ${failedOp.errorMessage}`);
+      }
+    }
+    
     // Skip formatting for general responses (no function calls, already LLM-generated)
     // General responses come from GeneralResolver and already have response text in data.response
     if (capability === 'general') {
       console.log('[ResponseFormatter] Skipping formatting for general response (already LLM-generated)');
-      
-      // Pass through the response directly
-      const allData: any[] = [];
-      for (const [stepId, result] of executionResults) {
-        if (result.success && result.data) {
-          allData.push(result.data);
-        }
-      }
       
       // For general responses, we still create a FormattedResponse but with minimal processing
       const formattedResponse: FormattedResponse = {
@@ -237,6 +245,7 @@ export class ResponseFormatterNode extends CodeNode {
           isToday: false,
           isTomorrowOrLater: false,
         },
+        failedOperations: failedOperations.length > 0 ? failedOperations : undefined,
       };
       
       return {
@@ -245,12 +254,6 @@ export class ResponseFormatterNode extends CodeNode {
     }
     
     // For function call results (calendar, database, gmail, second-brain), format dates and categorize
-    const allData: any[] = [];
-    for (const [stepId, result] of executionResults) {
-      if (result.success && result.data) {
-        allData.push(result.data);
-      }
-    }
     
     // Build response context
     const context = this.buildResponseContext(allData, capability, action);
@@ -266,12 +269,63 @@ export class ResponseFormatterNode extends CodeNode {
       rawData: allData,
       formattedData,
       context,
+      failedOperations: failedOperations.length > 0 ? failedOperations : undefined,
     };
     
-    console.log(`[ResponseFormatter] Built response for ${capability}:${action}`);
+    console.log(`[ResponseFormatter] Built response for ${capability}:${action}` + 
+      (failedOperations.length > 0 ? ` with ${failedOperations.length} failed operation(s)` : ''));
     
     return {
       formattedResponse,
+    };
+  }
+  
+  /**
+   * Build context for a failed operation
+   */
+  private buildFailedOperationContext(
+    stepId: string, 
+    errorMessage: string, 
+    step: PlanStep | undefined,
+    state: MemoState
+  ): FailedOperationContext {
+    const capability = step?.capability || 'unknown';
+    const action = step?.action || 'unknown';
+    
+    // Try to extract what was searched for from step constraints or error message
+    let searchedFor: string | undefined;
+    if (step?.constraints) {
+      // Common fields that might contain what was being searched
+      searchedFor = step.constraints.text || 
+                   step.constraints.title || 
+                   step.constraints.query ||
+                   step.constraints.eventTitle ||
+                   step.constraints.taskName ||
+                   step.constraints.name;
+    }
+    
+    // Try to extract from error message if not found in constraints
+    if (!searchedFor) {
+      // Pattern: "Task 'xxx' not found" or "No event matching 'xxx'"
+      const quotedMatch = errorMessage.match(/['"]([^'"]+)['"]/);
+      if (quotedMatch) {
+        searchedFor = quotedMatch[1];
+      }
+    }
+    
+    // Get user's original request from input
+    const userRequest = step?.constraints?.rawMessage || 
+                       state.input?.message || 
+                       state.input?.enhancedMessage || 
+                       'Unknown request';
+    
+    return {
+      stepId,
+      capability,
+      operation: action,
+      searchedFor,
+      userRequest,
+      errorMessage,
     };
   }
   

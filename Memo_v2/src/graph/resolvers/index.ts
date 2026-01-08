@@ -2,6 +2,11 @@
  * Resolver Index
  * 
  * Central export for all resolver implementations.
+ * 
+ * NEW ARCHITECTURE (January 2026):
+ * - Planner routes to capability (not specific action)
+ * - Each resolver uses its own LLM to determine operation and extract fields
+ * - Resolvers handle all actions for their capability
  */
 
 // Base classes
@@ -66,11 +71,47 @@ export const RESOLVER_REGISTRY: BaseResolver[] = [
 
 /**
  * Find a resolver that can handle a given capability and action
+ * 
+ * NEW BEHAVIOR: If action is generic (e.g., "calendar_operation", "task_operation"),
+ * returns the first resolver for that capability.
  */
 export function findResolver(capability: Capability, action: string): BaseResolver | undefined {
-  return RESOLVER_REGISTRY.find(r => 
+  // First try exact match
+  const exactMatch = RESOLVER_REGISTRY.find(r => 
     r.capability === capability && r.canHandle(action)
   );
+  
+  if (exactMatch) {
+    return exactMatch;
+  }
+  
+  // Fallback: return first resolver for the capability
+  // This handles generic actions like "calendar_operation", "task_operation"
+  return RESOLVER_REGISTRY.find(r => r.capability === capability);
+}
+
+/**
+ * Get the primary resolver for a capability
+ * Used when routing with only capability (no specific action)
+ */
+export function getPrimaryResolver(capability: Capability): BaseResolver | undefined {
+  // Map capabilities to their primary resolvers
+  const primaryResolverMap: Record<string, string> = {
+    'calendar': 'calendar_mutate_resolver', // CalendarMutate handles more cases
+    'database': 'database_task_resolver',   // Tasks are more common than lists
+    'gmail': 'gmail_resolver',
+    'second-brain': 'secondbrain_resolver',
+    'general': 'general_resolver',
+    'meta': 'meta_resolver',
+  };
+  
+  const primaryName = primaryResolverMap[capability];
+  if (primaryName) {
+    return RESOLVER_REGISTRY.find(r => r.name === primaryName);
+  }
+  
+  // Fallback: first resolver for capability
+  return RESOLVER_REGISTRY.find(r => r.capability === capability);
 }
 
 /**
@@ -87,4 +128,48 @@ export function getResolverByName(name: string): BaseResolver | undefined {
   return RESOLVER_REGISTRY.find(r => r.name === name);
 }
 
-
+/**
+ * Smart resolver selection based on intent hint
+ * 
+ * The intent from Planner gives hints about whether this is a read or write operation:
+ * - "list events", "find event", "check schedule" → CalendarFindResolver
+ * - "create event", "delete event", "update event" → CalendarMutateResolver
+ * - "create reminder", "delete task" → DatabaseTaskResolver
+ * - "create list", "add to list" → DatabaseListResolver
+ */
+export function selectResolver(capability: Capability, intentHint: string): BaseResolver | undefined {
+  const hint = (intentHint || '').toLowerCase();
+  
+  switch (capability) {
+    case 'calendar':
+      // Read operations → FindResolver
+      if (/list|find|get|show|what.*have|schedule|מה יש|מתי|check/i.test(hint)) {
+        return getResolverByName('calendar_find_resolver');
+      }
+      // Write operations → MutateResolver
+      return getResolverByName('calendar_mutate_resolver');
+      
+    case 'database':
+      // List operations → ListResolver
+      if (/list|רשימה/i.test(hint)) {
+        return getResolverByName('database_list_resolver');
+      }
+      // Task/reminder operations → TaskResolver
+      return getResolverByName('database_task_resolver');
+      
+    case 'gmail':
+      return getResolverByName('gmail_resolver');
+      
+    case 'second-brain':
+      return getResolverByName('secondbrain_resolver');
+      
+    case 'general':
+      return getResolverByName('general_resolver');
+      
+    case 'meta':
+      return getResolverByName('meta_resolver');
+      
+    default:
+      return undefined;
+  }
+}

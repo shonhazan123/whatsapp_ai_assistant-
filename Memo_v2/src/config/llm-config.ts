@@ -208,6 +208,7 @@ export interface NodeModelAssignment {
   };
   responseWriter: string;
   imageAnalysis: string;
+  errorExplainer: string;  // Lightweight model for contextual error explanations
 }
 
 /**
@@ -232,6 +233,9 @@ export const DEFAULT_NODE_MODELS: NodeModelAssignment = {
   
   // Image analysis: needs vision
   imageAnalysis: process.env.LLM_IMAGE_ANALYSIS_MODEL || 'gpt-4o',
+  
+  // Error explainer: cheap model for contextual error explanations
+  errorExplainer: process.env.LLM_ERROR_EXPLAINER_MODEL || 'gpt-4o-mini',
 };
 
 // ============================================================================
@@ -243,7 +247,7 @@ export function getModelConfig(model: string): LLMModelConfig {
 }
 
 export function getNodeModel(
-  nodeType: 'planner' | 'responseWriter' | 'imageAnalysis' | keyof NodeModelAssignment['resolvers'],
+  nodeType: 'planner' | 'responseWriter' | 'imageAnalysis' | 'errorExplainer' | keyof NodeModelAssignment['resolvers'],
   isResolver: boolean = false
 ): LLMModelConfig {
   let modelName: string;

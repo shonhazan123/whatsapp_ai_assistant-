@@ -3,12 +3,16 @@
  * 
  * Converts memory-related PlanSteps into secondBrain operation arguments.
  * 
+ * Uses its OWN LLM call with domain-specific prompts to:
+ * 1. Determine the specific operation (store, search, update, delete)
+ * 2. Extract the content to store or search for
+ * 
  * Based on V1: src/agents/functions/SecondBrainFunction.ts
  */
 
-import { LLMResolver, type ResolverOutput } from './BaseResolver.js';
+import type { Capability, PlanStep } from '../../types/index.js';
 import type { MemoState } from '../state/MemoState.js';
-import type { PlanStep, Capability } from '../../types/index.js';
+import { LLMResolver, type ResolverOutput } from './BaseResolver.js';
 
 // ============================================================================
 // SECOND BRAIN RESOLVER
@@ -17,12 +21,13 @@ import type { PlanStep, Capability } from '../../types/index.js';
 /**
  * SecondBrainResolver - Memory/knowledge operations
  * 
- * Actions: store_memory, search_memory, update_memory, delete_memory, list_memories
+ * Uses LLM to determine operation and extract content.
  */
 export class SecondBrainResolver extends LLMResolver {
   readonly name = 'secondbrain_resolver';
   readonly capability: Capability = 'second-brain';
   readonly actions = [
+    'memory_operation',  // Generic - LLM will determine specific operation
     'store_memory',
     'search_memory',
     'update_memory',
@@ -32,30 +37,59 @@ export class SecondBrainResolver extends LLMResolver {
   ];
   
   getSystemPrompt(): string {
-    return `You are a knowledge management assistant. Convert user requests into memory operation parameters.
+    return `YOU ARE A KNOWLEDGE MANAGEMENT ASSISTANT.
 
-Your job is to output JSON arguments for the secondBrainOperations function.
+## YOUR ROLE:
+Analyze the user's natural language request and convert it into memory operation parameters.
+You handle storing facts, notes, personal knowledge, and retrieving saved information.
 
-AVAILABLE OPERATIONS:
-- storeMemory: Store a new memory/note
-- searchMemory: Search memories by semantic similarity
-- updateMemory: Update an existing memory
-- deleteMemory: Delete a memory
-- getAllMemory: List all memories (paginated)
-- getMemoryById: Get a specific memory
+## OPERATION SELECTION
+Analyze the user's intent to determine the correct operation:
+- User wants to SAVE/REMEMBER something → "storeMemory"
+- User says "תזכור ש..."/"remember that..." → "storeMemory"
+- User says "שמור ש..."/"save that..." → "storeMemory"
+- User asks "מה אמרתי על..."/"what did I say about..." → "searchMemory"
+- User asks "מה שמרתי..."/"what did I save..." → "searchMemory" or "getAllMemory"
+- User wants to FIND saved info → "searchMemory"
+- User wants to UPDATE saved info → "updateMemory"
+- User wants to DELETE saved info → "deleteMemory"
+- User wants to SEE ALL saved info → "getAllMemory"
 
-OUTPUT FORMAT for storeMemory:
+## AVAILABLE OPERATIONS:
+- **storeMemory**: Store a new memory/note/fact
+- **searchMemory**: Search memories by semantic similarity
+- **updateMemory**: Update an existing memory
+- **deleteMemory**: Delete a memory
+- **getAllMemory**: List all memories (paginated)
+- **getMemoryById**: Get a specific memory
+
+## CRITICAL RULES:
+
+### For Store Operations:
+- Extract the KEY INFORMATION the user wants to remember
+- Remove filler words like "תזכור ש", "remember that"
+- Keep the essential fact/note
+
+### For Search Operations:
+- Convert natural language to semantic search query
+- Focus on the topic/subject being searched
+
+### Defaults:
+- limit: 5 results
+- minSimilarity: 0.7
+
+## OUTPUT FORMAT for storeMemory:
 {
   "operation": "storeMemory",
   "text": "The information to remember",
   "metadata": {
     "tags": ["tag1", "tag2"],
-    "category": "work | personal | etc",
+    "category": "work | personal | health | etc",
     "language": "hebrew | english | other"
   }
 }
 
-OUTPUT FORMAT for searchMemory:
+## OUTPUT FORMAT for searchMemory:
 {
   "operation": "searchMemory",
   "query": "What to search for",
@@ -63,11 +97,41 @@ OUTPUT FORMAT for searchMemory:
   "minSimilarity": 0.7
 }
 
-RULES:
-1. For store operations, extract the key information from user's message
-2. For search, convert natural language to semantic query
-3. Default limit is 5, minSimilarity is 0.7
-4. Output only the JSON, no explanation`;
+## EXAMPLES:
+
+Example 1 - Store a fact:
+User: "תזכור שדני אוהב פיצה"
+→ { "operation": "storeMemory", "text": "דני אוהב פיצה", "metadata": { "language": "hebrew", "tags": ["דני", "אוכל"] } }
+
+Example 2 - Store a note:
+User: "remember that the project deadline is January 15th"
+→ { "operation": "storeMemory", "text": "Project deadline is January 15th", "metadata": { "language": "english", "category": "work", "tags": ["deadline", "project"] } }
+
+Example 3 - Search for info:
+User: "מה אמרתי על דני?"
+→ { "operation": "searchMemory", "query": "דני", "limit": 5 }
+
+Example 4 - Search for topic:
+User: "what did I save about the meeting?"
+→ { "operation": "searchMemory", "query": "meeting", "limit": 5 }
+
+Example 5 - List all:
+User: "מה שמרתי?"
+→ { "operation": "getAllMemory", "limit": 20 }
+
+Example 6 - Store with category:
+User: "save that my doctor's name is Dr. Cohen"
+→ { "operation": "storeMemory", "text": "My doctor's name is Dr. Cohen", "metadata": { "language": "english", "category": "health", "tags": ["doctor", "medical"] } }
+
+Example 7 - Delete memory:
+User: "תמחק את מה ששמרתי על דני"
+→ { "operation": "deleteMemory", "searchText": "דני" }
+
+Example 8 - Update memory:
+User: "update what I saved about the deadline - it's now January 20th"
+→ { "operation": "updateMemory", "searchText": "deadline", "newText": "Project deadline is January 20th" }
+
+Output only the JSON, no explanation.`;
   }
   
   getSchemaSlice(): object {
@@ -80,8 +144,10 @@ RULES:
             type: 'string',
             enum: ['storeMemory', 'searchMemory', 'updateMemory', 'deleteMemory', 'getAllMemory', 'getMemoryById'],
           },
-          text: { type: 'string', description: 'Memory content' },
+          text: { type: 'string', description: 'Memory content to store' },
           query: { type: 'string', description: 'Search query' },
+          searchText: { type: 'string', description: 'Text to find memory for update/delete' },
+          newText: { type: 'string', description: 'New text for update' },
           memoryId: { type: 'string', description: 'Memory ID' },
           limit: { type: 'number', description: 'Max results (default: 5)' },
           minSimilarity: { type: 'number', description: 'Min similarity 0-1 (default: 0.7)' },
@@ -101,80 +167,76 @@ RULES:
   }
   
   async resolve(step: PlanStep, state: MemoState): Promise<ResolverOutput> {
-    const { action, constraints, changes } = step;
-    
-    // Map semantic action to operation
-    const operationMap: Record<string, string> = {
-      'store_memory': 'storeMemory',
-      'search_memory': 'searchMemory',
-      'update_memory': 'updateMemory',
-      'delete_memory': 'deleteMemory',
-      'list_memories': 'getAllMemory',
-      'get_memory': 'getMemoryById',
-    };
-    
-    const operation = operationMap[action] || 'searchMemory';
-    
-    // Build args based on operation
-    const args: Record<string, any> = { operation };
-    
-    switch (operation) {
-      case 'storeMemory':
-        args.text = constraints.text;
-        if (constraints.metadata) {
-          args.metadata = constraints.metadata;
-        } else {
-          // Auto-detect language from user context
-          args.metadata = {
-            language: state.user.language === 'he' ? 'hebrew' : 'english',
-          };
-        }
-        if (constraints.tags) args.metadata = { ...args.metadata, tags: constraints.tags };
-        if (constraints.category) args.metadata = { ...args.metadata, category: constraints.category };
-        break;
-        
-      case 'searchMemory':
-        args.query = constraints.query || constraints.text;
-        args.limit = constraints.limit ?? 5;
-        args.minSimilarity = constraints.minSimilarity ?? 0.7;
-        break;
-        
-      case 'updateMemory':
-        args.memoryId = constraints.memoryId;
-        args.text = changes.text || constraints.text;
-        if (changes.metadata) args.metadata = changes.metadata;
-        break;
-        
-      case 'deleteMemory':
-        args.memoryId = constraints.memoryId;
-        break;
-        
-      case 'getAllMemory':
-        args.limit = constraints.limit ?? 20;
-        args.offset = constraints.offset ?? 0;
-        break;
-        
-      case 'getMemoryById':
-        args.memoryId = constraints.memoryId;
-        break;
-    }
-    
-    // Handle disambiguation for update/delete without memoryId
-    if (['updateMemory', 'deleteMemory', 'getMemoryById'].includes(operation) && !args.memoryId) {
-      if (constraints.searchText || constraints.query) {
-        args._needsResolution = true;
-        args._searchQuery = constraints.searchText || constraints.query;
+    // Use LLM to extract operation and parameters
+    try {
+      console.log(`[${this.name}] Calling LLM to extract memory operation`);
+      
+      const args = await this.callLLM(step, state);
+      
+      // Validate operation
+      if (!args.operation) {
+        console.warn(`[${this.name}] LLM did not return operation, defaulting to 'searchMemory'`);
+        args.operation = 'searchMemory';
       }
+      
+      // Apply defaults for search
+      if (args.operation === 'searchMemory') {
+        args.limit = args.limit ?? 5;
+        args.minSimilarity = args.minSimilarity ?? 0.7;
+      }
+      
+      // Apply defaults for getAll
+      if (args.operation === 'getAllMemory') {
+        args.limit = args.limit ?? 20;
+        args.offset = args.offset ?? 0;
+      }
+      
+      // Auto-detect language for store
+      if (args.operation === 'storeMemory') {
+        args.metadata = args.metadata || {};
+        if (!args.metadata.language) {
+          args.metadata.language = state.user.language === 'he' ? 'hebrew' : 'english';
+        }
+      }
+      
+      // Mark for resolution if update/delete needs lookup
+      if (['updateMemory', 'deleteMemory', 'getMemoryById'].includes(args.operation) && !args.memoryId) {
+        args._needsResolution = true;
+        args._searchQuery = args.searchText || args.query;
+      }
+      
+      console.log(`[${this.name}] LLM determined operation: ${args.operation}`);
+      
+      return {
+        stepId: step.id,
+        type: 'execute',
+        args,
+      };
+    } catch (error: any) {
+      console.error(`[${this.name}] LLM call failed:`, error.message);
+      
+      // Fallback: try to infer from keywords
+      const message = step.constraints.rawMessage || state.input.message || '';
+      
+      let operation = 'searchMemory';
+      if (/תזכור|זכור|שמור|remember|save|store/i.test(message)) {
+        operation = 'storeMemory';
+      }
+      
+      return {
+        stepId: step.id,
+        type: 'execute',
+        args: {
+          operation,
+          text: operation === 'storeMemory' ? message : undefined,
+          query: operation === 'searchMemory' ? message : undefined,
+          metadata: { language: state.user.language === 'he' ? 'hebrew' : 'english' },
+          _fallback: true,
+        },
+      };
     }
-    
-    return {
-      stepId: step.id,
-      type: 'execute',
-      args,
-    };
   }
   
-  // Override - uses second-brain domain type
   protected getEntityType(): 'calendar' | 'database' | 'gmail' | 'second-brain' | 'error' {
     return 'second-brain';
   }
@@ -188,5 +250,3 @@ export function createSecondBrainResolver() {
   const resolver = new SecondBrainResolver();
   return resolver.asNodeFunction();
 }
-
-

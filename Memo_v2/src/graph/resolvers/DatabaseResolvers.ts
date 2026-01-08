@@ -3,14 +3,12 @@
  * 
  * Converts database-related PlanSteps into task/list operation arguments.
  * 
+ * Each resolver uses its OWN LLM call with domain-specific prompts to:
+ * 1. Determine the specific operation (create, update, delete, etc.)
+ * 2. Extract all required fields from the user's natural language
+ * 
  * Based on V1: src/agents/functions/DatabaseFunctions.ts
  *              src/config/system-prompts.ts (getDatabaseAgentPrompt)
- * 
- * CRITICAL V1 RULES:
- * - Database agent handles REMINDERS only (not general tasks)
- * - NUDGE vs DAILY differentiation: "כל X דקות" → nudge, "כל יום ב-X" → daily
- * - Lists require explicit "list"/"רשימה" keyword
- * - No confirmation for deletions
  */
 
 import type { Capability, PlanStep } from '../../types/index.js';
@@ -24,13 +22,13 @@ import { LLMResolver, type ResolverOutput } from './BaseResolver.js';
 /**
  * DatabaseTaskResolver - Reminder/Task CRUD operations
  * 
- * Actions: create_task, get_task, list_tasks, update_task, delete_task, 
- *          complete_task, create_multiple_tasks, add_subtask
+ * Uses LLM to determine operation and extract fields from natural language.
  */
 export class DatabaseTaskResolver extends LLMResolver {
   readonly name = 'database_task_resolver';
   readonly capability: Capability = 'database';
   readonly actions = [
+    'task_operation',  // Generic - LLM will determine specific operation
     'create_task',
     'get_task',
     'list_tasks',
@@ -48,27 +46,40 @@ export class DatabaseTaskResolver extends LLMResolver {
     return `YOU ARE A DATABASE-INTEGRATED AGENT FOR REMINDER AND TASK MANAGEMENT.
 
 ## YOUR ROLE:
-Convert natural language commands into structured JSON for taskOperations function.
+Analyze the user's natural language request and convert it into structured JSON for the taskOperations function.
 You handle REMINDERS and to-do items - NOT calendar events.
 
-## ⚠️ NUDGE vs DAILY - KEY RULE ⚠️
+## ⚠️ CRITICAL RULES ⚠️
+
+### NUDGE vs DAILY - KEY RULE
 **"כל X דקות/שעות" or "every X minutes/hours" → type: "nudge" + interval field**
 **"כל יום ב-X" or "every day at X" → type: "daily" + time field**
 
+### OPERATION SELECTION
+Analyze the user's intent to determine the correct operation:
+- User wants to CREATE something new → "create" or "createMultiple"
+- User wants to SEE/LIST items → "getAll"
+- User wants to FIND specific item → "get"
+- User asks "מה יש לי"/"what do I have" → "getAll"
+- User says "סיימתי"/"done"/"עשיתי" → "delete" (completion = deletion for reminders)
+- User wants to UPDATE/CHANGE → "update"
+- User wants to DELETE/REMOVE/CANCEL → "delete" or "deleteAll"
+- Multiple items mentioned → use "createMultiple" or "deleteMultiple"
+
 ## AVAILABLE OPERATIONS:
 - **create**: Create a single task/reminder
-- **createMultiple**: Create multiple tasks at once (CRITICAL: always use for multiple items, even with same time)
-- **get**: Get a specific task by ID or text
+- **createMultiple**: Create multiple tasks at once (use when user mentions multiple items)
+- **get**: Get a specific task by text
 - **getAll**: List all tasks with optional filters
 - **update**: Update task properties or add reminder
 - **updateMultiple**: Update multiple tasks at once
 - **delete**: Delete a single task
 - **deleteMultiple**: Delete multiple tasks
 - **deleteAll**: Delete all tasks (with optional filters)
-- **complete**: Mark task as complete
+- **complete**: Mark task as complete (same as delete for reminders)
 - **addSubtask**: Add a subtask to a parent task
 
-## OUTPUT FORMAT for create:
+## OUTPUT FORMAT:
 {
   "operation": "create",
   "text": "Task description",
@@ -131,6 +142,7 @@ Default: 10 minutes if not specified
 
 Example 1 - One-time reminder with explicit time:
 User: "תזכיר לי היום בשעה 20:10 לעבור לאחותי"
+Current time: Thursday, 02/01/2025 14:00
 → { "operation": "create", "text": "לעבור לאחותי", "dueDate": "2025-01-02T20:10:00+02:00", "reminder": "0 minutes" }
 
 Example 2 - Multiple tasks at SAME time:
@@ -160,13 +172,25 @@ Example 5 - Weekly recurring:
 User: "תזכיר לי כל יום ראשון ב-14:00 להתקשר לאמא"
 → { "operation": "create", "text": "להתקשר לאמא", "reminderRecurrence": { "type": "weekly", "days": [0], "time": "14:00" } }
 
-Example 6 - Complete a task:
+Example 6 - Complete/delete a task:
 User: "סיימתי לבדוק את הפיצ'ר"
 → { "operation": "delete", "text": "לבדוק את הפיצ'ר" }
 
-Example 7 - Delete all overdue:
+Example 7 - List tasks:
+User: "מה התזכורות שלי להיום?"
+→ { "operation": "getAll", "filters": { "window": "today" } }
+
+Example 8 - Delete all overdue:
 User: "תמחק את כל המשימות שזמנם עבר"
 → { "operation": "deleteAll", "where": { "window": "overdue" }, "preview": false }
+
+Example 9 - Update task:
+User: "תשנה את התזכורת לקנות חלב ל-10 בבוקר"
+→ { "operation": "update", "text": "לקנות חלב", "reminderDetails": { "dueDate": "2025-01-03T10:00:00+02:00" } }
+
+Example 10 - Simple reminder without time:
+User: "תזכיר לי לקנות מתנה"
+→ { "operation": "create", "text": "לקנות מתנה" }
 
 ## LANGUAGE RULE:
 Output only the JSON, no explanation. NEVER include IDs you don't have.`;
@@ -214,7 +238,7 @@ Output only the JSON, no explanation. NEVER include IDs you don't have.`;
           },
           filters: {
             type: 'object',
-            description: 'Filters for getAll/deleteAll',
+            description: 'Filters for getAll',
             properties: {
               completed: { type: 'boolean' },
               category: { type: 'string' },
@@ -264,131 +288,83 @@ Output only the JSON, no explanation. NEVER include IDs you don't have.`;
   }
   
   async resolve(step: PlanStep, state: MemoState): Promise<ResolverOutput> {
-    const { action, constraints, changes } = step;
-    
-    // Map semantic action to operation
-    const operationMap: Record<string, string> = {
-      'create_task': 'create',
-      'get_task': 'get',
-      'list_tasks': 'getAll',
-      'update_task': 'update',
-      'delete_task': 'delete',
-      'complete_task': 'delete', // V1 behavior: completion = deletion for reminders
-      'create_multiple_tasks': 'createMultiple',
-      'add_subtask': 'addSubtask',
-      'update_multiple_tasks': 'updateMultiple',
-      'delete_multiple_tasks': 'deleteMultiple',
-      'delete_all_tasks': 'deleteAll',
-    };
-    
-    const operation = operationMap[action] || 'getAll';
-    
-    // Build args based on operation
-    const args: Record<string, any> = { operation };
-    
-    switch (operation) {
-      case 'create':
-        args.text = constraints.text;
-        if (constraints.category) args.category = constraints.category;
-        if (constraints.dueDate) {
-          args.dueDate = constraints.dueDate;
-          // Default reminder to "0 minutes" if dueDate but no reminder specified
-          args.reminder = constraints.reminder || '0 minutes';
-        }
-        if (constraints.recurring) {
-          args.reminderRecurrence = this.normalizeReminderRecurrence(constraints.reminderRecurrence);
-        }
-        break;
-        
-      case 'createMultiple':
-        args.tasks = (constraints.tasks || []).map((task: any) => {
-          const t: any = { text: task.text };
-          if (task.category) t.category = task.category;
-          if (task.dueDate) {
-            t.dueDate = task.dueDate;
-            t.reminder = task.reminder || '0 minutes';
-          }
-          if (task.reminderRecurrence) {
-            t.reminderRecurrence = this.normalizeReminderRecurrence(task.reminderRecurrence);
-          }
-          return t;
-        });
-        break;
-        
-      case 'get':
-        args.taskId = constraints.taskId;
-        if (!args.taskId && constraints.text) {
-          args.text = constraints.text;
-        }
-        break;
-        
-      case 'getAll':
-        if (constraints.filters) args.filters = constraints.filters;
-        if (constraints.window) {
-          args.filters = { ...args.filters, window: constraints.window };
-        }
-        break;
-        
-      case 'update':
-        // For update, prefer text-based lookup (V1 pattern)
-        if (constraints.text) args.text = constraints.text;
-        if (constraints.taskId) args.taskId = constraints.taskId;
-        
-        // Build reminderDetails for reminder updates
-        if (changes.dueDate || changes.reminder || changes.reminderRecurrence) {
-          args.reminderDetails = {};
-          if (changes.dueDate) args.reminderDetails.dueDate = changes.dueDate;
-          if (changes.reminder) args.reminderDetails.reminder = changes.reminder;
-          if (changes.reminderRecurrence) {
-            args.reminderDetails.reminderRecurrence = this.normalizeReminderRecurrence(changes.reminderRecurrence);
-          }
-        }
-        
-        // Other field updates
-        if (changes.text) args.newText = changes.text;
-        if (changes.category) args.category = changes.category;
-        break;
-        
-      case 'updateMultiple':
-        args.updates = (constraints.updates || []).map((u: any) => ({
-          text: u.text,
-          reminderDetails: u.reminderDetails,
-        }));
-        break;
-        
-      case 'delete':
-        if (constraints.taskId) args.taskId = constraints.taskId;
-        if (constraints.text) args.text = constraints.text;
-        break;
-        
-      case 'deleteAll':
-        args.where = constraints.where || {};
-        args.preview = false; // V1: No confirmation needed
-        break;
-        
-      case 'addSubtask':
-        args.taskId = constraints.taskId;
-        args.text = constraints.text;
-        args.subtaskText = constraints.subtaskText;
-        break;
-    }
-    
-    // Handle disambiguation for operations that need task lookup
-    if (['update', 'delete'].includes(operation) && !args.taskId && !args.text) {
-      if (constraints.taskText) {
-        args.text = constraints.taskText;
+    // Always use LLM to extract operation and fields from natural language
+    try {
+      console.log(`[${this.name}] Calling LLM to extract task operation from: "${step.constraints.rawMessage?.substring(0, 50)}..."`);
+      
+      const args = await this.callLLM(step, state);
+      
+      // Validate that we got an operation
+      if (!args.operation) {
+        console.warn(`[${this.name}] LLM did not return operation, defaulting to 'getAll'`);
+        args.operation = 'getAll';
       }
+      
+      console.log(`[${this.name}] LLM determined operation: ${args.operation}`);
+      
+      // Normalize reminderRecurrence if present
+      if (args.reminderRecurrence) {
+        args.reminderRecurrence = this.normalizeReminderRecurrence(args.reminderRecurrence);
+      }
+      
+      // Normalize tasks array if present
+      if (args.tasks && Array.isArray(args.tasks)) {
+        args.tasks = args.tasks.map((task: any) => {
+          if (task.reminderRecurrence) {
+            task.reminderRecurrence = this.normalizeReminderRecurrence(task.reminderRecurrence);
+          }
+          return task;
+        });
+      }
+      
+      return {
+        stepId: step.id,
+        type: 'execute',
+        args,
+      };
+    } catch (error: any) {
+      console.error(`[${this.name}] LLM call failed:`, error.message);
+      
+      // Fallback: try to infer basic operation from raw message
+      return this.createFallbackArgs(step, state);
+    }
+  }
+  
+  /**
+   * Fallback when LLM fails - basic inference from keywords
+   */
+  private createFallbackArgs(step: PlanStep, state: MemoState): ResolverOutput {
+    const message = step.constraints.rawMessage || state.input.message || '';
+    const lowerMessage = message.toLowerCase();
+    
+    let operation = 'getAll';
+    
+    // Basic keyword detection
+    if (/מחק|בטל|הסר|delete|remove|cancel/i.test(message)) {
+      operation = 'delete';
+    } else if (/סיימתי|עשיתי|בוצע|done|complete|finish/i.test(message)) {
+      operation = 'delete'; // Completion = deletion for reminders
+    } else if (/מה יש|מה התזכורות|הראה|show|list|what.*remind/i.test(message)) {
+      operation = 'getAll';
+    } else if (/תזכיר|תזכורת|remind|create|add/i.test(message)) {
+      operation = 'create';
+    } else if (/שנה|עדכן|update|change|move/i.test(message)) {
+      operation = 'update';
     }
     
     return {
       stepId: step.id,
       type: 'execute',
-      args,
+      args: {
+        operation,
+        text: message,
+        _fallback: true,
+      },
     };
   }
   
   /**
-   * Normalize reminder recurrence to V1 format
+   * Normalize reminder recurrence to consistent format
    */
   private normalizeReminderRecurrence(recurrence: any): any {
     if (!recurrence) return undefined;
@@ -429,16 +405,15 @@ Output only the JSON, no explanation. NEVER include IDs you don't have.`;
 /**
  * DatabaseListResolver - List CRUD operations
  * 
- * V1 CRITICAL RULE:
- * ONLY use listOperations when user explicitly says "list" (EN) or "רשימה" (HE)
- * Otherwise, create tasks instead.
+ * Uses LLM to determine operation and extract fields.
  * 
- * Actions: create_list, get_list, list_lists, update_list, delete_list, add_item, toggle_item
+ * CRITICAL RULE: ONLY use listOperations when user explicitly says "list" (EN) or "רשימה" (HE)
  */
 export class DatabaseListResolver extends LLMResolver {
   readonly name = 'database_list_resolver';
   readonly capability: Capability = 'database';
   readonly actions = [
+    'list_operation',  // Generic - LLM will determine specific operation
     'create_list',
     'get_list',
     'list_lists',
@@ -455,20 +430,29 @@ export class DatabaseListResolver extends LLMResolver {
 ## CRITICAL RULE - LIST KEYWORD DETECTION:
 ONLY use listOperations when user EXPLICITLY says "list" (English) or "רשימה" (Hebrew).
 
-Examples that SHOULD create lists:
-- "create a list for groceries" → listOperations
-- "תיצור רשימה חדשה" → listOperations
-- "תוסיף לרשימה את הפריט" → listOperations
-- "make a list and add..." → listOperations
+## OPERATION SELECTION
+Analyze the user's intent:
+- User wants to CREATE a new list → "create"
+- User wants to SEE all lists → "getAll"
+- User wants to ADD item to existing list → "addItem"
+- User wants to MARK item as done → "toggleItem"
+- User wants to DELETE list → "delete"
+- User wants to DELETE item from list → "deleteItem"
 
-Examples that should NOT create lists (route to tasks instead):
-- "אני רוצה ללמוד את הדברים הבאים: 1. ... 2. ..." → Use tasks (createMultiple)
-- "things to do: item1, item2" → Use tasks (createMultiple)
-- Any enumeration WITHOUT the word "list"/"רשימה" → Use tasks
+Examples that SHOULD create lists:
+- "create a list for groceries" → "create"
+- "תיצור רשימה חדשה" → "create"
+- "תוסיף לרשימה את הפריט" → "addItem"
+- "make a list and add..." → "create"
+
+Examples that should NOT be handled by this resolver:
+- "אני רוצה ללמוד את הדברים הבאים: 1. ... 2. ..." → Route to TaskResolver
+- "things to do: item1, item2" → Route to TaskResolver
+- Any enumeration WITHOUT the word "list"/"רשימה" → Route to TaskResolver
 
 ## AVAILABLE OPERATIONS:
 - **create**: Create a new list with optional items
-- **get**: Get a specific list by ID or name
+- **get**: Get a specific list by name
 - **getAll**: List all user's lists
 - **update**: Update list name or items
 - **delete**: Delete a list
@@ -487,8 +471,7 @@ Examples that should NOT create lists (route to tasks instead):
 ## OUTPUT FORMAT for addItem:
 {
   "operation": "addItem",
-  "listId": "list ID (if known)",
-  "listName": "list name (for lookup)",
+  "listName": "list name to find",
   "item": "new item text"
 }
 
@@ -513,6 +496,14 @@ Example 4 - Get all lists:
 User: "אילו רשימות יש לי?"
 → { "operation": "getAll" }
 
+Example 5 - Toggle item:
+User: "סמן את החלב ברשימת הקניות כקנוי"
+→ { "operation": "toggleItem", "listName": "קניות", "itemIndex": 0 }
+
+Example 6 - Create list with items:
+User: "create a list called 'movies to watch' with Inception, Matrix, and Interstellar"
+→ { "operation": "create", "name": "movies to watch", "items": ["Inception", "Matrix", "Interstellar"], "isChecklist": true }
+
 Output only the JSON, no explanation.`;
   }
   
@@ -532,7 +523,7 @@ Output only the JSON, no explanation.`;
           items: { type: 'array', items: { type: 'string' }, description: 'List items' },
           item: { type: 'string', description: 'Single item text' },
           itemIndex: { type: 'number', description: 'Item index for toggle/delete' },
-          isChecklist: { type: 'boolean', description: 'Whether list has checkboxes' },
+          isChecklist: { type: 'boolean', description: 'Whether list has checkboxes (default: true)' },
           selectedIndex: { type: 'number', description: 'For disambiguation selection' },
         },
         required: ['operation'],
@@ -541,76 +532,50 @@ Output only the JSON, no explanation.`;
   }
   
   async resolve(step: PlanStep, state: MemoState): Promise<ResolverOutput> {
-    const { action, constraints, changes } = step;
+    // Check if this should actually be a list operation
+    const message = step.constraints.rawMessage || state.input.message || '';
     
-    // Map semantic action to operation
-    const operationMap: Record<string, string> = {
-      'create_list': 'create',
-      'get_list': 'get',
-      'list_lists': 'getAll',
-      'update_list': 'update',
-      'delete_list': 'delete',
-      'add_item': 'addItem',
-      'toggle_item': 'toggleItem',
-      'delete_item': 'deleteItem',
-    };
-    
-    const operation = operationMap[action] || 'getAll';
-    
-    // Build args based on operation
-    const args: Record<string, any> = { operation };
-    
-    switch (operation) {
-      case 'create':
-        args.name = constraints.name;
-        if (constraints.items) args.items = constraints.items;
-        args.isChecklist = constraints.isChecklist !== false; // Default to checklist
-        break;
-        
-      case 'get':
-        if (constraints.listId) args.listId = constraints.listId;
-        if (constraints.listName || constraints.name) {
-          args.listName = constraints.listName || constraints.name;
-        }
-        break;
-        
-      case 'getAll':
-        // No additional args needed
-        break;
-        
-      case 'update':
-        if (constraints.listId) args.listId = constraints.listId;
-        if (constraints.listName) args.listName = constraints.listName;
-        if (changes.name) args.name = changes.name;
-        if (changes.items) args.items = changes.items;
-        break;
-        
-      case 'delete':
-        if (constraints.listId) args.listId = constraints.listId;
-        if (constraints.listName || constraints.name) {
-          args.listName = constraints.listName || constraints.name;
-        }
-        break;
-        
-      case 'addItem':
-        if (constraints.listId) args.listId = constraints.listId;
-        if (constraints.listName) args.listName = constraints.listName;
-        args.item = constraints.item || constraints.text;
-        break;
-        
-      case 'toggleItem':
-      case 'deleteItem':
-        if (constraints.listId) args.listId = constraints.listId;
-        if (constraints.listName) args.listName = constraints.listName;
-        args.itemIndex = constraints.itemIndex;
-        break;
+    // If no explicit list keyword, this might be routed incorrectly
+    if (!/list|רשימה/i.test(message)) {
+      console.log(`[${this.name}] Message doesn't contain 'list'/'רשימה', might be wrong resolver`);
     }
     
-    return {
-      stepId: step.id,
-      type: 'execute',
-      args,
-    };
+    // Use LLM to extract operation and fields
+    try {
+      console.log(`[${this.name}] Calling LLM to extract list operation`);
+      
+      const args = await this.callLLM(step, state);
+      
+      // Validate operation
+      if (!args.operation) {
+        args.operation = 'getAll';
+      }
+      
+      // Default isChecklist to true
+      if (args.operation === 'create' && args.isChecklist === undefined) {
+        args.isChecklist = true;
+      }
+      
+      console.log(`[${this.name}] LLM determined operation: ${args.operation}`);
+      
+      return {
+        stepId: step.id,
+        type: 'execute',
+        args,
+      };
+    } catch (error: any) {
+      console.error(`[${this.name}] LLM call failed:`, error.message);
+      
+      // Fallback
+      return {
+        stepId: step.id,
+        type: 'execute',
+        args: {
+          operation: 'getAll',
+          _fallback: true,
+        },
+      };
+    }
   }
   
   protected getEntityType(): 'calendar' | 'database' | 'gmail' | 'second-brain' | 'error' {

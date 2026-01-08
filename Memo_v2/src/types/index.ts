@@ -188,6 +188,19 @@ export interface ExecutionResult {
 }
 
 // ============================================================================
+// FAILED OPERATION CONTEXT (for contextual error responses)
+// ============================================================================
+
+export interface FailedOperationContext {
+  stepId: string;
+  capability: string;         // "database", "calendar", etc.
+  operation: string;          // "delete task", "update event", etc.
+  searchedFor?: string;       // What was being looked for (e.g., task name)
+  userRequest: string;        // Original user message for this step
+  errorMessage: string;       // The actual error
+}
+
+// ============================================================================
 // RESPONSE
 // ============================================================================
 
@@ -206,6 +219,7 @@ export interface FormattedResponse {
   rawData: any;
   formattedData: any; // With human-readable dates
   context: ResponseContext;
+  failedOperations?: FailedOperationContext[];  // For contextual error responses
 }
 
 // ============================================================================
