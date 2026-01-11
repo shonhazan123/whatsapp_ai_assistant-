@@ -71,7 +71,7 @@ export class ExecutorNode extends CodeNode {
       executionPromises.push(promise);
     }
     
-    // Wait for all executions to complete
+    // Wait for all executions to complete 
     await Promise.all(executionPromises);
     
     console.log(`[ExecutorNode] Completed ${executionResults.size} executions`);
@@ -154,6 +154,11 @@ export class ExecutorNode extends CodeNode {
    * Determine if args are for a list operation
    */
   private isListOperation(args: Record<string, any>): boolean {
+    
+    if (args._entityType) {
+      return args._entityType === 'list';
+    }
+
     if (args.listId || args.listName || args.isChecklist !== undefined) {
       return true;
     }

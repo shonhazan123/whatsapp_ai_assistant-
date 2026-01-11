@@ -66,6 +66,12 @@ export class DatabaseExecutor extends BaseExecutor {
    * Determine if this is a list operation based on args
    */
   private isListOperation(args: Record<string, any>): boolean {
+    // Check explicit entity type first (set by resolver)
+    if (args._entityType) {
+      return args._entityType === 'list';
+    }
+    
+    // Fall back to field-based detection for backward compatibility
     // If it has list-specific fields, it's a list operation
     if (args.listId || args.listName || args.isChecklist !== undefined) {
       return true;

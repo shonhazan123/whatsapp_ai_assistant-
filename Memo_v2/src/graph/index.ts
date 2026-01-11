@@ -138,15 +138,23 @@ function plannerRouter(state: MemoState): string {
 
 /**
  * Route from EntityResolution based on HITL needs
+ * 
+ * ONLY disambiguation should trigger HITL (user needs to choose between options)
+ * not_found and errors should continue to executor -> ResponseWriter for explanation
  */
 function entityResolutionRouter(state: MemoState): string {
-  // If disambiguation/clarification needed, go to HITL gate to handle interrupt
-  if (state.needsHITL) {
-    console.log(`[Graph] EntityResolution needs HITL: ${state.hitlReason}`);
+  // ONLY route to HITL for actual disambiguation (multiple candidates requiring user choice)
+  if (state.needsHITL && state.hitlReason === 'disambiguation') {
+    console.log(`[Graph] EntityResolution needs HITL for disambiguation`);
     return 'hitl_gate';
   }
   
-  // All resolved, proceed to executor
+  // For not_found, errors, and resolved - continue to executor
+  // Executor will skip failed steps, ResponseFormatter/Writer will explain
+  if (state.needsHITL) {
+    console.log(`[Graph] EntityResolution had ${state.hitlReason} but NOT interrupting - will end with explanation`);
+  }
+  
   return 'executor';
 }
 

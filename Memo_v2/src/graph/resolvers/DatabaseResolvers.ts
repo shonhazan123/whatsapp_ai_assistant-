@@ -320,7 +320,10 @@ Output only the JSON, no explanation. NEVER include IDs you don't have.`;
       return {
         stepId: step.id,
         type: 'execute',
-        args,
+        args: {
+          ...args,
+          _entityType: 'task',  // Explicit entity type for downstream routing
+        },
       };
     } catch (error: any) {
       console.error(`[${this.name}] LLM call failed:`, error.message);
@@ -359,6 +362,7 @@ Output only the JSON, no explanation. NEVER include IDs you don't have.`;
         operation,
         text: message,
         _fallback: true,
+        _entityType: 'task',  // Explicit entity type for downstream routing
       },
     };
   }
@@ -561,7 +565,10 @@ Output only the JSON, no explanation.`;
       return {
         stepId: step.id,
         type: 'execute',
-        args,
+        args: {
+          ...args,
+          _entityType: 'list',  // Explicit entity type for downstream routing
+        },
       };
     } catch (error: any) {
       console.error(`[${this.name}] LLM call failed:`, error.message);
@@ -573,6 +580,7 @@ Output only the JSON, no explanation.`;
         args: {
           operation: 'getAll',
           _fallback: true,
+          _entityType: 'list',  // Explicit entity type for downstream routing
         },
       };
     }

@@ -7,11 +7,21 @@
  * - Planner routes to capability (not specific action)
  * - Each resolver uses its own LLM to determine operation and extract fields
  * - Resolvers handle all actions for their capability
+ * - Schema-based routing with explicit patterns and examples
  */
 
 // Base classes
 export { BaseResolver, LLMResolver, TemplateResolver } from './BaseResolver.js';
 export type { ResolverConfig, ResolverOutput } from './BaseResolver.js';
+
+// Resolver Schema System
+export {
+  CALENDAR_FIND_SCHEMA,
+  CALENDAR_MUTATE_SCHEMA, DATABASE_LIST_SCHEMA, DATABASE_TASK_SCHEMA, formatSchemasForPrompt, GENERAL_SCHEMA, getBestMatch, getResolverSchemas,
+  getSchemaByName,
+  getSchemasForCapability, GMAIL_SCHEMA, matchPatterns, META_SCHEMA, RESOLVER_SCHEMAS, SECONDBRAIN_SCHEMA
+} from './ResolverSchema.js';
+export type { PatternMatchResult, ResolverSchema } from './ResolverSchema.js';
 
 // Calendar resolvers
 export {
@@ -53,6 +63,7 @@ import { CalendarFindResolver, CalendarMutateResolver } from './CalendarResolver
 import { DatabaseListResolver, DatabaseTaskResolver } from './DatabaseResolvers.js';
 import { GeneralResolver, MetaResolver } from './GeneralResolver.js';
 import { GmailResolver } from './GmailResolver.js';
+import { matchPatterns } from './ResolverSchema.js';
 import { SecondBrainResolver } from './SecondBrainResolver.js';
 
 /**
@@ -172,4 +183,57 @@ export function selectResolver(capability: Capability, intentHint: string): Base
     default:
       return undefined;
   }
+}
+
+/**
+ * Schema-based resolver selection using pattern matching
+ * 
+ * Uses the ResolverSchema patterns to find the best matching resolver
+ * based on the raw user message content.
+ * 
+ * @param message - Raw user message
+ * @param constrainToCapability - Optional: only consider resolvers for this capability
+ * @returns The best matching resolver or undefined
+ */
+export function selectResolverByPattern(
+  message: string, 
+  constrainToCapability?: Capability
+): BaseResolver | undefined {
+  const matches = matchPatterns(message);
+  
+  // Filter by capability if specified
+  const filtered = constrainToCapability 
+    ? matches.filter(m => m.schema.capability === constrainToCapability)
+    : matches;
+  
+  if (filtered.length === 0) {
+    return undefined;
+  }
+  
+  const bestMatch = filtered[0];
+  console.log(`[selectResolverByPattern] Best match: ${bestMatch.schema.name} (score: ${bestMatch.score}, patterns: ${bestMatch.matchedPatterns.join(', ')})`);
+  
+  return getResolverByName(bestMatch.schema.name);
+}
+
+/**
+ * Get routing suggestion based on pattern matching
+ * 
+ * Returns pattern match results with scores for debugging and logging.
+ * Used by PlannerNode for pre-routing hints.
+ */
+export function getRoutingSuggestions(message: string): Array<{
+  resolverName: string;
+  capability: Capability;
+  score: number;
+  matchedPatterns: string[];
+}> {
+  const matches = matchPatterns(message);
+  
+  return matches.map(m => ({
+    resolverName: m.schema.name,
+    capability: m.schema.capability,
+    score: m.score,
+    matchedPatterns: m.matchedPatterns,
+  }));
 }

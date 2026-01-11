@@ -32,10 +32,10 @@ import type { MemoState } from '../state/MemoState.js';
 export class EntityResolutionNode {
   readonly name = 'entity_resolution';
   
-  private resolvers: Map<string, IEntityResolver>;
+  private entityResolvers: Map<string, IEntityResolver>;
   
   constructor() {
-    this.resolvers = new Map<string, IEntityResolver>([
+    this.entityResolvers = new Map<string, IEntityResolver>([
       ['calendar', new CalendarEntityResolver()],
       ['database', new DatabaseEntityResolver()],
       ['gmail', new GmailEntityResolver()],
@@ -84,9 +84,9 @@ export class EntityResolutionNode {
       
       // Get capability and resolver
       const capability = this.getCapabilityFromStep(stepId, state);
-      const resolver = this.resolvers.get(capability);
+      const selectedEntityResolver = this.entityResolvers.get(capability);
       
-      if (!resolver) {
+      if (!selectedEntityResolver) {
         console.log(`[EntityResolutionNode] No resolver for capability: ${capability}, passing through`);
         executorArgs.set(stepId, result.args);
         continue;
@@ -96,7 +96,7 @@ export class EntityResolutionNode {
       
       // Resolve entities
       const operation = result.args?.operation || this.extractOperation(stepId, state);
-      const resolution = await resolver.resolve(operation, result.args || {}, context);
+      const resolution = await selectedEntityResolver.resolve(operation, result.args || {}, context);
       
       console.log(`[EntityResolutionNode] Resolution result: ${resolution.type}`);
       
@@ -112,7 +112,7 @@ export class EntityResolutionNode {
           console.log(`[EntityResolutionNode] Disambiguation needed for step ${stepId}`);
           return {
             disambiguation: {
-              type: resolver.domain as DisambiguationContext['type'],
+              type: selectedEntityResolver.domain as DisambiguationContext['type'],
               candidates: resolution.candidates || [],
               question: resolution.question || 'Please select:',
               allowMultiple: resolution.allowMultiple,
@@ -126,20 +126,29 @@ export class EntityResolutionNode {
           
         case 'not_found':
         case 'clarify_query':
-          // Return error for HITL
-          console.log(`[EntityResolutionNode] Not found / clarify needed for step ${stepId}`);
-          return {
-            disambiguation: {
-              type: 'error' as any,
-              error: resolution.error,
+          // NOT FOUND / CLARIFY: Do NOT interrupt - let graph finish with explanation
+          // Store failure context so ResponseFormatter can build error message
+          console.log(`[EntityResolutionNode] Not found / clarify for step ${stepId} - will end with explanation (no interrupt)`);
+          
+          // Store failure in executionResults so ResponseFormatter can explain
+          const executionResults = new Map<string, any>(state.executionResults || new Map());
+          executionResults.set(stepId, {
+            stepId,
+            success: false,
+            error: resolution.error || `Could not find: ${resolution.searchedFor}`,
+            data: {
               searchedFor: resolution.searchedFor,
               suggestions: resolution.suggestions,
-              resolverStepId: stepId,
-              originalArgs: result.args,
+              reason: resolution.type,
             },
-            needsHITL: true,
-            hitlReason: resolution.type === 'not_found' ? 'not_found' : 'clarification',
+            durationMs: 0,
+          });
+          
+          // Continue to executor (will skip this step) -> ResponseFormatter -> END
+          return {
+            executionResults,
             executorArgs,
+            needsHITL: false,  // NO interrupt for not_found!
           };
       }
     }
@@ -166,7 +175,7 @@ export class EntityResolutionNode {
     
     // Get the appropriate resolver
     const resolverDomain = disambiguation.type === 'error' ? 'database' : disambiguation.type;
-    const resolver = this.resolvers.get(resolverDomain as string);
+    const resolver = this.entityResolvers.get(resolverDomain as string);
     
     if (!resolver) {
       console.error(`[EntityResolutionNode] No resolver for domain: ${resolverDomain}`);
