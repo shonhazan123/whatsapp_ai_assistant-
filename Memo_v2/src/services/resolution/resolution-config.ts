@@ -226,6 +226,7 @@ export const DISAMBIGUATION_MESSAGES = {
     event_multiple: 'מצאתי מספר אירועים תואמים:\n{options}\n\nאיזה התכוונת?',
     event_not_found: 'לא מצאתי אירוע התואם ל-"{searchedFor}"',
     event_specify_time: 'נא לציין זמן ספציפי יותר',
+    recurring_choice: 'האירוע שאתה מנסה לשנות הוא אירוע חוזר כל {recurrence}.\nהאם תרצה לשנות את כולם או רק את המופע הזה?',
     
     // List messages
     list_multiple: 'מצאתי כמה רשימות תואמות:\n{options}\n\nאיזו התכוונת?',
@@ -251,6 +252,7 @@ export const DISAMBIGUATION_MESSAGES = {
     event_multiple: 'I found multiple matching events:\n{options}\n\nWhich one did you mean?',
     event_not_found: 'No event matching "{searchedFor}" found',
     event_specify_time: 'Please specify a more specific time',
+    recurring_choice: 'The event you\'re trying to modify recurs every {recurrence}.\nDo you want to modify all occurrences or just this instance?',
     
     // List messages
     list_multiple: 'I found multiple matching lists:\n{options}\n\nWhich one?',

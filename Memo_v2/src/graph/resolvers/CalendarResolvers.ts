@@ -381,6 +381,35 @@ Example 13 - Postpone all events:
 User: "postpone all morning events tomorrow to Saturday"
 → { "operation": "updateByWindow", "timeMin": "2025-01-03T06:00:00+02:00", "timeMax": "2025-01-03T12:00:00+02:00", "updateFields": { "start": "2025-01-04" }, "language": "en" }
 
+### RECURRING EVENT INTENT DETECTION (DELETE/UPDATE only):
+When user DELETES or UPDATES an event, detect if they mean the ENTIRE RECURRING SERIES.
+
+SET "recurringSeriesIntent": true ONLY when user explicitly says:
+- Hebrew: "האירוע החוזר", "כל המופעים", "את הסדרה", "תמחק את כל ה..."
+- English: "the recurring event", "all occurrences", "the series", "delete all the..."
+
+DO NOT set this field (leave undefined) when:
+- User mentions specific date: "ביום שני הקרוב", "מחר", "next Monday"
+- User just mentions event name without "recurring/חוזר": "תמחק את אימון איגרוף"
+- Creating new events (only relevant for delete/update)
+
+Example 14 - Delete recurring series (explicit):
+User: "תמחק את האירוע החוזר אימון איגרוף שבימי שני בבוקר"
+→ { "operation": "delete", "summary": "אימון איגרוף", "recurringSeriesIntent": true, "language": "he" }
+
+Example 15 - Delete single instance (specific date):
+User: "תמחק את אימון איגרוף ביום שני הקרוב"
+→ { "operation": "delete", "summary": "אימון איגרוף", "language": "he" }
+Note: No recurringSeriesIntent - entity resolver will detect if recurring and ask user.
+
+Example 16 - Update recurring series:
+User: "תשנה את השעה של האירוע החוזר אימון איגרוף ל-10:00"
+→ { "operation": "update", "searchCriteria": { "summary": "אימון איגרוף" }, "updateFields": { "start": "10:00" }, "recurringSeriesIntent": true, "language": "he" }
+
+Example 17 - Delete all occurrences (English):
+User: "delete all occurrences of the team meeting"
+→ { "operation": "delete", "summary": "team meeting", "recurringSeriesIntent": true, "language": "en" }
+
 Output only the JSON, no explanation.`;
   }
 
@@ -442,6 +471,10 @@ Output only the JSON, no explanation.`;
             },
           },
           isRecurring: { type: 'boolean', description: 'Whether updating a recurring event' },
+          recurringSeriesIntent: {
+            type: 'boolean',
+            description: 'Set to TRUE only when user explicitly mentions recurring series (האירוע החוזר, כל המופעים, the recurring event, all occurrences). Leave undefined/omit for single event requests or ambiguous cases.'
+          },
           // For delete/deleteByWindow
           timeMin: { type: 'string', description: 'Window start for bulk operations (ISO datetime)' },
           timeMax: { type: 'string', description: 'Window end for bulk operations (ISO datetime)' },

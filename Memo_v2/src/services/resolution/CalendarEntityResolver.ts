@@ -84,10 +84,78 @@ export class CalendarEntityResolver implements IEntityResolver {
     candidates: ResolutionCandidate[],
     args: Record<string, any>
   ): Promise<ResolutionOutput> {
-    // Handle "both" or "all" selection
+    // First, check if this is a recurring choice disambiguation
+    // Recurring choice has exactly 2 candidates with ids 'all' and 'single'
+    const isRecurringChoice = candidates.length === 2 &&
+      candidates.some(c => c.id === 'all') &&
+      candidates.some(c => c.id === 'single');
+
     if (typeof selection === 'string') {
-      const lowerSelection = selection.toLowerCase();
-      if (lowerSelection === 'both' || lowerSelection === 'all' ||
+      const lowerSelection = selection.toLowerCase().trim();
+
+      // Handle recurring series choice
+      if (isRecurringChoice) {
+        // User wants ALL occurrences: "1", "all", "כולם", "כל המופעים", "את כולם"
+        const wantsAll = lowerSelection === '1' ||
+          lowerSelection === 'all' ||
+          lowerSelection === 'כולם' ||
+          lowerSelection === 'כל המופעים' ||
+          lowerSelection === 'את כולם' ||
+          lowerSelection.includes('כולם') ||
+          lowerSelection.includes('all');
+
+        // User wants SINGLE instance: "2", "single", "רק המופע", "רק את זה", "הזה"
+        const wantsSingle = lowerSelection === '2' ||
+          lowerSelection === 'single' ||
+          lowerSelection === 'רק המופע הזה' ||
+          lowerSelection === 'רק את זה' ||
+          lowerSelection === 'הזה' ||
+          lowerSelection.includes('רק') ||
+          lowerSelection.includes('המופע');
+
+        if (wantsAll) {
+          const allCandidate = candidates.find(c => c.id === 'all');
+          if (allCandidate?.metadata?.recurringEventId) {
+            console.log(`[CalendarEntityResolver] User selected ALL - using recurringEventId: ${allCandidate.metadata.recurringEventId}`);
+            return {
+              type: 'resolved',
+              resolvedIds: [allCandidate.metadata.recurringEventId],
+              args: {
+                ...args,
+                eventId: allCandidate.metadata.recurringEventId,
+                isRecurringSeries: true,
+              },
+            };
+          }
+        }
+
+        if (wantsSingle) {
+          const singleCandidate = candidates.find(c => c.id === 'single');
+          if (singleCandidate?.metadata?.eventId) {
+            console.log(`[CalendarEntityResolver] User selected SINGLE - using eventId: ${singleCandidate.metadata.eventId}`);
+            return {
+              type: 'resolved',
+              resolvedIds: [singleCandidate.metadata.eventId],
+              args: {
+                ...args,
+                eventId: singleCandidate.metadata.eventId,
+                isRecurringSeries: false,
+              },
+            };
+          }
+        }
+
+        // If unclear, re-ask with clearer options
+        console.log(`[CalendarEntityResolver] Unclear recurring choice selection: "${selection}"`);
+        return {
+          type: 'disambiguation',
+          candidates,
+          question: this.buildRecurringChoiceQuestion(candidates, args.language || 'he'),
+        };
+      }
+
+      // Handle "both" or "all" for regular disambiguation (not recurring choice)
+      if (lowerSelection === 'both' ||
         lowerSelection === 'שניהם' || lowerSelection === 'כולם') {
         return {
           type: 'resolved',
@@ -136,7 +204,7 @@ export class CalendarEntityResolver implements IEntityResolver {
     }
 
     // Handle single number selection (1-based)
-    const index = selection - 1;
+    const index = (selection as number) - 1;
     if (index < 0 || index >= candidates.length) {
       return {
         type: 'disambiguation',
@@ -146,6 +214,43 @@ export class CalendarEntityResolver implements IEntityResolver {
     }
 
     const selected = candidates[index];
+    
+    // Check if this is a recurring choice selection (id is 'all' or 'single')
+    if (selected.id === 'all' && selected.metadata?.recurringEventId) {
+      console.log(`[CalendarEntityResolver] Number selection (${selection}) → ALL - using recurringEventId: ${selected.metadata.recurringEventId}`);
+      return {
+        type: 'resolved',
+        resolvedIds: [selected.metadata.recurringEventId],
+        args: {
+          ...args,
+          eventId: selected.metadata.recurringEventId,
+          isRecurringSeries: true,
+          // Include event details from entity for response formatting
+          summary: selected.entity?.summary,
+          start: selected.entity?.start?.dateTime || selected.entity?.start?.date || selected.entity?.start,
+          end: selected.entity?.end?.dateTime || selected.entity?.end?.date || selected.entity?.end,
+        },
+      };
+    }
+    
+    if (selected.id === 'single' && selected.metadata?.eventId) {
+      console.log(`[CalendarEntityResolver] Number selection (${selection}) → SINGLE - using eventId: ${selected.metadata.eventId}`);
+      return {
+        type: 'resolved',
+        resolvedIds: [selected.metadata.eventId],
+        args: {
+          ...args,
+          eventId: selected.metadata.eventId,
+          isRecurringSeries: false,
+          // Include event details from entity for response formatting
+          summary: selected.entity?.summary,
+          start: selected.entity?.start?.dateTime || selected.entity?.start?.date || selected.entity?.start,
+          end: selected.entity?.end?.dateTime || selected.entity?.end?.date || selected.entity?.end,
+        },
+      };
+    }
+    
+    // Regular selection (not recurring choice)
     return {
       type: 'resolved',
       resolvedIds: [selected.id],
@@ -200,7 +305,30 @@ export class CalendarEntityResolver implements IEntityResolver {
 
     const result = await this.findEventByCriteria(criteria, context);
 
-    if (result.type === 'resolved') {
+    if (result.type === 'resolved' && result.args) {
+      // Check if this is a recurring event and handle series vs instance
+      const candidateForRecurringCheck: ResolutionCandidate = {
+        id: result.args.eventId,
+        displayText: '',
+        entity: {},
+        score: 1,
+        metadata: {
+          isRecurring: result.isRecurring,
+          recurringEventId: result.recurringEventId,
+        }
+      };
+
+      const recurringResult = this.handleRecurringEventResolution(
+        candidateForRecurringCheck,
+        args,
+        context,
+        'update'
+      );
+
+      if (recurringResult) {
+        return recurringResult;
+      }
+
       // Merge eventId into args
       return {
         ...result,
@@ -281,48 +409,64 @@ export class CalendarEntityResolver implements IEntityResolver {
       };
     }
 
-    // Single match - resolved
+    // Determine the selected candidate
+    let selectedCandidate: ResolutionCandidate;
+
     if (candidates.length === 1) {
-      return {
-        type: 'resolved',
-        resolvedIds: [candidates[0].id],
-        args: {
-          ...args,
-          eventId: candidates[0].id,
-          recurringEventId: candidates[0].metadata?.recurringEventId,
-          isRecurring: candidates[0].metadata?.isRecurring,
-        },
-        isRecurring: candidates[0].metadata?.isRecurring,
-        recurringEventId: candidates[0].metadata?.recurringEventId,
-      };
+      selectedCandidate = candidates[0];
+    } else {
+      // Multiple matches - first check if all belong to same recurring series
+      const allSameRecurringSeries = this.checkAllSameRecurringSeries(candidates);
+
+      if (allSameRecurringSeries) {
+        // All candidates are instances of the same recurring event
+        // Pick nearest upcoming and handle as recurring
+        console.log(`[CalendarEntityResolver] All ${candidates.length} candidates are from same recurring series`);
+        selectedCandidate = this.pickNearestUpcoming(candidates);
+      } else {
+        // Different events - check score gap for disambiguation
+        const behavior = getOperationBehavior('calendar', operation);
+        const scoreGap = candidates[0].score - candidates[1].score;
+
+        if (scoreGap >= RESOLUTION_THRESHOLDS.DISAMBIGUATION_GAP) {
+          // High confidence in first match
+          selectedCandidate = candidates[0];
+        } else {
+          // Need regular disambiguation (multiple different events)
+          return {
+            type: 'disambiguation',
+            candidates: candidates.slice(0, 5),  // Max 5 options
+            question: this.buildDisambiguationQuestion(candidates.slice(0, 5), context.language),
+            allowMultiple: behavior.allowSelectAll,
+          };
+        }
+      }
     }
 
-    // Multiple matches - check score gap
-    const behavior = getOperationBehavior('calendar', operation);
-    const scoreGap = candidates[0].score - candidates[1].score;
+    // Check if this is a recurring event and handle series vs instance
+    const recurringResult = this.handleRecurringEventResolution(
+      selectedCandidate,
+      args,
+      context,
+      operation
+    );
 
-    if (scoreGap >= RESOLUTION_THRESHOLDS.DISAMBIGUATION_GAP) {
-      // High confidence in first match
-      return {
-        type: 'resolved',
-        resolvedIds: [candidates[0].id],
-        args: {
-          ...args,
-          eventId: candidates[0].id,
-          recurringEventId: candidates[0].metadata?.recurringEventId,
-          isRecurring: candidates[0].metadata?.isRecurring,
-        },
-        isRecurring: candidates[0].metadata?.isRecurring,
-        recurringEventId: candidates[0].metadata?.recurringEventId,
-      };
+    if (recurringResult) {
+      return recurringResult;
     }
 
-    // Need disambiguation
+    // Not recurring or series intent was set - return resolved
     return {
-      type: 'disambiguation',
-      candidates: candidates.slice(0, 5),  // Max 5 options
-      question: this.buildDisambiguationQuestion(candidates.slice(0, 5), context.language),
-      allowMultiple: behavior.allowSelectAll,
+      type: 'resolved',
+      resolvedIds: [selectedCandidate.id],
+      args: {
+        ...args,
+        eventId: selectedCandidate.id,
+        recurringEventId: selectedCandidate.metadata?.recurringEventId,
+        isRecurring: selectedCandidate.metadata?.isRecurring,
+      },
+      isRecurring: selectedCandidate.metadata?.isRecurring,
+      recurringEventId: selectedCandidate.metadata?.recurringEventId,
     };
   }
 
@@ -547,33 +691,23 @@ export class CalendarEntityResolver implements IEntityResolver {
       };
     }
 
-    // For update: pick nearest upcoming (V1 behavior)
-    if (candidates.length > 1) {
-      const nearest = this.pickNearestUpcoming(candidates);
-      return {
-        type: 'resolved',
-        resolvedIds: [nearest.id],
-        args: {
-          eventId: nearest.id,
-          recurringEventId: nearest.metadata?.recurringEventId,
-          isRecurring: nearest.metadata?.isRecurring,
-        },
-        isRecurring: nearest.metadata?.isRecurring,
-        recurringEventId: nearest.metadata?.recurringEventId,
-      };
-    }
+    // Pick the best candidate (nearest upcoming if multiple)
+    const selectedCandidate = candidates.length > 1
+      ? this.pickNearestUpcoming(candidates)
+      : candidates[0];
 
-    // Single match
+    // Note: findEventByCriteria is used by resolveUpdate which passes args separately
+    // The recurring handling will be done by the caller (resolveUpdate)
     return {
       type: 'resolved',
-      resolvedIds: [candidates[0].id],
+      resolvedIds: [selectedCandidate.id],
       args: {
-        eventId: candidates[0].id,
-        recurringEventId: candidates[0].metadata?.recurringEventId,
-        isRecurring: candidates[0].metadata?.isRecurring,
+        eventId: selectedCandidate.id,
+        recurringEventId: selectedCandidate.metadata?.recurringEventId,
+        isRecurring: selectedCandidate.metadata?.isRecurring,
       },
-      isRecurring: candidates[0].metadata?.isRecurring,
-      recurringEventId: candidates[0].metadata?.recurringEventId,
+      isRecurring: selectedCandidate.metadata?.isRecurring,
+      recurringEventId: selectedCandidate.metadata?.recurringEventId,
     };
   }
 
@@ -698,6 +832,163 @@ export class CalendarEntityResolver implements IEntityResolver {
     candidates.sort((a, b) => b.score - a.score);
 
     return candidates;
+  }
+
+  // ==========================================================================
+  // RECURRING EVENT HANDLING
+  // ==========================================================================
+
+  /**
+   * Check if all candidates belong to the same recurring series
+   * Returns true if all candidates have the same recurringEventId
+   */
+  private checkAllSameRecurringSeries(candidates: ResolutionCandidate[]): boolean {
+    if (candidates.length < 2) return false;
+
+    // Get the recurringEventId from the first candidate
+    const firstRecurringId = candidates[0].metadata?.recurringEventId;
+
+    // If first candidate is not recurring, not all are from same series
+    if (!firstRecurringId) return false;
+
+    // Check if ALL candidates have the same recurringEventId
+    return candidates.every(c => c.metadata?.recurringEventId === firstRecurringId);
+  }
+
+  /**
+   * Handle recurring event resolution
+   * 
+   * HITL triggers ONLY when:
+   * - LLM resolver did NOT set recurringSeriesIntent: true
+   * - AND entity resolver discovers the event is recurring (has recurringEventId)
+   * 
+   * NO HITL when:
+   * - recurringSeriesIntent: true -> proceed directly with series operation
+   * - Event is not recurring -> proceed normally
+   * 
+   * @returns ResolutionOutput if HITL needed or series intent, null to continue normal flow
+   */
+  private handleRecurringEventResolution(
+    selectedCandidate: ResolutionCandidate,
+    args: Record<string, any>,
+    context: EntityResolverContext,
+    operation: string
+  ): ResolutionOutput | null {
+    // Only handle delete and update operations
+    if (operation !== 'delete' && operation !== 'update') {
+      return null;
+    }
+
+    const isRecurringEvent = !!selectedCandidate.metadata?.recurringEventId;
+
+    if (!isRecurringEvent) {
+      // Not a recurring event - continue normal flow
+      return null;
+    }
+
+    const recurringEventId = selectedCandidate.metadata!.recurringEventId;
+
+    // Case 1: User explicitly wanted series -> proceed directly (NO HITL)
+    if (args.recurringSeriesIntent === true) {
+      console.log(`[CalendarEntityResolver] recurringSeriesIntent=true, using recurringEventId: ${recurringEventId}`);
+      return {
+        type: 'resolved',
+        resolvedIds: [recurringEventId],
+        args: {
+          ...args,
+          eventId: recurringEventId,
+          isRecurringSeries: true,
+        },
+      };
+    }
+
+    // Case 2: User intended single event BUT event is recurring -> HITL
+    // Ask: "This is a recurring event, do you want all or just this one?"
+    console.log(`[CalendarEntityResolver] Event is recurring but no series intent - triggering HITL`);
+
+    const recurrencePattern = this.formatRecurrencePattern(selectedCandidate, context.language);
+    const instanceDisplay = this.formatEventDisplay(selectedCandidate.entity);
+    
+    // Build question with numbered options for clear user response
+    const question = context.language === 'he'
+      ? `האירוע שאתה מנסה לשנות הוא אירוע חוזר כל ${recurrencePattern}.\nהאם תרצה לשנות את כולם או רק את המופע הזה?\n\n1️⃣ כל המופעים\n2️⃣ רק המופע הזה (${instanceDisplay})`
+      : `The event you're trying to modify recurs every ${recurrencePattern}.\nDo you want to modify all occurrences or just this instance?\n\n1️⃣ All occurrences\n2️⃣ Just this instance (${instanceDisplay})`;
+
+    return {
+      type: 'disambiguation',
+      question,
+      candidates: [
+        {
+          id: 'all',
+          displayText: context.language === 'he' ? '1️⃣ כל המופעים' : '1️⃣ All occurrences',
+          entity: selectedCandidate.entity,
+          score: 1,
+          metadata: {
+            recurringEventId,
+            isRecurringSeries: true
+          }
+        },
+        {
+          id: 'single',
+          displayText: context.language === 'he'
+            ? `2️⃣ רק המופע הזה (${instanceDisplay})`
+            : `2️⃣ Just this instance (${instanceDisplay})`,
+          entity: selectedCandidate.entity,
+          score: 1,
+          metadata: {
+            eventId: selectedCandidate.id,
+            isRecurringSeries: false
+          }
+        }
+      ],
+      allowMultiple: false,
+    };
+  }
+
+  /**
+   * Build recurring choice question for re-asking when user's answer was unclear
+   */
+  private buildRecurringChoiceQuestion(candidates: ResolutionCandidate[], language: string): string {
+    const allCandidate = candidates.find(c => c.id === 'all');
+    const singleCandidate = candidates.find(c => c.id === 'single');
+    
+    const instanceDisplay = singleCandidate?.entity 
+      ? this.formatEventDisplay(singleCandidate.entity)
+      : '';
+
+    if (language === 'he') {
+      return `לא הבנתי. בבקשה בחר:\n\n1️⃣ כל המופעים\n2️⃣ רק המופע הזה${instanceDisplay ? ` (${instanceDisplay})` : ''}`;
+    }
+    return `I didn't understand. Please select:\n\n1️⃣ All occurrences\n2️⃣ Just this instance${instanceDisplay ? ` (${instanceDisplay})` : ''}`;
+  }
+
+  /**
+   * Format recurrence pattern for display in HITL question
+   */
+  private formatRecurrencePattern(candidate: ResolutionCandidate, language: 'he' | 'en' | 'other'): string {
+    const event = candidate.entity;
+    const start = event.start?.dateTime || event.start?.date || event.start;
+
+    if (!start) {
+      return language === 'he' ? 'באופן קבוע' : 'regularly';
+    }
+
+    const date = new Date(start);
+    const dayNames = {
+      he: ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'],
+      en: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+    };
+
+    const dayName = language === 'he' ? dayNames.he[date.getDay()] : dayNames.en[date.getDay()];
+    const time = date.toLocaleTimeString(language === 'he' ? 'he-IL' : 'en-US', {
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+
+    if (language === 'he') {
+      return `יום ${dayName} ב-${time}`;
+    }
+    return `${dayName} at ${time}`;
   }
 
   // ==========================================================================

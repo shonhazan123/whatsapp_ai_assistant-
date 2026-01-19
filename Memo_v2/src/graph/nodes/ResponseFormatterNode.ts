@@ -349,6 +349,13 @@ export class ResponseFormatterNode extends CodeNode {
     todayEnd.setHours(23, 59, 59, 999);
 
     for (const item of data) {
+      // Check for recurring series operations (delete/update entire series)
+      // isRecurringSeries indicates a successful series operation - NOT an error!
+      if (item.isRecurringSeries === true) {
+        context.isRecurring = true;
+        context.isRecurringSeries = true;
+      }
+
       // Check for recurring patterns
       // Check for days array or recurrence field (from createRecurringEvent)
       if (item.reminderRecurrence || item.recurrence || item.isRecurring ||

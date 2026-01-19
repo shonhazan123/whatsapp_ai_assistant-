@@ -49,7 +49,7 @@ export interface MessageInput {
   whatsappMessageId?: string;
   replyToMessageId?: string;
   imageContext?: ImageContext;
-  
+
   // Added for EntityResolutionNode context building
   userPhone: string;
   timezone?: string;
@@ -87,17 +87,17 @@ export interface ConversationMessage {
 
 export interface DisambiguationContext {
   type: 'calendar' | 'database' | 'gmail' | 'second-brain' | 'error';
-  
+
   // For disambiguation
-  candidates?: Array<{ id: string; displayText: string; entity?: any; score?: number; metadata?: Record<string, any>; [key: string]: any }>;
+  candidates?: Array<{ id: string; displayText: string; entity?: any; score?: number; metadata?: Record<string, any>;[key: string]: any }>;
   question?: string;
   allowMultiple?: boolean;  // "which one or both?"
-  
+
   // For errors
   error?: string;
   searchedFor?: string;
   suggestions?: string[];
-  
+
   // State tracking
   resolverStepId: string;
   originalArgs?: Record<string, any>;
@@ -207,6 +207,7 @@ export interface FailedOperationContext {
 
 export interface ResponseContext {
   isRecurring: boolean;
+  isRecurringSeries?: boolean;  // True when operating on entire recurring series (delete/update)
   isNudge: boolean;
   hasDueDate: boolean;
   isToday: boolean;

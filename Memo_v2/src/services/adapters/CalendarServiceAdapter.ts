@@ -51,6 +51,9 @@ export interface CalendarOperationArgs {
   eventIds?: string[];
   deletedSummaries?: string[];
   originalEvents?: any[];
+  // For recurring series operations
+  isRecurringSeries?: boolean;      // True when operating on entire series
+  recurringSeriesIntent?: boolean;  // From LLM resolver - user's explicit intent
 }
 
 export interface CalendarOperationResult {
@@ -272,6 +275,7 @@ export class CalendarServiceAdapter {
   private async updateEvent(calendarService: any, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
     // If using searchCriteria, first find the event
     let eventId = args.eventId;
+    const isRecurringSeries = args.isRecurringSeries || false;
 
     if (!eventId && args.searchCriteria?.summary) {
       const searchResult = await this.getEvent(calendarService, {
@@ -294,6 +298,21 @@ export class CalendarServiceAdapter {
 
     const updateFields = args.updateFields || {};
 
+    // Check if we should update the entire recurring series
+    if (isRecurringSeries) {
+      console.log(`[CalendarServiceAdapter] Updating recurring series: ${eventId}`);
+      const result = await calendarService.updateRecurringSeries(eventId, updateFields);
+      return {
+        success: result.success,
+        data: {
+          ...result.data,
+          isRecurringSeries: true,
+        },
+        error: result.error,
+      };
+    }
+
+    // Update single event (or single instance of recurring)
     const result = await calendarService.updateEvent({
       eventId,
       summary: updateFields.summary,
@@ -313,6 +332,7 @@ export class CalendarServiceAdapter {
   private async deleteEvent(calendarService: any, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
     let eventId = args.eventId;
     let fetchedEvent: any = null;
+    const isRecurringSeries = args.isRecurringSeries || false;
 
     // If no eventId but have summary, find the event first
     if (!eventId && args.summary) {
@@ -335,19 +355,33 @@ export class CalendarServiceAdapter {
       return { success: false, error: 'Event ID is required for delete' };
     }
 
+    // Check if we should delete the entire recurring series
+    if (isRecurringSeries) {
+      console.log(`[CalendarServiceAdapter] Deleting recurring series: ${eventId}`);
+      const result = await calendarService.deleteRecurringSeries(eventId);
+      return {
+        success: result.success,
+        data: {
+          ...result.data,
+          isRecurringSeries: true,
+        },
+        error: result.error,
+      };
+    }
+
+    // Delete single event (or single instance of recurring)
     const result = await calendarService.deleteEvent(eventId);
 
-    // Include fetched event data for response formatting
+    // Include event data for response formatting
+    // Priority: fetchedEvent (from search) > args (from entity resolver)
     return {
       success: result.success,
       data: {
         ...result.data,
-        // Include fetched event data if available
-        ...(fetchedEvent ? {
-          summary: fetchedEvent.summary,
-          start: fetchedEvent.start?.dateTime || fetchedEvent.start?.date,
-          end: fetchedEvent.end?.dateTime || fetchedEvent.end?.date,
-        } : {}),
+        // Include event details for response formatting
+        summary: fetchedEvent?.summary || args.summary,
+        start: fetchedEvent?.start?.dateTime || fetchedEvent?.start?.date || args.start,
+        end: fetchedEvent?.end?.dateTime || fetchedEvent?.end?.date || args.end,
       },
       error: result.error,
     };
