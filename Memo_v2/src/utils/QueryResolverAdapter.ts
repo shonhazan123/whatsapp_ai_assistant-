@@ -98,6 +98,20 @@ export class QueryResolverAdapter {
   }
   
   /**
+   * Resolve tasks with custom threshold
+   */
+  static resolveTasksWithThreshold(query: string, tasks: any[], threshold: number): ResolutionResult {
+    return this.resolve(query, tasks, ['text', 'category'], 'task', threshold);
+  }
+  
+  /**
+   * Resolve lists with custom threshold
+   */
+  static resolveListsWithThreshold(query: string, lists: any[], threshold: number): ResolutionResult {
+    return this.resolve(query, lists, ['list_name'], 'list', threshold);
+  }
+  
+  /**
    * Resolve calendar events
    */
   static resolveEvents(query: string, events: any[]): ResolutionResult {

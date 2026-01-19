@@ -235,7 +235,7 @@ export abstract class LLMResolver extends BaseResolver {
     step: PlanStep,
     state: MemoState
   ): Promise<Record<string, any>> {
-    console.log(`[${this.name}] callLLM() invoked for step ${step.id}`);
+    console.log(`[${this.name}] callLLM() invoked for step ${step.id} with capability ${this.capability}`);
     
     // Map capability to resolver node type for getNodeModel
     const resolverNodeType = this.capability === 'calendar' ? 'calendar' :

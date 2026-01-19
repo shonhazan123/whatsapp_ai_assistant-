@@ -17,6 +17,12 @@ export const RESOLUTION_THRESHOLDS = {
   FUZZY_MATCH_MIN: 0.6,
   
   /**
+   * Minimum score for low-confidence matches that require user confirmation
+   * Matches between LOW_CONFIDENCE_MIN and FUZZY_MATCH_MIN will ask user to confirm
+   */
+  LOW_CONFIDENCE_MIN: 0.1,
+  
+  /**
    * Score above which we consider it a high-confidence match
    * If only one match above this, auto-resolve
    */
@@ -214,6 +220,7 @@ export const DISAMBIGUATION_MESSAGES = {
     task_multiple_similar: 'מצאתי משימות דומות:\n{options}\n\nאיזו התכוונת? (או "שניהם" לבחירת כולם)',
     task_same_text_different_fields: 'מצאתי כמה משימות עם שם דומה אך הגדרות שונות:\n{options}\n\nאיזו התכוונת?',
     task_not_found: 'לא מצאתי משימה התואמת ל-"{searchedFor}"',
+    task_confirm_match: 'האם התכוונת למשימה "{name}"? (כן/לא)',
     
     // Calendar messages
     event_multiple: 'מצאתי מספר אירועים תואמים:\n{options}\n\nאיזה התכוונת?',
@@ -223,6 +230,7 @@ export const DISAMBIGUATION_MESSAGES = {
     // List messages
     list_multiple: 'מצאתי כמה רשימות תואמות:\n{options}\n\nאיזו התכוונת?',
     list_not_found: 'לא מצאתי רשימה התואמת ל-"{searchedFor}"',
+    list_confirm_match: 'האם התכוונת לרשימה "{name}"? (כן/לא)',
     
     // Email messages
     email_multiple: 'מצאתי כמה אימיילים תואמים:\n{options}\n\nאיזה התכוונת?',
@@ -237,6 +245,7 @@ export const DISAMBIGUATION_MESSAGES = {
     task_multiple_similar: 'I found similar tasks:\n{options}\n\nWhich one? (or "both" for all)',
     task_same_text_different_fields: 'I found tasks with similar names but different settings:\n{options}\n\nWhich one did you mean?',
     task_not_found: 'No task matching "{searchedFor}" found',
+    task_confirm_match: 'Did you mean the task "{name}"? (yes/no)',
     
     // Calendar messages
     event_multiple: 'I found multiple matching events:\n{options}\n\nWhich one did you mean?',
@@ -246,6 +255,7 @@ export const DISAMBIGUATION_MESSAGES = {
     // List messages
     list_multiple: 'I found multiple matching lists:\n{options}\n\nWhich one?',
     list_not_found: 'No list matching "{searchedFor}" found',
+    list_confirm_match: 'Did you mean the list "{name}"? (yes/no)',
     
     // Email messages
     email_multiple: 'I found multiple matching emails:\n{options}\n\nWhich one?',

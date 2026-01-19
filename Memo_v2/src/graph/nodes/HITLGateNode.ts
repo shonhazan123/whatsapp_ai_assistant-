@@ -67,12 +67,13 @@ export class HITLGateNode extends CodeNode {
       const payload = this.buildInterruptPayload(hitlCheck, state);
       console.log(`[HITLGateNode] Triggering interrupt with question: "${payload.question?.substring(0, 100)}..."`);
       
-      // Store disambiguation context before interrupt
+      // Store disambiguation context and interrupt timestamp before interrupt
       const updatedState: Partial<MemoState> = {
         disambiguation: hitlCheck.disambiguationContext ? {
           ...hitlCheck.disambiguationContext,
           resolved: false,
         } : undefined,
+        interruptedAt: Date.now(), // Set timestamp for timeout tracking
       };
       
       // This will pause the graph and return the payload
@@ -83,22 +84,22 @@ export class HITLGateNode extends CodeNode {
       console.log(`[HITLGateNode] Resumed from interrupt with user response: "${userResponse}"`);
       
       // Update state with user's selection
-      // IMPORTANT: Clear any previous error state when resuming successfully
+      // IMPORTANT: Clear any previous error state and interruptedAt when resuming successfully
+      // NOTE: Only update disambiguation if it already exists (entity resolution HITL)
+      // For planner HITL (confirmation/clarification), don't create fake disambiguation
+      // as it would confuse EntityResolutionNode
       return {
         ...updatedState,
         error: undefined, // Clear error on successful resume
+        interruptedAt: undefined, // Clear timeout tracking
         disambiguation: updatedState.disambiguation ? {
           ...updatedState.disambiguation,
           userSelection: userResponse as string,
           resolved: true,
-        } : {
-          type: 'calendar',
-          candidates: [],
-          resolverStepId: '',
-          userSelection: userResponse as string,
-          resolved: true,
-        },
+        } : undefined, // Don't create fake disambiguation for planner HITL
         needsHITL: false,
+        // Store planner HITL response separately so we know user confirmed
+        plannerHITLResponse: !updatedState.disambiguation ? userResponse as string : undefined,
       };
     }
     
@@ -134,6 +135,10 @@ export class HITLGateNode extends CodeNode {
       options = disambiguation.candidates?.map((c, i) => `${i + 1}. ${c.displayText}`);
     }
     
+    // Set interrupt timestamp for timeout tracking
+    const interruptTimestamp = Date.now();
+    console.log(`[HITLGateNode] Setting interruptedAt=${interruptTimestamp} for timeout tracking`);
+    
     const payload: InterruptPayload = {
       type: disambiguation.type === 'error' ? 'clarification' : 'disambiguation',
       question,
@@ -142,6 +147,7 @@ export class HITLGateNode extends CodeNode {
         stepId: disambiguation.resolverStepId,
         entityType: disambiguation.type,
         candidates: disambiguation.candidates,
+        interruptedAt: interruptTimestamp, // Include timestamp in payload for timeout tracking
       },
     };
     
@@ -153,13 +159,16 @@ export class HITLGateNode extends CodeNode {
     // Parse user response
     const selection = this.parseUserSelection(userResponse as string);
     
+    // Set userSelection but keep resolved: false so EntityResolutionNode can process it
+    // EntityResolutionNode will set resolved: true after successfully applying the selection
     return {
       disambiguation: {
         ...disambiguation,
         userSelection: selection,
-        resolved: true,
+        resolved: false, // Let EntityResolutionNode process and set resolved: true
       },
       needsHITL: false,
+      interruptedAt: undefined, // Clear timeout tracking on resume
     };
   }
   
@@ -252,6 +261,7 @@ export class HITLGateNode extends CodeNode {
         stepId: state.plannerOutput?.plan[0]?.id,
         entityType: hitlCheck.disambiguationContext?.type,
         candidates: hitlCheck.disambiguationContext?.candidates,
+        interruptedAt: Date.now(), // Include timestamp for timeout tracking
       },
     };
   }

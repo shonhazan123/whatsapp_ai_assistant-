@@ -21,16 +21,16 @@ import type { Capability } from '../../types/index.js';
 export interface ResolverSchema {
   /** Resolver name (e.g., "calendar_find_resolver") */
   name: string;
-  
+
   /** Capability domain (calendar, database, gmail, second-brain, general, meta) */
   capability: Capability;
-  
+
   /** Brief description for Planner context */
   summary: string;
-  
+
   /** Action hints this resolver can handle */
   actionHints: string[];
-  
+
   /** Trigger patterns for pattern matching */
   triggerPatterns: {
     /** Hebrew keywords/phrases that trigger this resolver */
@@ -38,7 +38,7 @@ export interface ResolverSchema {
     /** English keywords/phrases that trigger this resolver */
     english: string[];
   };
-  
+
   /** Examples for the LLM to learn from */
   examples: Array<{
     /** Example user message */
@@ -46,7 +46,7 @@ export interface ResolverSchema {
     /** Expected action hint */
     action: string;
   }>;
-  
+
   /** Priority for conflict resolution (higher = checked first) */
   priority: number;
 }
@@ -109,7 +109,7 @@ export const CALENDAR_FIND_SCHEMA: ResolverSchema = {
     { input: 'What do I have tomorrow?', action: 'list events' },
     { input: 'When is my meeting with Sarah?', action: 'find event' },
   ],
-  priority: 50,
+  priority: 65,
 };
 
 /**
@@ -126,8 +126,8 @@ export const CALENDAR_MUTATE_SCHEMA: ResolverSchema = {
     'create_recurring',
     'update_event',
     'delete_event',
-    'move_event',
-    'cancel_event',
+    'delete_events_by_window',
+    'update_events_by_window',
   ],
   triggerPatterns: {
     hebrew: [
@@ -140,10 +140,31 @@ export const CALENDAR_MUTATE_SCHEMA: ResolverSchema = {
       'מחק אירוע',
       'בטל פגישה',
       'הזז את',
+      "תפנה את מחר",
+      "תפנה את ",
+      "תפנה את הפגישה",
+      "תפנה את האירועים",
+      "תפנה את האירוע",
       'שנה את הפגישה',
       'עדכן אירוע',
       'כל יום',
       'כל שבוע',
+      'תמחק את האירוע',
+      'הזז את האירוע',
+      'שנה את האירוע',
+      "מחר",
+      "שבוע",
+      "יום",
+      "שעה",
+      // Bulk operation patterns
+      'תמחק את האירועים',
+      'הזז את האירועים',
+      'שנה את האירועים',
+      'תפנה את כל',
+      'הזז את כל',
+      'שנה את כל האירועים',
+      'מחק את כל האירועים',
+      'תמחק את כל',
     ],
     english: [
       'add to calendar',
@@ -160,6 +181,16 @@ export const CALENDAR_MUTATE_SCHEMA: ResolverSchema = {
       'every day',
       'every week',
       'recurring',
+      'tomorrow',
+      'week',
+      'day',
+      'hour',
+      // Bulk operation patterns
+      'clear all events',
+      'delete all events',
+      'move all events',
+      'postpone all',
+      'reschedule all',
     ],
   },
   examples: [
@@ -170,8 +201,14 @@ export const CALENDAR_MUTATE_SCHEMA: ResolverSchema = {
     { input: 'עבודה כל יום א\', ג\', ד\' מ-9 עד 18', action: 'create recurring' },
     { input: 'Schedule a meeting with John tomorrow at 2pm', action: 'create event' },
     { input: 'Cancel my 3pm appointment', action: 'delete event' },
+    // Bulk operation examples
+    { input: 'תמחק את כל האירועים של מחר', action: 'delete events by window' },
+    { input: 'delete all tomorrow events', action: 'delete events by window' },
+    { input: 'תפנה את מחר חוץ מהאולטרסאונד', action: 'delete events by window' },
+    { input: 'הזז את כל האירועים של הבוקר מחר לשבת', action: 'update events by window' },
+    { input: 'postpone all morning events tomorrow to Saturday', action: 'update events by window' },
   ],
-  priority: 49, // Slightly lower than find to prefer read operations when ambiguous
+  priority: 60, // Slightly lower than find to prefer read operations when ambiguous
 };
 
 /**
@@ -181,7 +218,7 @@ export const CALENDAR_MUTATE_SCHEMA: ResolverSchema = {
 export const DATABASE_TASK_SCHEMA: ResolverSchema = {
   name: 'database_task_resolver',
   capability: 'database',
-  summary: 'Manage tasks and reminders. Create, complete, update, delete, and list tasks/reminders. Handles one-time and recurring reminders, nudges.',
+  summary: 'Manage tasks and reminders. Create, complete, update, delete, and list tasks/reminders. Handles one-time and recurring reminders, nudges. Supports bulk operations (delete all, update all, delete/update multiple).',
   actionHints: [
     'create_task',
     'create_reminder',
@@ -192,6 +229,11 @@ export const DATABASE_TASK_SCHEMA: ResolverSchema = {
     'delete_task',
     'delete_reminder',
     'update_task',
+    // Bulk operations
+    'delete_all_tasks',
+    'delete_multiple_tasks',
+    'update_multiple_tasks',
+    'update_all_tasks',
   ],
   triggerPatterns: {
     hebrew: [
@@ -209,6 +251,12 @@ export const DATABASE_TASK_SCHEMA: ResolverSchema = {
       'הוסף משימה',
       'נדנד אותי',
       'תציק לי',
+      // Bulk operation patterns
+      'מחק את כל',
+      'מחק הכל',
+      'תמחק את כולם',
+      'עדכן את כל',
+      'שנה את כל',
     ],
     english: [
       'remind me',
@@ -226,6 +274,12 @@ export const DATABASE_TASK_SCHEMA: ResolverSchema = {
       'delete reminder',
       'add task',
       'nudge me',
+      // Bulk operation patterns
+      'delete all',
+      'remove all',
+      'delete them all',
+      'update all',
+      'change all',
     ],
   },
   examples: [
@@ -237,6 +291,11 @@ export const DATABASE_TASK_SCHEMA: ResolverSchema = {
     { input: 'Remind me to call mom at 5pm', action: 'create reminder' },
     { input: 'What are my tasks for today?', action: 'list tasks' },
     { input: 'I\'m done with the report', action: 'complete task' },
+    // Bulk operation examples
+    { input: 'תמחק את כל המשימות', action: 'delete all tasks' },
+    { input: 'delete all my overdue tasks', action: 'delete all tasks' },
+    { input: 'תמחק את המשימה הראשונה והשנייה', action: 'delete multiple tasks' },
+    { input: 'תזיז את כל המשימות שעברו למחר', action: 'update all tasks' },
   ],
   priority: 60, // Higher priority - common use case
 };
@@ -483,7 +542,7 @@ export const META_SCHEMA: ResolverSchema = {
     { input: 'Help', action: 'help' },
     { input: 'Status', action: 'status' },
   ],
-  priority: 100, // Highest priority - meta commands always take precedence
+  priority: 20, // LOW priority - meta commands should always take precedence
 };
 
 // ============================================================================
@@ -530,7 +589,7 @@ export function getSchemasForCapability(capability: Capability): ResolverSchema[
  */
 export function formatSchemasForPrompt(): string {
   const lines: string[] = ['## RESOLVER CAPABILITIES (USE FOR ROUTING)\n'];
-  
+
   for (const schema of RESOLVER_SCHEMAS) {
     lines.push(`### ${schema.name}`);
     lines.push(`- **Capability**: ${schema.capability}`);
@@ -538,7 +597,7 @@ export function formatSchemasForPrompt(): string {
     lines.push(`- **Actions**: ${schema.actionHints.join(', ')}`);
     lines.push(`- **Patterns HE**: ${schema.triggerPatterns.hebrew.slice(0, 5).join(', ')}`);
     lines.push(`- **Patterns EN**: ${schema.triggerPatterns.english.slice(0, 5).join(', ')}`);
-    
+
     // Add top 2 examples
     const topExamples = schema.examples.slice(0, 2);
     if (topExamples.length > 0) {
@@ -549,7 +608,7 @@ export function formatSchemasForPrompt(): string {
     }
     lines.push('');
   }
-  
+
   return lines.join('\n');
 }
 
@@ -569,11 +628,11 @@ export interface PatternMatchResult {
 export function matchPatterns(message: string): PatternMatchResult[] {
   const normalizedMessage = message.toLowerCase();
   const results: PatternMatchResult[] = [];
-  
+
   for (const schema of RESOLVER_SCHEMAS) {
     const matchedPatterns: string[] = [];
     let score = 0;
-    
+
     // Check Hebrew patterns
     for (const pattern of schema.triggerPatterns.hebrew) {
       if (normalizedMessage.includes(pattern.toLowerCase())) {
@@ -581,7 +640,7 @@ export function matchPatterns(message: string): PatternMatchResult[] {
         score += 10;
       }
     }
-    
+
     // Check English patterns
     for (const pattern of schema.triggerPatterns.english) {
       if (normalizedMessage.includes(pattern.toLowerCase())) {
@@ -589,15 +648,15 @@ export function matchPatterns(message: string): PatternMatchResult[] {
         score += 10;
       }
     }
-    
+
     // Add priority bonus
     score += schema.priority / 10;
-    
+
     if (score > 0) {
       results.push({ schema, score, matchedPatterns });
     }
   }
-  
+
   // Sort by score descending
   return results.sort((a, b) => b.score - a.score);
 }

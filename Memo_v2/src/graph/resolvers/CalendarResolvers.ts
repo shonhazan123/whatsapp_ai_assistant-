@@ -29,13 +29,13 @@ export class CalendarFindResolver extends LLMResolver {
   readonly capability: Capability = 'calendar';
   readonly actions = [
     'calendar_operation',  // Generic - LLM will determine specific operation
-    'find_event', 
-    'list_events', 
-    'check_conflicts', 
-    'get_recurring', 
+    'find_event',
+    'list_events',
+    'check_conflicts',
+    'get_recurring',
     'analyze_schedule'
   ];
-  
+
   getSystemPrompt(): string {
     return `YOU ARE A CALENDAR SEARCH AND ANALYSIS AGENT.
 
@@ -120,7 +120,7 @@ User: "show me all instances of my weekly team meeting"
 
 Output only the JSON, no explanation.`;
   }
-  
+
   getSchemaSlice(): object {
     return {
       name: 'calendarOperations',
@@ -135,30 +135,30 @@ Output only the JSON, no explanation.`;
           summary: { type: 'string', description: 'Event title to search' },
           timeMin: { type: 'string', description: 'Range start (ISO datetime)' },
           timeMax: { type: 'string', description: 'Range end (ISO datetime)' },
-          excludeSummaries: { 
-            type: 'array', 
+          excludeSummaries: {
+            type: 'array',
             items: { type: 'string' },
-            description: 'Summaries to exclude from results' 
+            description: 'Summaries to exclude from results'
           },
         },
         required: ['operation'],
       },
     };
   }
-  
+
   async resolve(step: PlanStep, state: MemoState): Promise<ResolverOutput> {
     // Use LLM to extract operation and search parameters
     try {
       console.log(`[${this.name}] Calling LLM to extract calendar search params`);
-      
+
       const args = await this.callLLM(step, state);
-      
+
       // Validate operation
       if (!args.operation) {
         console.warn(`[${this.name}] LLM did not return operation, defaulting to 'getEvents'`);
         args.operation = 'getEvents';
       }
-      
+
       // Apply time defaults if not specified
       if (!args.timeMin && !args.timeMax) {
         const now = new Date();
@@ -168,9 +168,9 @@ Output only the JSON, no explanation.`;
         weekLater.setHours(23, 59, 59, 999);
         args.timeMax = weekLater.toISOString();
       }
-      
+
       console.log(`[${this.name}] LLM determined operation: ${args.operation}`);
-      
+
       return {
         stepId: step.id,
         type: 'execute',
@@ -178,13 +178,13 @@ Output only the JSON, no explanation.`;
       };
     } catch (error: any) {
       console.error(`[${this.name}] LLM call failed:`, error.message);
-      
+
       // Fallback: default to getEvents with 7 day window
       const now = new Date();
       now.setHours(0, 0, 0, 0);
       const weekLater = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
       weekLater.setHours(23, 59, 59, 999);
-      
+
       return {
         stepId: step.id,
         type: 'execute',
@@ -197,7 +197,7 @@ Output only the JSON, no explanation.`;
       };
     }
   }
-  
+
   protected getEntityType(): 'calendar' | 'database' | 'gmail' | 'second-brain' | 'error' {
     return 'calendar';
   }
@@ -217,15 +217,17 @@ export class CalendarMutateResolver extends LLMResolver {
   readonly capability: Capability = 'calendar';
   readonly actions = [
     'calendar_operation',  // Generic - LLM determines specific operation
-    'create_event', 
-    'update_event', 
-    'delete_event', 
+    'create_event',
+    'update_event',
+    'delete_event',
     'create_recurring',
     'create_multiple_events',
     'create_multiple_recurring',
     'truncate_recurring',
+    'delete_events_by_window',
+    'update_events_by_window',
   ];
-  
+
   getSystemPrompt(): string {
     return `YOU ARE A CALENDAR MANAGEMENT AGENT.
 
@@ -238,8 +240,11 @@ Analyze the user's intent to determine the correct operation:
 - User wants to CREATE new event → "create"
 - User mentions MULTIPLE separate events → "createMultiple"
 - User wants WEEKLY/MONTHLY recurring → "createRecurring"
-- User wants to CHANGE/MOVE event → "update"
-- User wants to DELETE/CANCEL event → "delete" or "deleteBySummary"
+- User wants to CHANGE/MOVE a SINGLE event → "update"
+- User wants to CHANGE/MOVE ALL events in a time window → "updateByWindow"
+- User wants to DELETE/CANCEL a SINGLE event → "delete"
+- User wants to DELETE ALL events in a time window → "deleteByWindow"
+- User wants to DELETE all events matching summary (no window) → "deleteBySummary"
 - User wants to END recurring series → "truncateRecurring"
 
 ## AVAILABLE OPERATIONS:
@@ -247,9 +252,11 @@ Analyze the user's intent to determine the correct operation:
 - **createMultiple**: Create multiple events at once
 - **createRecurring**: Create single recurring event (weekly/monthly)
 - **createMultipleRecurring**: Create multiple different recurring events
-- **update**: Update existing event (use searchCriteria + updateFields)
-- **delete**: Delete event by summary and time window
-- **deleteBySummary**: Delete all events matching summary
+- **update**: Update a single existing event (use searchCriteria + updateFields)
+- **updateByWindow**: Update ALL events in a time window (use timeMin, timeMax, updateFields)
+- **delete**: Delete a single event by summary and time window
+- **deleteByWindow**: Delete ALL events in a time window (use timeMin, timeMax, optional excludeSummaries)
+- **deleteBySummary**: Delete all events matching summary (no time window needed)
 - **truncateRecurring**: End a recurring series
 
 ## CRITICAL RULES:
@@ -354,9 +361,29 @@ Example 8 - Event with location:
 User: "Schedule coffee with Tom at Cafe Noir on Friday at 3pm"
 → { "operation": "create", "summary": "Coffee with Tom", "start": "2025-01-03T15:00:00+02:00", "end": "2025-01-03T16:00:00+02:00", "location": "Cafe Noir", "language": "en" }
 
+Example 9 - Delete ALL events in a time window:
+User: "תמחק את כל האירועים של מחר"
+→ { "operation": "deleteByWindow", "timeMin": "2025-01-03T00:00:00+02:00", "timeMax": "2025-01-03T23:59:59+02:00", "language": "he" }
+
+Example 10 - Delete events with exclusion:
+User: "תפנה את מחר חוץ מהאולטרסאונד"
+→ { "operation": "deleteByWindow", "timeMin": "2025-01-03T00:00:00+02:00", "timeMax": "2025-01-03T23:59:59+02:00", "excludeSummaries": ["אולטרסאונד"], "language": "he" }
+
+Example 11 - Clear all events in a window:
+User: "delete all tomorrow's events"
+→ { "operation": "deleteByWindow", "timeMin": "2025-01-03T00:00:00+02:00", "timeMax": "2025-01-03T23:59:59+02:00", "language": "en" }
+
+Example 12 - Update ALL events in a time window (move to new date):
+User: "הזז את כל האירועים של הבוקר מחר לשבת"
+→ { "operation": "updateByWindow", "timeMin": "2025-01-03T06:00:00+02:00", "timeMax": "2025-01-03T12:00:00+02:00", "updateFields": { "start": "2025-01-04" }, "language": "he" }
+
+Example 13 - Postpone all events:
+User: "postpone all morning events tomorrow to Saturday"
+→ { "operation": "updateByWindow", "timeMin": "2025-01-03T06:00:00+02:00", "timeMax": "2025-01-03T12:00:00+02:00", "updateFields": { "start": "2025-01-04" }, "language": "en" }
+
 Output only the JSON, no explanation.`;
   }
-  
+
   getSchemaSlice(): object {
     return {
       name: 'calendarOperations',
@@ -365,8 +392,8 @@ Output only the JSON, no explanation.`;
         properties: {
           operation: {
             type: 'string',
-            enum: ['create', 'createMultiple', 'createRecurring', 'createMultipleRecurring', 
-                   'update', 'delete', 'deleteBySummary', 'truncateRecurring'],
+            enum: ['create', 'createMultiple', 'createRecurring', 'createMultipleRecurring',
+              'update', 'updateByWindow', 'delete', 'deleteByWindow', 'deleteBySummary', 'truncateRecurring'],
           },
           summary: { type: 'string', description: 'Event title' },
           start: { type: 'string', description: 'Start time (ISO) or date (YYYY-MM-DD for all-day)' },
@@ -383,15 +410,15 @@ Output only the JSON, no explanation.`;
           days: { type: 'array', items: { type: 'string' }, description: 'Days for recurring' },
           until: { type: 'string', description: 'End date for recurring series' },
           // For multiple events
-          events: { 
-            type: 'array', 
+          events: {
+            type: 'array',
             items: { type: 'object' },
-            description: 'Array of events for createMultiple' 
+            description: 'Array of events for createMultiple'
           },
-          recurringEvents: { 
-            type: 'array', 
+          recurringEvents: {
+            type: 'array',
             items: { type: 'object' },
-            description: 'Array of recurring events' 
+            description: 'Array of recurring events'
           },
           // For update
           searchCriteria: {
@@ -415,38 +442,43 @@ Output only the JSON, no explanation.`;
             },
           },
           isRecurring: { type: 'boolean', description: 'Whether updating a recurring event' },
-          // For delete
-          timeMin: { type: 'string' },
-          timeMax: { type: 'string' },
+          // For delete/deleteByWindow
+          timeMin: { type: 'string', description: 'Window start for bulk operations (ISO datetime)' },
+          timeMax: { type: 'string', description: 'Window end for bulk operations (ISO datetime)' },
+          excludeSummaries: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Summaries to exclude from deleteByWindow (keep these events)'
+          },
         },
         required: ['operation'],
       },
     };
   }
-  
+
   async resolve(step: PlanStep, state: MemoState): Promise<ResolverOutput> {
     const language = state.user.language === 'he' ? 'he' : 'en';
-    
+
     // Use LLM to extract operation and all fields
     try {
       console.log(`[${this.name}] Calling LLM to extract calendar mutation params`);
-      
+
       const args = await this.callLLM(step, state);
       args.language = language;
-      
+
       // Validate operation
       if (!args.operation) {
         console.warn(`[${this.name}] LLM did not return operation, defaulting to 'create'`);
         args.operation = 'create';
       }
-      
+
       // Calculate end time if not provided
       if (args.operation === 'create' && args.start && !args.end) {
         args.end = this.calculateEnd(args.start);
       }
-      
+
       console.log(`[${this.name}] LLM determined operation: ${args.operation}`);
-      
+
       return {
         stepId: step.id,
         type: 'execute',
@@ -454,7 +486,7 @@ Output only the JSON, no explanation.`;
       };
     } catch (error: any) {
       console.error(`[${this.name}] LLM call failed:`, error.message);
-      
+
       // Fallback: basic create with message as summary
       return {
         stepId: step.id,
@@ -468,24 +500,24 @@ Output only the JSON, no explanation.`;
       };
     }
   }
-  
+
   /**
    * Calculate end time (default 1 hour after start)
    */
   private calculateEnd(start: string): string {
     if (!start) return '';
-    
+
     // Check if it's a date-only (all-day) format
     if (/^\d{4}-\d{2}-\d{2}$/.test(start)) {
       return start;
     }
-    
+
     // Add 1 hour to start time
     const startDate = new Date(start);
     const endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
     return endDate.toISOString();
   }
-  
+
   protected getEntityType(): 'calendar' | 'database' | 'gmail' | 'second-brain' | 'error' {
     return 'calendar';
   }

@@ -27,34 +27,34 @@ function formatDate(isoString: string, timezone: string, language: 'he' | 'en' |
   try {
     const date = new Date(isoString);
     const now = new Date();
-    
+
     // Get locale based on language
     const locale = language === 'he' ? 'he-IL' : 'en-US';
-    
+
     // Check if today
     const isToday = date.toDateString() === now.toDateString();
-    
+
     // Check if tomorrow
     const tomorrow = new Date(now);
     tomorrow.setDate(tomorrow.getDate() + 1);
     const isTomorrow = date.toDateString() === tomorrow.toDateString();
-    
+
     // Format time
-    const timeStr = date.toLocaleTimeString(locale, { 
-      hour: '2-digit', 
+    const timeStr = date.toLocaleTimeString(locale, {
+      hour: '2-digit',
       minute: '2-digit',
       hour12: false,
       timeZone: timezone,
     });
-    
+
     if (isToday) {
       return language === 'he' ? `היום ב-${timeStr}` : `Today at ${timeStr}`;
     }
-    
+
     if (isTomorrow) {
       return language === 'he' ? `מחר ב-${timeStr}` : `Tomorrow at ${timeStr}`;
     }
-    
+
     // Full date
     const dateStr = date.toLocaleDateString(locale, {
       weekday: 'long',
@@ -62,7 +62,7 @@ function formatDate(isoString: string, timezone: string, language: 'he' | 'en' |
       month: 'long',
       timeZone: timezone,
     });
-    
+
     return `${dateStr}, ${timeStr}`;
   } catch {
     return isoString;
@@ -80,7 +80,7 @@ function formatRelativeDate(isoString: string, language: 'he' | 'en' | 'other'):
     const diffMins = Math.round(diffMs / 60000);
     const diffHours = Math.round(diffMs / 3600000);
     const diffDays = Math.round(diffMs / 86400000);
-    
+
     if (language === 'he') {
       if (diffMins > 0 && diffMins < 60) return `בעוד ${diffMins} דקות`;
       if (diffMins < 0 && diffMins > -60) return `לפני ${Math.abs(diffMins)} דקות`;
@@ -90,7 +90,7 @@ function formatRelativeDate(isoString: string, language: 'he' | 'en' | 'other'):
       if (diffDays < 0) return `לפני ${Math.abs(diffDays)} ימים`;
       return 'עכשיו';
     }
-    
+
     if (diffMins > 0 && diffMins < 60) return `in ${diffMins} minutes`;
     if (diffMins < 0 && diffMins > -60) return `${Math.abs(diffMins)} minutes ago`;
     if (diffHours > 0 && diffHours < 24) return `in ${diffHours} hours`;
@@ -108,7 +108,7 @@ function formatRelativeDate(isoString: string, language: 'he' | 'en' | 'other'):
  */
 function formatDatesInObject(obj: any, timezone: string, language: 'he' | 'en' | 'other'): any {
   if (obj === null || obj === undefined) return obj;
-  
+
   if (typeof obj === 'string') {
     // Check if it looks like an ISO date
     if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(obj)) {
@@ -116,11 +116,11 @@ function formatDatesInObject(obj: any, timezone: string, language: 'he' | 'en' |
     }
     return obj;
   }
-  
+
   if (Array.isArray(obj)) {
     return obj.map(item => formatDatesInObject(item, timezone, language));
   }
-  
+
   if (typeof obj === 'object') {
     const formatted: Record<string, any> = {};
     for (const [key, value] of Object.entries(obj)) {
@@ -128,13 +128,16 @@ function formatDatesInObject(obj: any, timezone: string, language: 'he' | 'en' |
       if (['start', 'end', 'dueDate', 'createdAt', 'updatedAt', 'reminderTime'].includes(key)) {
         formatted[key] = value;
         formatted[`${key}Formatted`] = formatDatesInObject(value, timezone, language);
+      } else if (['days', 'startTime', 'endTime', 'recurrence'].includes(key)) {
+        // Preserve recurring event parameters as-is (not dates, don't format)
+        formatted[key] = value;
       } else {
         formatted[key] = formatDatesInObject(value, timezone, language);
       }
     }
     return formatted;
   }
-  
+
   return obj;
 }
 
@@ -154,7 +157,7 @@ function categorizeTasks(tasks: any[]): CategorizedTasks {
   const now = new Date();
   const todayEnd = new Date(now);
   todayEnd.setHours(23, 59, 59, 999);
-  
+
   const categories: CategorizedTasks = {
     overdue: [],
     today: [],
@@ -162,22 +165,22 @@ function categorizeTasks(tasks: any[]): CategorizedTasks {
     recurring: [],
     noDueDate: [],
   };
-  
+
   for (const task of tasks) {
     // Check for recurring tasks
     if (task.reminderRecurrence || task.isRecurring) {
       categories.recurring.push(task);
       continue;
     }
-    
+
     // Check due date
     if (!task.dueDate) {
       categories.noDueDate.push(task);
       continue;
     }
-    
+
     const dueDate = new Date(task.dueDate);
-    
+
     if (dueDate < now) {
       categories.overdue.push(task);
     } else if (dueDate <= todayEnd) {
@@ -186,7 +189,7 @@ function categorizeTasks(tasks: any[]): CategorizedTasks {
       categories.upcoming.push(task);
     }
   }
-  
+
   return categories;
 }
 
@@ -202,18 +205,18 @@ export class ResponseFormatterNode extends CodeNode {
     const plan = state.plannerOutput?.plan || [];
     const language = state.user.language;
     const timezone = state.user.timezone;
-    
+
     console.log(`[ResponseFormatter] Formatting ${executionResults.size} results`);
-    
+
     // Determine primary operation from plan
     const primaryStep = plan[0];
     const capability = primaryStep?.capability || 'general';
     const action = primaryStep?.action || 'respond';
-    
+
     // Collect successful data AND failed operations
     const allData: any[] = [];
     const failedOperations: FailedOperationContext[] = [];
-    
+
     for (const [stepId, result] of executionResults) {
       if (result.success && result.data) {
         allData.push(result.data);
@@ -225,12 +228,12 @@ export class ResponseFormatterNode extends CodeNode {
         console.log(`[ResponseFormatter] Captured failed operation: ${failedOp.capability}/${failedOp.operation} - ${failedOp.errorMessage}`);
       }
     }
-    
+
     // Skip formatting for general responses (no function calls, already LLM-generated)
     // General responses come from GeneralResolver and already have response text in data.response
     if (capability === 'general') {
       console.log('[ResponseFormatter] Skipping formatting for general response (already LLM-generated)');
-      
+
       // For general responses, we still create a FormattedResponse but with minimal processing
       const formattedResponse: FormattedResponse = {
         agent: capability,
@@ -247,20 +250,20 @@ export class ResponseFormatterNode extends CodeNode {
         },
         failedOperations: failedOperations.length > 0 ? failedOperations : undefined,
       };
-      
+
       return {
         formattedResponse,
       };
     }
-    
+
     // For function call results (calendar, database, gmail, second-brain), format dates and categorize
-    
+
     // Build response context
     const context = this.buildResponseContext(allData, capability, action);
-    
+
     // Format dates in all data
     const formattedData = formatDatesInObject(allData, timezone, language);
-    
+
     // Build formatted response
     const formattedResponse: FormattedResponse = {
       agent: capability,
@@ -271,39 +274,39 @@ export class ResponseFormatterNode extends CodeNode {
       context,
       failedOperations: failedOperations.length > 0 ? failedOperations : undefined,
     };
-    
-    console.log(`[ResponseFormatter] Built response for ${capability}:${action}` + 
+
+    console.log(`[ResponseFormatter] Built response for ${capability}:${action}` +
       (failedOperations.length > 0 ? ` with ${failedOperations.length} failed operation(s)` : ''));
-    
+
     return {
       formattedResponse,
     };
   }
-  
+
   /**
    * Build context for a failed operation
    */
   private buildFailedOperationContext(
-    stepId: string, 
-    errorMessage: string, 
+    stepId: string,
+    errorMessage: string,
     step: PlanStep | undefined,
     state: MemoState
   ): FailedOperationContext {
     const capability = step?.capability || 'unknown';
     const action = step?.action || 'unknown';
-    
+
     // Try to extract what was searched for from step constraints or error message
     let searchedFor: string | undefined;
     if (step?.constraints) {
       // Common fields that might contain what was being searched
-      searchedFor = step.constraints.text || 
-                   step.constraints.title || 
-                   step.constraints.query ||
-                   step.constraints.eventTitle ||
-                   step.constraints.taskName ||
-                   step.constraints.name;
+      searchedFor = step.constraints.text ||
+        step.constraints.title ||
+        step.constraints.query ||
+        step.constraints.eventTitle ||
+        step.constraints.taskName ||
+        step.constraints.name;
     }
-    
+
     // Try to extract from error message if not found in constraints
     if (!searchedFor) {
       // Pattern: "Task 'xxx' not found" or "No event matching 'xxx'"
@@ -312,13 +315,13 @@ export class ResponseFormatterNode extends CodeNode {
         searchedFor = quotedMatch[1];
       }
     }
-    
+
     // Get user's original request from input
-    const userRequest = step?.constraints?.rawMessage || 
-                       state.input?.message || 
-                       state.input?.enhancedMessage || 
-                       'Unknown request';
-    
+    const userRequest = step?.constraints?.rawMessage ||
+      state.input?.message ||
+      state.input?.enhancedMessage ||
+      'Unknown request';
+
     return {
       stepId,
       capability,
@@ -328,7 +331,7 @@ export class ResponseFormatterNode extends CodeNode {
       errorMessage,
     };
   }
-  
+
   /**
    * Build context information for response generation
    */
@@ -340,28 +343,30 @@ export class ResponseFormatterNode extends CodeNode {
       isToday: false,
       isTomorrowOrLater: false,
     };
-    
+
     const now = new Date();
     const todayEnd = new Date(now);
     todayEnd.setHours(23, 59, 59, 999);
-    
+
     for (const item of data) {
       // Check for recurring patterns
-      if (item.reminderRecurrence || item.recurrence || item.isRecurring) {
+      // Check for days array or recurrence field (from createRecurringEvent)
+      if (item.reminderRecurrence || item.recurrence || item.isRecurring ||
+        (Array.isArray(item.days) && item.days.length > 0)) {
         context.isRecurring = true;
       }
-      
+
       // Check for nudge reminders
       if (item.reminderRecurrence?.type === 'nudge') {
         context.isNudge = true;
       }
-      
+
       // Check due dates
       const dueDate = item.dueDate || item.start;
       if (dueDate) {
         context.hasDueDate = true;
         const date = new Date(dueDate);
-        
+
         if (date <= todayEnd && date >= now) {
           context.isToday = true;
         } else if (date > todayEnd) {
@@ -369,10 +374,10 @@ export class ResponseFormatterNode extends CodeNode {
         }
       }
     }
-    
+
     return context;
   }
-  
+
   /**
    * Determine entity type from capability and action
    */

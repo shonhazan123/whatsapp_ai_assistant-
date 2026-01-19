@@ -5,15 +5,15 @@
  * Processes all resolver results and executes them in parallel where possible.
  */
 
-import type { MemoState } from '../state/MemoState.js';
 import type { ExecutionResult } from '../../types/index.js';
+import type { MemoState } from '../state/MemoState.js';
 import { CodeNode } from './BaseNode.js';
 
 import { CalendarServiceAdapter } from '../../services/adapters/CalendarServiceAdapter.js';
-import { TaskServiceAdapter } from '../../services/adapters/TaskServiceAdapter.js';
-import { ListServiceAdapter } from '../../services/adapters/ListServiceAdapter.js';
 import { GmailServiceAdapter } from '../../services/adapters/GmailServiceAdapter.js';
+import { ListServiceAdapter } from '../../services/adapters/ListServiceAdapter.js';
 import { SecondBrainServiceAdapter } from '../../services/adapters/SecondBrainServiceAdapter.js';
+import { TaskServiceAdapter } from '../../services/adapters/TaskServiceAdapter.js';
 
 // ============================================================================
 // EXECUTOR NODE
@@ -24,45 +24,43 @@ export class ExecutorNode extends CodeNode {
 
   protected async process(state: MemoState): Promise<Partial<MemoState>> {
     const resolverResults = state.resolverResults;
+    const executorArgs = state.executorArgs; // Resolved args from EntityResolutionNode
     const plan = state.plannerOutput?.plan || [];
     const userPhone = state.user.phone;
     
-    console.log(`[ExecutorNode] Executing ${resolverResults.size} resolver results`);
+    console.log(`[ExecutorNode] Executing - resolverResults: ${resolverResults.size}, executorArgs: ${executorArgs?.size || 0}`);
     
     const executionResults = new Map<string, ExecutionResult>();
     
-    // Group by capability for potential parallelism
-    const stepsByCapability = new Map<string, string[]>();
-    for (const step of plan) {
-      const capability = step.capability;
-      if (!stepsByCapability.has(capability)) {
-        stepsByCapability.set(capability, []);
-      }
-      stepsByCapability.get(capability)!.push(step.id);
-    }
-    
-    // Execute all steps
+    // Execute all steps from the plan
     const executionPromises: Promise<void>[] = [];
     
-    for (const [stepId, result] of resolverResults) {
-      if (result.type !== 'execute') {
-        // Skip clarify results
-        console.log(`[ExecutorNode] Skipping step ${stepId}: type=${result.type}`);
+    for (const step of plan) {
+      const stepId = step.id;
+      const resolverResult = resolverResults.get(stepId);
+      
+      // Skip non-execute results
+      if (resolverResult?.type !== 'execute') {
+        console.log(`[ExecutorNode] Skipping step ${stepId}: type=${resolverResult?.type || 'unknown'}`);
         continue;
       }
       
-      // Find the step to determine capability
-      const step = plan.find(s => s.id === stepId);
-      if (!step) {
-        console.warn(`[ExecutorNode] No step found for ${stepId}`);
+      // IMPORTANT: Prefer executorArgs (resolved with IDs) over resolverResults (original)
+      // EntityResolutionNode stores resolved args in executorArgs after fuzzy matching
+      const args = executorArgs?.get(stepId) || resolverResult.args;
+      
+      if (!args) {
+        console.warn(`[ExecutorNode] No args found for step ${stepId}`);
         continue;
       }
+      
+      console.log(`[ExecutorNode] Step ${stepId} args source: ${executorArgs?.has(stepId) ? 'executorArgs (resolved)' : 'resolverResults (original)'}`);
       
       // Execute asynchronously
       const promise = this.executeStep(
         stepId,
         step.capability,
-        result.args,
+        args,
         userPhone
       ).then(execResult => {
         executionResults.set(stepId, execResult);

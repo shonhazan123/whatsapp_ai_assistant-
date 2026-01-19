@@ -38,6 +38,7 @@ export class DatabaseTaskResolver extends LLMResolver {
     'create_multiple_tasks',
     'add_subtask',
     'update_multiple_tasks',
+    'update_all_tasks',
     'delete_multiple_tasks',
     'delete_all_tasks',
   ];
@@ -66,16 +67,44 @@ Analyze the user's intent to determine the correct operation:
 - User wants to DELETE/REMOVE/CANCEL → "delete" or "deleteAll"
 - Multiple items mentioned → use "createMultiple" or "deleteMultiple"
 
+## CONTEXT EXTRACTION RULES
+
+### CRITICAL: Always Extract Task Context from Enhanced Message and Recent Conversation
+
+The user message you receive may be enhanced with context:
+- The message may start with "[Replying to: ...]" indicating the user is replying to a previous message
+- Recent conversation history is provided below the user message
+
+**When user says completion words without task name** ("סיימתי", "done", "עשיתי", "כן"):
+1. Check if message starts with "[Replying to: ...]" - extract task name from the replied-to content
+2. Check recent conversation for assistant messages mentioning tasks
+3. Look for task lists, reminders, or task mentions in recent messages
+4. Extract the task text and populate the "text" field
+
+**Examples of context extraction**:
+- User message contains: "[Replying to: \"תזכורת: לבדוק את הפיצ'ר\"]" followed by "סיימתי"
+  → Extract: { "operation": "delete", "text": "לבדוק את הפיצ'ר" }
+
+- Recent conversation shows assistant said: "יש לך 2 משימות: 1. לקנות חלב 2. לנקות הבית"
+  User message: "סיימתי את שתיהן"
+  → Extract: { "operation": "deleteMultiple", "tasks": [{"text": "לקנות חלב"}, {"text": "לנקות הבית"}] }
+
+- User message contains: "[Replying to: \"האם התכוונת למשימה...\"]" followed by "כן"
+  → Extract task name from the replied-to message and use: { "operation": "delete", "text": "extracted task name" }
+
+**If no context found**: Still populate "text" field with empty string or best guess, let EntityResolver handle disambiguation.
+
 ## AVAILABLE OPERATIONS:
 - **create**: Create a single task/reminder
 - **createMultiple**: Create multiple tasks at once (use when user mentions multiple items)
 - **get**: Get a specific task by text
 - **getAll**: List all tasks with optional filters
 - **update**: Update task properties or add reminder
-- **updateMultiple**: Update multiple tasks at once
+- **updateMultiple**: Update multiple tasks at once (use "updates" array with "text" to identify each task)
+- **updateAll**: Update all tasks matching a filter (use for bulk changes like "move all overdue to tomorrow")
 - **delete**: Delete a single task
-- **deleteMultiple**: Delete multiple tasks
-- **deleteAll**: Delete all tasks (with optional filters)
+- **deleteMultiple**: Delete multiple specific tasks (use "tasks" array with "text" to identify each)
+- **deleteAll**: Delete all tasks matching a filter (with optional "where" filter)
 - **complete**: Mark task as complete (same as delete for reminders)
 - **addSubtask**: Add a subtask to a parent task
 
@@ -172,9 +201,22 @@ Example 5 - Weekly recurring:
 User: "תזכיר לי כל יום ראשון ב-14:00 להתקשר לאמא"
 → { "operation": "create", "text": "להתקשר לאמא", "reminderRecurrence": { "type": "weekly", "days": [0], "time": "14:00" } }
 
-Example 6 - Complete/delete a task:
+Example 6a - Complete/delete a task (with task name in message):
 User: "סיימתי לבדוק את הפיצ'ר"
 → { "operation": "delete", "text": "לבדוק את הפיצ'ר" }
+
+Example 6b - Complete/delete a task (extracting from reply context):
+User message: "[Replying to: \"תזכורת: לבדוק את הפיצ'ר\"]\n\nסיימתי"
+→ { "operation": "delete", "text": "לבדוק את הפיצ'ר" }
+
+Example 6c - Complete multiple tasks (extracting from recent conversation):
+Recent conversation: assistant: "יש לך 2 משימות: 1. לקנות חלב 2. לנקות הבית"
+User: "סיימתי את שתיהן"
+→ { "operation": "deleteMultiple", "tasks": [{"text": "לקנות חלב"}, {"text": "לנקות הבית"}] }
+
+Example 6d - Confirm disambiguation (extracting from reply context):
+User message: "[Replying to: \"האם התכוונת למשימה \\\"לבדוק אם אלי דלתות מגיע ולפנות את החדר עבודה (one-time)\"? (כן/לא)\"]\n\nכן"
+→ { "operation": "delete", "text": "לבדוק אם אלי דלתות מגיע ולפנות את החדר עבודה" }
 
 Example 7 - List tasks:
 User: "מה התזכורות שלי להיום?"
@@ -192,6 +234,32 @@ Example 10 - Simple reminder without time:
 User: "תזכיר לי לקנות מתנה"
 → { "operation": "create", "text": "לקנות מתנה" }
 
+Example 11 - Update multiple tasks:
+User: "תשנה את שתי המשימות האלה: לקנות חלב ולנקות הבית ל-10 בבוקר"
+→ {
+  "operation": "updateMultiple",
+  "updates": [
+    { "text": "לקנות חלב", "reminderDetails": { "dueDate": "2025-01-03T10:00:00+02:00" } },
+    { "text": "לנקות הבית", "reminderDetails": { "dueDate": "2025-01-03T10:00:00+02:00" } }
+  ]
+}
+
+Example 12 - Delete multiple specific tasks:
+User: "תמחק את המשימה לקנות חלב ואת המשימה לנקות הבית"
+→ { "operation": "deleteMultiple", "tasks": [{"text": "לקנות חלב"}, {"text": "לנקות הבית"}] }
+
+Example 13 - Delete all tasks (no filter):
+User: "תמחק את כל המשימות שלי"
+→ { "operation": "deleteAll", "where": {}, "preview": false }
+
+Example 14 - Update all overdue tasks:
+User: "תזיז את כל המשימות שעברו לשעה 10 מחר"
+→ { "operation": "updateAll", "where": { "window": "overdue" }, "patch": { "dueDate": "2025-01-03T10:00:00+02:00" } }
+
+Example 15 - Delete all overdue tasks:
+User: "תמחק את כל המשימות שעברו"
+→ { "operation": "deleteAll", "where": { "window": "overdue" }, "preview": false }
+
 ## LANGUAGE RULE:
 Output only the JSON, no explanation. NEVER include IDs you don't have.`;
   }
@@ -204,7 +272,7 @@ Output only the JSON, no explanation. NEVER include IDs you don't have.`;
         properties: {
           operation: {
             type: 'string',
-            enum: ['create', 'createMultiple', 'get', 'getAll', 'update', 'updateMultiple', 
+            enum: ['create', 'createMultiple', 'get', 'getAll', 'update', 'updateMultiple', 'updateAll',
                    'delete', 'deleteMultiple', 'deleteAll', 'complete', 'addSubtask'],
           },
           taskId: { type: 'string', description: 'Task ID (only if known from prior lookup)' },
@@ -248,11 +316,11 @@ Output only the JSON, no explanation. NEVER include IDs you don't have.`;
           },
           tasks: {
             type: 'array',
-            description: 'Array of tasks for createMultiple',
+            description: 'Array of tasks for createMultiple OR deleteMultiple. For deleteMultiple, each object must have "text" to identify the task.',
             items: {
               type: 'object',
               properties: {
-                text: { type: 'string' },
+                text: { type: 'string', description: 'Task text - used to identify for delete, or content for create' },
                 category: { type: 'string' },
                 dueDate: { type: 'string' },
                 reminder: { type: 'string' },
@@ -262,21 +330,36 @@ Output only the JSON, no explanation. NEVER include IDs you don't have.`;
           },
           updates: {
             type: 'array',
-            description: 'Array of updates for updateMultiple',
+            description: 'Array of updates for updateMultiple. Each object must have "text" to identify the task and "reminderDetails" with new values.',
             items: {
               type: 'object',
               properties: {
-                text: { type: 'string' },
-                reminderDetails: { type: 'object' },
+                text: { type: 'string', description: 'Task text to identify which task to update' },
+                reminderDetails: { type: 'object', description: 'New values: { dueDate, reminder, reminderRecurrence }' },
               },
             },
           },
           where: {
             type: 'object',
-            description: 'Filter for deleteAll',
+            description: 'Filter for deleteAll/updateAll bulk operations',
             properties: {
-              window: { type: 'string' },
+              window: { 
+                type: 'string', 
+                enum: ['today', 'this_week', 'overdue', 'upcoming', 'all'],
+                description: 'Time window filter: today, this_week, overdue, upcoming, all' 
+              },
               reminderRecurrence: { type: 'string' },
+            },
+          },
+          patch: {
+            type: 'object',
+            description: 'Fields to update for updateAll bulk operation',
+            properties: {
+              dueDate: { type: 'string', description: 'New due date (ISO format)' },
+              category: { type: 'string' },
+              completed: { type: 'boolean' },
+              reminder: { type: 'string' },
+              reminderRecurrence: { type: 'object' },
             },
           },
           preview: { type: 'boolean', description: 'Always false - no confirmation needed' },

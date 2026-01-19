@@ -187,6 +187,18 @@ export class ResolverRouterNode extends CodeNode {
    * Uses smart selection based on capability and intent hint from Planner
    */
   private async routeAndExecute(step: PlanStep, state: MemoState): Promise<RoutingResult> {
+    // Check if we already have a result for this step (e.g., resuming from HITL)
+    // This prevents unnecessary LLM calls when resuming after user confirmation
+    const existingResult = state.resolverResults?.get(step.id);
+    if (existingResult) {
+      console.log(`[ResolverRouter] Skipping ${step.id} - already has result from previous run`);
+      return {
+        stepId: step.id,
+        resolverName: 'cached',
+        result: existingResult,
+      };
+    }
+    
     // Get intent hint from step.action (which now contains rough intent from Planner)
     const intentHint = step.action || '';
     

@@ -16,14 +16,13 @@ let _logger: any;
 function getOpenAIService(): any {
   if (!_OpenAIService) {
     try {
-      // Get logger first
-      // Path calculation: From Memo_v2/dist/services/llm/ to workspace root src/utils/logger
-      // Up 4 levels: dist/services/llm/ -> dist/services/ -> dist/ -> Memo_v2/ -> workspace root
+      // Get logger first from Memo_v2
+      // Path: From Memo_v2/src/services/llm/ to Memo_v2/src/utils/logger
       if (!_logger) {
-        const loggerModule = require('../../../../src/utils/logger');
+        const loggerModule = require('../../utils/logger');
         _logger = loggerModule.logger;
       }
-      
+
       // Get OpenAIService
       // Path calculation: From Memo_v2/dist/services/llm/ to workspace root src/services/ai/OpenAIService
       const openAIModule = require('../../../../src/services/ai/OpenAIService');
@@ -78,11 +77,11 @@ export async function callLLM(
   requestId?: string
 ): Promise<LLMResponse> {
   const openaiService = getOpenAIService();
-  
+
   if (!openaiService) {
     throw new Error('OpenAIService not available');
   }
-  
+
   try {
     // Convert to V1 format
     // V1's OpenAIService handles tools/functions conversion automatically
@@ -95,31 +94,31 @@ export async function callLLM(
       temperature: request.temperature,
       maxTokens: request.maxTokens,
     };
-    
+
     // Add functions or tools (V1 will convert based on model)
     if (request.tools) {
       v1Request.tools = request.tools;
     } else if (request.functions) {
       v1Request.functions = request.functions;
     }
-    
+
     // Add function call or tool choice
     if (request.toolChoice) {
       v1Request.tool_choice = request.toolChoice;
     } else if (request.functionCall) {
       v1Request.functionCall = request.functionCall;
     }
-    
+
     const response = await openaiService.createCompletion(v1Request, requestId);
-    
+
     // Extract content or function call
     const choice = response.choices?.[0];
     if (!choice?.message) {
       throw new Error('No message in LLM response');
     }
-    
+
     const message = choice.message;
-    
+
     // Handle function calls (old format)
     if (message.function_call) {
       return {
@@ -130,7 +129,7 @@ export async function callLLM(
         },
       };
     }
-    
+
     // Handle tool calls (new format)
     if (message.tool_calls && message.tool_calls.length > 0) {
       return {
@@ -144,7 +143,7 @@ export async function callLLM(
         })),
       };
     }
-    
+
     // Regular text response
     return {
       content: message.content || null,
@@ -191,11 +190,11 @@ export async function callLLMJSON<T>(
   requestId?: string
 ): Promise<T> {
   const response = await callLLM(request, requestId);
-  
+
   if (!response.content) {
     throw new Error('No content in LLM JSON response');
   }
-  
+
   try {
     // Try direct JSON parse first
     return JSON.parse(response.content) as T;

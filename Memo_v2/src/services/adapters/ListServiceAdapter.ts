@@ -200,16 +200,28 @@ export class ListServiceAdapter {
   }
   
   private async addItem(listService: any, args: ListOperationArgs): Promise<ListOperationResult> {
-    const listName = args.listName || args.name;
-    if (!listName || !args.item) {
-      return { success: false, error: 'List name and item are required' };
+    // Prefer listId (from EntityResolver), fall back to finding by name
+    let listId = args.listId;
+    
+    if (!listId && (args.listName || args.name)) {
+      const findResult = await this.getList(listService, { operation: 'get', listName: args.listName || args.name });
+      if (findResult.success && findResult.data?.id) {
+        listId = findResult.data.id;
+      } else {
+        return { success: false, error: `List not found: ${args.listName || args.name}` };
+      }
     }
     
+    if (!listId || !args.item) {
+      return { success: false, error: 'List ID and item are required' };
+    }
+    
+    // V1 ListService expects listId and itemText
     const result = await listService.addItem({
       userPhone: this.userPhone,
       data: {
-        listName,
-        item: args.item,
+        listId,
+        itemText: args.item,
       },
     });
     
@@ -221,15 +233,27 @@ export class ListServiceAdapter {
   }
   
   private async toggleItem(listService: any, args: ListOperationArgs): Promise<ListOperationResult> {
-    const listName = args.listName || args.name;
-    if (!listName || args.itemIndex === undefined) {
-      return { success: false, error: 'List name and item index are required' };
+    // Prefer listId (from EntityResolver), fall back to finding by name
+    let listId = args.listId;
+    
+    if (!listId && (args.listName || args.name)) {
+      const findResult = await this.getList(listService, { operation: 'get', listName: args.listName || args.name });
+      if (findResult.success && findResult.data?.id) {
+        listId = findResult.data.id;
+      } else {
+        return { success: false, error: `List not found: ${args.listName || args.name}` };
+      }
     }
     
+    if (!listId || args.itemIndex === undefined) {
+      return { success: false, error: 'List ID and item index are required' };
+    }
+    
+    // V1 ListService expects listId and itemIndex
     const result = await listService.toggleItem({
       userPhone: this.userPhone,
       data: {
-        listName,
+        listId,
         itemIndex: args.itemIndex,
       },
     });
@@ -242,15 +266,27 @@ export class ListServiceAdapter {
   }
   
   private async deleteItem(listService: any, args: ListOperationArgs): Promise<ListOperationResult> {
-    const listName = args.listName || args.name;
-    if (!listName || args.itemIndex === undefined) {
-      return { success: false, error: 'List name and item index are required' };
+    // Prefer listId (from EntityResolver), fall back to finding by name
+    let listId = args.listId;
+    
+    if (!listId && (args.listName || args.name)) {
+      const findResult = await this.getList(listService, { operation: 'get', listName: args.listName || args.name });
+      if (findResult.success && findResult.data?.id) {
+        listId = findResult.data.id;
+      } else {
+        return { success: false, error: `List not found: ${args.listName || args.name}` };
+      }
     }
     
+    if (!listId || args.itemIndex === undefined) {
+      return { success: false, error: 'List ID and item index are required' };
+    }
+    
+    // V1 ListService expects listId and itemIndex
     const result = await listService.deleteItem({
       userPhone: this.userPhone,
       data: {
-        listName,
+        listId,
         itemIndex: args.itemIndex,
       },
     });

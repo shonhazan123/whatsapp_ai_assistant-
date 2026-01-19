@@ -793,6 +793,16 @@ but **punish confidence** and set `missingFields` to include `intent_unclear` so
   - If the target cannot be resolved from recent conversation, the Planner should set low confidence and include `target_unclear` (HITL).
 - \"תמחק את התזכורות\" / \"delete reminders\" routes to **database** (bulk delete reminders).
 
+**CRITICAL: target_unclear validation**:
+- `target_unclear` should ONLY be used when user wants to delete items but provided NEITHER:
+  * Specific names/titles of items to delete, NOR
+  * A time window (tomorrow, next week, etc.) to search within
+- If user provides EITHER names OR time window, DO NOT use `target_unclear`
+- Examples:
+  * \"תמחק את האירועים של מחר\" (delete tomorrow's events) → time window exists → NO `target_unclear`
+  * \"תמחק את הפגישה עם דני\" (delete meeting with Danny) → name exists → NO `target_unclear`
+  * \"תמחק את התזכורות\" (delete reminders) → no names, no time window → YES `target_unclear`
+
 **General fallback (out-of-capability requests)**:
 If the user request is not actionable by tools (calendar/database/gmail/second-brain), route to `general` (conversation/advice).
 Later follow-ups like \"add this to my calendar\" should use recent conversation context to extract the items and then route to the correct capability.
@@ -1764,7 +1774,7 @@ Task created with reminderRecurrence: { type: 'nudge', interval: '10 minutes' }
 
 ### 10.1 ResponseFormatter (Code)
 
-Reuses V1's `ResponseFormatter` logic:
+Reuses V1's `ResponseFormatter` logic with **capability-aware context building**:
 
 ```typescript
 class ResponseFormatterNode {
@@ -1794,6 +1804,53 @@ class ResponseFormatterNode {
 		/* ... */
 	}
 }
+```
+
+#### Capability-Aware Context Building
+
+The `ResponseFormatterNode` builds context differently per capability to handle each domain's data structure:
+
+| Capability     | Data Structure                          | Key Fields (snake_case/camelCase)                |
+| -------------- | --------------------------------------- | ------------------------------------------------ |
+| `database`     | `{ tasks: [...] }` or `{ lists: [...]}` | `due_date`, `reminder_recurrence`, `completed`   |
+| `calendar`     | `{ events: [...] }`                     | `start`, `end`, `recurrence`, `recurringEventId` |
+| `gmail`        | `{ emails: [...] }`                     | `date`, `internalDate`, `isRead`                 |
+| `second-brain` | `{ memories: [...] }`                   | `created_at`, `category`                         |
+
+**Data Flattening**: The `extractItems()` helper flattens nested structures before context building:
+
+```typescript
+private extractItems(data: any[]): any[] {
+  const items: any[] = [];
+  for (const result of data) {
+    if (result.tasks) items.push(...result.tasks);
+    else if (result.lists) items.push(...result.lists);
+    else if (result.events) items.push(...result.events);
+    // ... etc
+    else items.push(result);
+  }
+  return items;
+}
+```
+
+**Field Name Handling**: All context builders handle both camelCase and snake_case field names for compatibility:
+
+```typescript
+// Database context example
+const reminderRecurrence = item.reminderRecurrence || item.reminder_recurrence;
+const dueDate = item.dueDate || item.due_date;
+```
+
+**Entity Type Determination**: Uses explicit action lists instead of pattern matching:
+
+```typescript
+// Correct: explicit list actions
+const listActions = ['create_list', 'add_to_list', 'get_list', ...];
+if (listActions.includes(action)) return 'list';
+return 'task';
+
+// Wrong: would match 'list_tasks' incorrectly
+if (action.includes('list')) return 'list';
 ```
 
 ### 10.2 ResponseWriter (LLM)

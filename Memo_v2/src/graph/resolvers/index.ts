@@ -63,7 +63,7 @@ import { CalendarFindResolver, CalendarMutateResolver } from './CalendarResolver
 import { DatabaseListResolver, DatabaseTaskResolver } from './DatabaseResolvers.js';
 import { GeneralResolver, MetaResolver } from './GeneralResolver.js';
 import { GmailResolver } from './GmailResolver.js';
-import { matchPatterns } from './ResolverSchema.js';
+import { getSchemasForCapability, matchPatterns } from './ResolverSchema.js';
 import { SecondBrainResolver } from './SecondBrainResolver.js';
 
 /**
@@ -142,47 +142,60 @@ export function getResolverByName(name: string): BaseResolver | undefined {
 /**
  * Smart resolver selection based on intent hint
  * 
- * The intent from Planner gives hints about whether this is a read or write operation:
- * - "list events", "find event", "check schedule" → CalendarFindResolver
- * - "create event", "delete event", "update event" → CalendarMutateResolver
- * - "create reminder", "delete task" → DatabaseTaskResolver
- * - "create list", "add to list" → DatabaseListResolver
+ * Uses ResolverSchema actionHints as the SINGLE SOURCE OF TRUTH.
+ * The Planner outputs action hints that match the schema definitions,
+ * and this function finds the resolver whose actionHints include the hint.
+ * 
+ * Examples:
+ * - "list_events", "find_event" → CalendarFindResolver (matches its actionHints)
+ * - "create_event", "delete_event" → CalendarMutateResolver (matches its actionHints)
+ * - "list_tasks", "create_reminder" → DatabaseTaskResolver (matches its actionHints)
+ * - "create_list", "add_to_list" → DatabaseListResolver (matches its actionHints)
  */
 export function selectResolver(capability: Capability, intentHint: string): BaseResolver | undefined {
   const hint = (intentHint || '').toLowerCase();
   
-  switch (capability) {
-    case 'calendar':
-      // Read operations → FindResolver
-      if (/list|find|get|show|what.*have|schedule|מה יש|מתי|check/i.test(hint)) {
-        return getResolverByName('calendar_find_resolver');
-      }
-      // Write operations → MutateResolver
-      return getResolverByName('calendar_mutate_resolver');
-      
-    case 'database':
-      // List operations → ListResolver
-      if (/list|רשימה/i.test(hint)) {
-        return getResolverByName('database_list_resolver');
-      }
-      // Task/reminder operations → TaskResolver
-      return getResolverByName('database_task_resolver');
-      
-    case 'gmail':
-      return getResolverByName('gmail_resolver');
-      
-    case 'second-brain':
-      return getResolverByName('secondbrain_resolver');
-      
-    case 'general':
-      return getResolverByName('general_resolver');
-      
-    case 'meta':
-      return getResolverByName('meta_resolver');
-      
-    default:
-      return undefined;
+  // Normalize hint for matching (e.g., "list tasks" → "list_tasks")
+  const normalizedHint = hint.replace(/\s+/g, '_');
+  
+  // Get all schemas for this capability (sorted by priority in ResolverSchema.ts)
+  const schemas = getSchemasForCapability(capability);
+  
+  if (schemas.length === 0) {
+    // No schemas defined for this capability, fallback to primary resolver
+    return getPrimaryResolver(capability);
   }
+  
+  // If only one resolver for this capability, return it directly
+  if (schemas.length === 1) {
+    return getResolverByName(schemas[0].name);
+  }
+  
+  // Multiple resolvers for this capability - match by actionHints
+  // Check each schema's actionHints for a match
+  for (const schema of schemas) {
+    // Check if normalized hint matches any actionHint exactly
+    if (schema.actionHints.includes(normalizedHint)) {
+      console.log(`[selectResolver] Matched "${normalizedHint}" to ${schema.name} via actionHints`);
+      return getResolverByName(schema.name);
+    }
+  }
+  
+  // No exact match - try pattern matching against trigger patterns
+  for (const schema of schemas) {
+    const allPatterns = [...schema.triggerPatterns.hebrew, ...schema.triggerPatterns.english];
+    for (const pattern of allPatterns) {
+      if (hint.includes(pattern.toLowerCase())) {
+        console.log(`[selectResolver] Matched "${hint}" to ${schema.name} via pattern "${pattern}"`);
+        return getResolverByName(schema.name);
+      }
+    }
+  }
+  
+  // Still no match - return the highest priority resolver for this capability
+  // (schemas are already sorted by priority in getSchemasForCapability)
+  console.log(`[selectResolver] No match for "${hint}", defaulting to ${schemas[0].name}`);
+  return getResolverByName(schemas[0].name);
 }
 
 /**

@@ -204,6 +204,21 @@ export const MemoStateAnnotation = Annotation.Root({
     reducer: (_, update) => update,
   }),
 
+  // === PLANNER HITL RESPONSE ===
+  // Stores user response to planner-triggered HITL (confirmation/clarification)
+  // Separate from disambiguation which is used by EntityResolutionNode
+  plannerHITLResponse: Annotation<string | undefined>({
+    default: () => undefined,
+    reducer: (_, update) => update,
+  }),
+
+  // === INTERRUPT TIMEOUT ===
+  // Timestamp when an interrupt was triggered, used for 5-minute timeout
+  interruptedAt: Annotation<number | undefined>({
+    default: () => undefined,
+    reducer: (_, update) => update,
+  }),
+
   // === METADATA ===
   metadata: Annotation<ExecutionMetadata>({
     default: () => ({ ...defaultMetadata, startTime: Date.now() }),
@@ -260,6 +275,8 @@ export function createInitialState(partial: Partial<MemoState> = {}): MemoState 
     error: partial.error,
     needsHITL: partial.needsHITL || false,
     hitlReason: partial.hitlReason,
+    plannerHITLResponse: partial.plannerHITLResponse,
+    interruptedAt: partial.interruptedAt,
     metadata: partial.metadata || { ...defaultMetadata, startTime: Date.now() },
   };
 }

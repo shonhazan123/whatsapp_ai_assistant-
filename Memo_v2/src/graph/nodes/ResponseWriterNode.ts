@@ -76,21 +76,29 @@ export class ResponseWriterNode extends CodeNode {
   readonly name = 'response_writer';
 
   protected async process(state: MemoState): Promise<Partial<MemoState>> {
+    // If finalResponse is already set (e.g., from CapabilityCheckNode), use it directly
+    if (state.finalResponse) {
+      console.log('[ResponseWriter] finalResponse already set, using it directly');
+      return {
+        finalResponse: state.finalResponse,
+      };
+    }
+
     const formattedResponse = state.formattedResponse;
     const language = state.user.language === 'he' ? 'he' : 'en';
     const requestId = (state.input as any).requestId;
-    
+
     // Handle errors - but try to generate contextual explanation if possible
     if (state.error && !formattedResponse?.failedOperations?.length) {
       console.log('[ResponseWriter] Writing error response (no context available)');
-      const errorMessage = language === 'he' 
+      const errorMessage = language === 'he'
         ? '❌ משהו השתבש. נסה שוב בבקשה.'
         : '❌ Something went wrong. Please try again.';
       return {
         finalResponse: errorMessage,
       };
     }
-    
+
     // Handle missing formatted response
     if (!formattedResponse) {
       console.log('[ResponseWriter] No formatted response, using fallback');
@@ -101,14 +109,14 @@ export class ResponseWriterNode extends CodeNode {
         finalResponse: fallbackMessage,
       };
     }
-    
+
     console.log(`[ResponseWriter] Generating response for ${formattedResponse.agent}:${formattedResponse.operation}`);
-    
+
     // Check for failed operations that need contextual explanation
     const hasFailures = formattedResponse.failedOperations && formattedResponse.failedOperations.length > 0;
-    const hasSuccesses = formattedResponse.formattedData && 
+    const hasSuccesses = formattedResponse.formattedData &&
       (Array.isArray(formattedResponse.formattedData) ? formattedResponse.formattedData.length > 0 : true);
-    
+
     // Handle complete failure (only failures, no successes)
     if (hasFailures && !hasSuccesses) {
       console.log(`[ResponseWriter] All operations failed (${formattedResponse.failedOperations!.length} failures), generating contextual explanation`);
@@ -117,40 +125,40 @@ export class ResponseWriterNode extends CodeNode {
         finalResponse: errorExplanation,
       };
     }
-    
+
     // Handle partial failure (some success + some failure)
     if (hasFailures && hasSuccesses) {
       console.log(`[ResponseWriter] Partial failure detected, generating combined response`);
-      
+
       // First generate success response
       const successResponse = await this.generateSuccessResponse(formattedResponse, language, requestId);
-      
+
       // Then generate failure explanation
       const failureExplanation = await this.generateErrorExplanation(formattedResponse.failedOperations!, language, requestId);
-      
+
       // Combine them
       const separator = language === 'he' ? '\n\nלצערי, ' : '\n\nHowever, ';
       return {
         finalResponse: successResponse + separator + failureExplanation.toLowerCase(),
       };
     }
-    
+
     // For general responses (capability = 'general'), use data.response directly
     // GeneralResolver already generated the LLM response and put it in data.response
     if (formattedResponse.agent === 'general') {
       console.log('[ResponseWriter] Using general response directly (already LLM-generated)');
-      const generalData = Array.isArray(formattedResponse.formattedData) 
-        ? formattedResponse.formattedData[0] 
+      const generalData = Array.isArray(formattedResponse.formattedData)
+        ? formattedResponse.formattedData[0]
         : formattedResponse.formattedData;
-      
+
       const response = generalData?.response || generalData?.text || generalData?.message;
-      
+
       if (response) {
         return {
           finalResponse: response,
         };
       }
-      
+
       // Fallback if response not found
       console.warn('[ResponseWriter] General response data missing response field');
       const fallbackMessage = language === 'he'
@@ -160,14 +168,14 @@ export class ResponseWriterNode extends CodeNode {
         finalResponse: fallbackMessage,
       };
     }
-    
+
     // For function call results (calendar, database, gmail, second-brain), use LLM with ResponseFormatterPrompt
     const successResponse = await this.generateSuccessResponse(formattedResponse, language, requestId);
     return {
       finalResponse: successResponse,
     };
   }
-  
+
   /**
    * Generate contextual error explanation using LLM
    */
@@ -178,7 +186,7 @@ export class ResponseWriterNode extends CodeNode {
   ): Promise<string> {
     try {
       const modelConfig = getNodeModel('errorExplainer');
-      
+
       // Build context for the LLM
       const failureDetails = failedOperations.map(op => ({
         capability: op.capability,
@@ -187,13 +195,13 @@ export class ResponseWriterNode extends CodeNode {
         userRequest: op.userRequest,
         errorMessage: op.errorMessage,
       }));
-      
+
       const userMessage = `Failed operations to explain (respond in ${language === 'he' ? 'Hebrew' : 'English'}):
 
 ${JSON.stringify(failureDetails, null, 2)}`;
-      
+
       console.log('[ResponseWriter] Calling LLM for error explanation');
-      
+
       const response = await callLLM(
         {
           messages: [
@@ -206,11 +214,11 @@ ${JSON.stringify(failureDetails, null, 2)}`;
         },
         requestId
       );
-      
+
       if (response.content) {
         return response.content;
       }
-      
+
       throw new Error('No content in error explanation response');
     } catch (error: any) {
       console.error('[ResponseWriter] Error explanation LLM call failed:', error);
@@ -229,7 +237,7 @@ ${JSON.stringify(failureDetails, null, 2)}`;
       }
     }
   }
-  
+
   /**
    * Generate success response using ResponseFormatterPrompt
    */
@@ -239,11 +247,11 @@ ${JSON.stringify(failureDetails, null, 2)}`;
     requestId?: string
   ): Promise<string> {
     console.log('[ResponseWriter] Using LLM with ResponseFormatterPrompt for function call results');
-    
+
     try {
       // Get model config for response writer
       const modelConfig = getNodeModel('responseWriter');
-      
+
       // Build the prompt data for ResponseFormatterPrompt
       // The prompt expects JSON with _metadata field
       const promptData = {
@@ -255,17 +263,17 @@ ${JSON.stringify(failureDetails, null, 2)}`;
         },
         ...formattedResponse.formattedData,
       };
-      
+
       // Get system prompt from ResponseFormatterPrompt
       if (!ResponseFormatterPrompt) {
         throw new Error('ResponseFormatterPrompt not available');
       }
-      
+
       const systemPrompt = ResponseFormatterPrompt.getSystemPrompt();
-      
+
       // Build user message with formatted data
       const userMessage = JSON.stringify(promptData, null, 2);
-      
+
       // Call LLM
       const response = await callLLM(
         {
@@ -279,11 +287,11 @@ ${JSON.stringify(failureDetails, null, 2)}`;
         },
         requestId
       );
-      
+
       if (!response.content) {
         throw new Error('No content in LLM response');
       }
-      
+
       return response.content;
     } catch (error: any) {
       console.error('[ResponseWriter] LLM call failed:', error);

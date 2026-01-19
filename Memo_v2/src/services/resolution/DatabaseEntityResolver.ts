@@ -12,18 +12,18 @@
 import { QueryResolverAdapter } from '../../utils/QueryResolverAdapter.js';
 import { getListService, getTaskService } from '../v1-services.js';
 import {
-    RESOLUTION_THRESHOLDS,
-    getDisambiguationMessage,
-    getOperationBehavior,
-    translateReminderType,
+  RESOLUTION_THRESHOLDS,
+  getDisambiguationMessage,
+  getOperationBehavior,
+  translateReminderType,
 } from './resolution-config.js';
 import type {
-    EntityResolverContext,
-    IEntityResolver,
-    ResolutionCandidate,
-    ResolutionOutput,
-    TaskComparison,
-    TaskGroups,
+  EntityResolverContext,
+  IEntityResolver,
+  ResolutionCandidate,
+  ResolutionOutput,
+  TaskComparison,
+  TaskGroups,
 } from './types.js';
 
 // ============================================================================
@@ -63,7 +63,7 @@ export class DatabaseEntityResolver implements IEntityResolver {
     
     // Handle "both" or "all" selection
     if (typeof selection === 'string') {
-      const lowerSelection = selection.toLowerCase();
+      const lowerSelection = selection.toLowerCase().trim();
       if (lowerSelection === 'both' || lowerSelection === 'all' || 
           lowerSelection === 'שניהם' || lowerSelection === 'כולם') {
         if (isListOperation) {
@@ -77,6 +77,44 @@ export class DatabaseEntityResolver implements IEntityResolver {
             type: 'resolved',
             resolvedIds: candidates.map(c => c.id),
             args: { ...args, taskIds: candidates.map(c => c.id) },
+          };
+        }
+      }
+      
+      // Handle yes/no responses for single-candidate confirmations
+      // This is used when user confirms/rejects a low-confidence match
+      if (candidates.length === 1) {
+        const yesWords = ['כן', 'yes', 'y', 'yeah', 'yep', 'sure', 'ok', 'אוקי', 'בטח'];
+        const noWords = ['לא', 'no', 'n', 'nope', 'cancel', 'ביטול'];
+        
+        if (yesWords.includes(lowerSelection)) {
+          // User confirmed - select the single candidate
+          const selected = candidates[0];
+          console.log(`[DatabaseEntityResolver] User confirmed single candidate with "${selection}"`);
+          if (isListOperation) {
+            return {
+              type: 'resolved',
+              resolvedIds: [selected.id],
+              args: { ...args, listId: selected.id },
+            };
+          } else {
+            return {
+              type: 'resolved',
+              resolvedIds: [selected.id],
+              args: { ...args, taskId: selected.id },
+            };
+          }
+        }
+        
+        if (noWords.includes(lowerSelection)) {
+          // User rejected - return not_found
+          console.log(`[DatabaseEntityResolver] User rejected single candidate with "${selection}"`);
+          return {
+            type: 'not_found',
+            error: getDisambiguationMessage('task_not_found', 'he', { 
+              searchedFor: args.text || args.query || '' 
+            }),
+            searchedFor: args.text || args.query || '',
           };
         }
       }
@@ -169,13 +207,24 @@ export class DatabaseEntityResolver implements IEntityResolver {
     args: Record<string, any>,
     context: EntityResolverContext
   ): Promise<ResolutionOutput> {
-    // Operations that need resolution
+    // Operations that need resolution (single or multiple)
     const operationsNeedingResolution = [
-      'get', 'update', 'delete', 'complete', 'addSubtask'
+      'get', 'update', 'delete', 'complete', 'addSubtask',
+      'deleteMultiple', 'updateMultiple'  // Bulk operations need resolution for each item
     ];
     
     if (!operationsNeedingResolution.includes(operation)) {
       return { type: 'resolved', args };
+    }
+    
+    // Special handling for deleteMultiple - resolve each task in tasks array
+    if (operation === 'deleteMultiple') {
+      return await this.resolveMultipleTasks(args, context);
+    }
+    
+    // Special handling for updateMultiple - resolve each task in updates array  
+    if (operation === 'updateMultiple') {
+      return await this.resolveMultipleUpdates(args, context);
     }
     
     // Already has taskId (and it's a valid UUID)?
@@ -193,6 +242,9 @@ export class DatabaseEntityResolver implements IEntityResolver {
       };
     }
     
+    // Normalize Hebrew query to handle prefixes like "המשימה", "התזכורת"
+    const normalizedQuery = this.normalizeHebrewQuery(searchText, 'task');
+    
     // Fetch all user tasks
     const tasks = await this.fetchTasks(context.userPhone);
     if (tasks.length === 0) {
@@ -203,10 +255,29 @@ export class DatabaseEntityResolver implements IEntityResolver {
       };
     }
     
-    // Fuzzy match
-    const candidates = this.fuzzyMatchTasks(searchText, tasks);
+    // Try fuzzy match with normalized query first, fall back to original if needed
+    let candidates = this.fuzzyMatchTasks(normalizedQuery, tasks);
+    if (candidates.length === 0 && normalizedQuery !== searchText) {
+      candidates = this.fuzzyMatchTasks(searchText, tasks);
+    }
     
     if (candidates.length === 0) {
+      // Try low-confidence match for user confirmation
+      const lowConfidenceCandidates = this.fuzzyMatchTasksLowConfidence(normalizedQuery, tasks);
+      
+      if (lowConfidenceCandidates.length > 0) {
+        // Ask user to confirm the best low-confidence match
+        const bestMatch = lowConfidenceCandidates[0];
+        return {
+          type: 'disambiguation',
+          candidates: [bestMatch],
+          question: getDisambiguationMessage('task_confirm_match', context.language, { 
+            name: bestMatch.displayText 
+          }),
+          allowMultiple: false,
+        };
+      }
+      
       return {
         type: 'not_found',
         error: getDisambiguationMessage('task_not_found', context.language, { searchedFor: searchText }),
@@ -488,6 +559,33 @@ export class DatabaseEntityResolver implements IEntityResolver {
   }
   
   /**
+   * Fuzzy match tasks with low confidence threshold for confirmation flow
+   * Returns candidates between LOW_CONFIDENCE_MIN and FUZZY_MATCH_MIN
+   */
+  private fuzzyMatchTasksLowConfidence(searchText: string, tasks: any[]): ResolutionCandidate[] {
+    const result = QueryResolverAdapter.resolveTasksWithThreshold(
+      searchText, 
+      tasks, 
+      RESOLUTION_THRESHOLDS.LOW_CONFIDENCE_MIN
+    );
+    
+    // Filter to only include candidates below the normal threshold
+    return result.candidates
+      .filter(c => c.score < RESOLUTION_THRESHOLDS.FUZZY_MATCH_MIN && c.score >= RESOLUTION_THRESHOLDS.LOW_CONFIDENCE_MIN)
+      .map(c => ({
+        id: c.entity.id,
+        displayText: this.formatTaskDisplay(c.entity),
+        entity: c.entity,
+        score: c.score,
+        metadata: {
+          reminderType: this.getReminderType(c.entity),
+          category: c.entity.category,
+          hasDueDate: !!(c.entity.dueDate || c.entity.due_date),
+        },
+      }));
+  }
+  
+  /**
    * Format task for display
    */
   private formatTaskDisplay(task: any): string {
@@ -505,6 +603,159 @@ export class DatabaseEntityResolver implements IEntityResolver {
     return text;
   }
   
+  // ==========================================================================
+  // BULK TASK RESOLUTION
+  // ==========================================================================
+  
+  /**
+   * Resolve multiple tasks for deleteMultiple operation
+   * Each task in the tasks array needs to be resolved by text
+   */
+  private async resolveMultipleTasks(
+    args: Record<string, any>,
+    context: EntityResolverContext
+  ): Promise<ResolutionOutput> {
+    const tasksArray = args.tasks || [];
+    if (tasksArray.length === 0) {
+      return { type: 'resolved', args };
+    }
+
+    // Fetch all user tasks for matching
+    const allTasks = await this.fetchTasks(context.userPhone);
+    if (allTasks.length === 0) {
+      return {
+        type: 'not_found',
+        error: 'No tasks found',
+        searchedFor: tasksArray.map((t: any) => t.text).join(', '),
+      };
+    }
+
+    const resolvedTasks: Array<{ text: string; taskId: string }> = [];
+    const notFoundTasks: string[] = [];
+
+    for (const task of tasksArray) {
+      // If already has valid taskId, use it
+      if (task.taskId && this.isValidUUID(task.taskId)) {
+        resolvedTasks.push(task);
+        continue;
+      }
+
+      const searchText = task.text;
+      if (!searchText) {
+        continue;
+      }
+
+      // Normalize and try fuzzy match
+      const normalizedQuery = this.normalizeHebrewQuery(searchText, 'task');
+      let candidates = this.fuzzyMatchTasks(normalizedQuery, allTasks);
+      if (candidates.length === 0 && normalizedQuery !== searchText) {
+        candidates = this.fuzzyMatchTasks(searchText, allTasks);
+      }
+
+      if (candidates.length >= 1) {
+        // For deleteMultiple, match ALL candidates (V1 behavior - delete all matching)
+        for (const c of candidates) {
+          resolvedTasks.push({ ...task, taskId: c.id });
+        }
+      } else {
+        notFoundTasks.push(searchText);
+      }
+    }
+
+    // If nothing was resolved, return not_found
+    if (resolvedTasks.length === 0) {
+      return {
+        type: 'not_found',
+        error: `Tasks not found: ${notFoundTasks.join(', ')}`,
+        searchedFor: notFoundTasks.join(', '),
+      };
+    }
+
+    return {
+      type: 'resolved',
+      resolvedIds: resolvedTasks.map(t => t.taskId),
+      args: { 
+        ...args, 
+        tasks: resolvedTasks, 
+        taskIds: resolvedTasks.map(t => t.taskId),
+        _notFound: notFoundTasks.length > 0 ? notFoundTasks : undefined,
+      },
+    };
+  }
+
+  /**
+   * Resolve multiple updates for updateMultiple operation
+   * Each update in the updates array needs to be resolved by text
+   */
+  private async resolveMultipleUpdates(
+    args: Record<string, any>,
+    context: EntityResolverContext
+  ): Promise<ResolutionOutput> {
+    const updatesArray = args.updates || [];
+    if (updatesArray.length === 0) {
+      return { type: 'resolved', args };
+    }
+
+    // Fetch all user tasks for matching
+    const allTasks = await this.fetchTasks(context.userPhone);
+    if (allTasks.length === 0) {
+      return {
+        type: 'not_found',
+        error: 'No tasks found',
+        searchedFor: updatesArray.map((u: any) => u.text).join(', '),
+      };
+    }
+
+    const resolvedUpdates: Array<{ text: string; taskId: string; reminderDetails?: any }> = [];
+    const notFoundTasks: string[] = [];
+
+    for (const update of updatesArray) {
+      // If already has valid taskId, use it
+      if (update.taskId && this.isValidUUID(update.taskId)) {
+        resolvedUpdates.push(update);
+        continue;
+      }
+
+      const searchText = update.text;
+      if (!searchText) {
+        continue;
+      }
+
+      // Normalize and try fuzzy match
+      const normalizedQuery = this.normalizeHebrewQuery(searchText, 'task');
+      let candidates = this.fuzzyMatchTasks(normalizedQuery, allTasks);
+      if (candidates.length === 0 && normalizedQuery !== searchText) {
+        candidates = this.fuzzyMatchTasks(searchText, allTasks);
+      }
+
+      if (candidates.length >= 1) {
+        // For updateMultiple, use the best match
+        resolvedUpdates.push({ ...update, taskId: candidates[0].id });
+      } else {
+        notFoundTasks.push(searchText);
+      }
+    }
+
+    // If nothing was resolved, return not_found
+    if (resolvedUpdates.length === 0) {
+      return {
+        type: 'not_found',
+        error: `Tasks not found: ${notFoundTasks.join(', ')}`,
+        searchedFor: notFoundTasks.join(', '),
+      };
+    }
+
+    return {
+      type: 'resolved',
+      resolvedIds: resolvedUpdates.map(u => u.taskId),
+      args: { 
+        ...args, 
+        updates: resolvedUpdates,
+        _notFound: notFoundTasks.length > 0 ? notFoundTasks : undefined,
+      },
+    };
+  }
+
   // ==========================================================================
   // LIST RESOLUTION
   // ==========================================================================
@@ -541,6 +792,9 @@ export class DatabaseEntityResolver implements IEntityResolver {
       };
     }
     
+    // Normalize Hebrew query to handle prefixes like "רשימת", "הרשימה"
+    const normalizedQuery = this.normalizeHebrewQuery(searchText, 'list');
+    
     // Fetch all user lists
     const lists = await this.fetchLists(context.userPhone);
     if (lists.length === 0) {
@@ -551,10 +805,29 @@ export class DatabaseEntityResolver implements IEntityResolver {
       };
     }
     
-    // Fuzzy match
-    const candidates = this.fuzzyMatchLists(searchText, lists);
+    // Try fuzzy match with normalized query first, fall back to original if needed
+    let candidates = this.fuzzyMatchLists(normalizedQuery, lists);
+    if (candidates.length === 0 && normalizedQuery !== searchText) {
+      candidates = this.fuzzyMatchLists(searchText, lists);
+    }
     
     if (candidates.length === 0) {
+      // Try low-confidence match for user confirmation
+      const lowConfidenceCandidates = this.fuzzyMatchListsLowConfidence(normalizedQuery, lists);
+      
+      if (lowConfidenceCandidates.length > 0) {
+        // Ask user to confirm the best low-confidence match
+        const bestMatch = lowConfidenceCandidates[0];
+        return {
+          type: 'disambiguation',
+          candidates: [bestMatch],
+          question: getDisambiguationMessage('list_confirm_match', context.language, { 
+            name: bestMatch.displayText 
+          }),
+          allowMultiple: false,
+        };
+      }
+      
       return {
         type: 'not_found',
         error: getDisambiguationMessage('list_not_found', context.language, { searchedFor: searchText }),
@@ -631,6 +904,32 @@ export class DatabaseEntityResolver implements IEntityResolver {
     }));
   }
   
+  /**
+   * Fuzzy match lists with low confidence threshold for confirmation flow
+   * Returns candidates between LOW_CONFIDENCE_MIN and FUZZY_MATCH_MIN
+   */
+  private fuzzyMatchListsLowConfidence(searchText: string, lists: any[]): ResolutionCandidate[] {
+    const result = QueryResolverAdapter.resolveListsWithThreshold(
+      searchText, 
+      lists, 
+      RESOLUTION_THRESHOLDS.LOW_CONFIDENCE_MIN
+    );
+    
+    // Filter to only include candidates below the normal threshold
+    return result.candidates
+      .filter(c => c.score < RESOLUTION_THRESHOLDS.FUZZY_MATCH_MIN && c.score >= RESOLUTION_THRESHOLDS.LOW_CONFIDENCE_MIN)
+      .map(c => ({
+        id: c.entity.id,
+        displayText: c.entity.list_name || c.entity.name || 'Untitled List',
+        entity: c.entity,
+        score: c.score,
+        metadata: {
+          isChecklist: c.entity.is_checklist || c.entity.isChecklist,
+          itemCount: c.entity.items?.length || 0,
+        },
+      }));
+  }
+  
   // ==========================================================================
   // DISAMBIGUATION MESSAGES
   // ==========================================================================
@@ -686,6 +985,34 @@ export class DatabaseEntityResolver implements IEntityResolver {
   // ==========================================================================
   // UTILITY METHODS
   // ==========================================================================
+  
+  /**
+   * Normalize Hebrew query by removing common prefixes
+   * This helps fuzzy matching when user says "רשימת הקניות" but list is named "קניות"
+   */
+  private normalizeHebrewQuery(query: string, entityType: 'task' | 'list'): string {
+    let normalized = query.trim();
+    
+    // Define prefixes based on entity type
+    const prefixes = entityType === 'list' 
+      ? ['רשימת ', 'הרשימה ', 'רשימה ', 'לרשימת ', 'ברשימת ']
+      : ['המשימה ', 'התזכורת ', 'משימת ', 'תזכורת ', 'למשימה ', 'במשימה '];
+    
+    // Remove common prefixes
+    for (const prefix of prefixes) {
+      if (normalized.startsWith(prefix)) {
+        normalized = normalized.slice(prefix.length);
+        break;
+      }
+    }
+    
+    // Remove article "ה" from first word if present (e.g., "הנושאים" → "נושאים")
+    if (normalized.startsWith('ה') && normalized.length > 1 && !/^ה\s/.test(normalized)) {
+      normalized = normalized.slice(1);
+    }
+    
+    return normalized.trim();
+  }
   
   /**
    * Check if this is a list operation based on args

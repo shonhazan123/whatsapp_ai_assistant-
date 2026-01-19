@@ -120,6 +120,7 @@ export interface InterruptPayload {
     stepId?: string;
     entityType?: string;
     candidates?: Array<{ id: string; displayText: string }>;
+    interruptedAt?: number; // Timestamp when interrupt was triggered, for timeout tracking
   };
 }
 

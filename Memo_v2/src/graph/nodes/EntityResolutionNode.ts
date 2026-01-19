@@ -49,10 +49,20 @@ export class EntityResolutionNode {
   async process(state: MemoState): Promise<Partial<MemoState>> {
     console.log('[EntityResolutionNode] Processing...');
     
-    // Check if we're resuming from disambiguation
-    if (state.disambiguation?.userSelection && !state.disambiguation.resolved) {
+    // Check if we're resuming from ENTITY RESOLUTION disambiguation
+    // Must have: userSelection, valid resolverStepId, and non-empty candidates
+    // This prevents processing planner HITL responses (which don't have candidates)
+    if (state.disambiguation?.userSelection &&
+        state.disambiguation.resolverStepId &&
+        state.disambiguation.candidates &&
+        state.disambiguation.candidates.length > 0) {
       console.log('[EntityResolutionNode] Resuming from disambiguation selection');
       return this.handleDisambiguationSelection(state);
+    }
+    
+    // Log if we received a disambiguation but it's not from entity resolution
+    if (state.disambiguation?.userSelection) {
+      console.log('[EntityResolutionNode] Skipping disambiguation - not from entity resolution (planner HITL or empty candidates)');
     }
     
     // Get resolver results to process

@@ -43,7 +43,7 @@ import { LLMNode } from './BaseNode.js';
 function buildPlannerSystemPrompt(): string {
   // Get the resolver schemas formatted for the prompt
   const resolverSchemasSection = formatSchemasForPrompt();
-  
+
   return `You are Memo's Planner (the Planning Brain).
 
 ## PERSONALITY / IDENTITY (HOW YOU THINK)
@@ -131,17 +131,27 @@ Do NOT add dependency when both steps can be decided from the original message (
 Use action hints from the RESOLVER CAPABILITIES section above. Examples:
 - calendar_find_resolver: "list events", "find event", "check availability"
 - calendar_mutate_resolver: "create event", "update event", "delete event"
-- database_task_resolver: "create task", "create reminder", "list tasks", "complete task"
+- database_task_resolver: "create task", "create reminder", "list tasks", "complete task", "delete_all_tasks", "delete_multiple_tasks", "update_all_tasks", "update_multiple_tasks"
 - database_list_resolver: "create list", "add to list" (ONLY when "list/רשימה" is mentioned)
 
 ### 5) HITL signals (missingFields)
 If critical info is unclear, keep confidence low and include:
-- "target_unclear" - when user says "delete the reminders" without specifying which
+- "target_unclear" - ONLY when user says "delete the reminders/events" WITHOUT specifying EITHER:
+  * Names/titles of specific items to delete, OR
+  * Time window (tomorrow, next week, etc.) to search within
+  * If user provides EITHER names OR time window, DO NOT use "target_unclear"
 - "time_unclear" - when time is ambiguous
 - "which_one" - multiple matches possible
 - "intent_unclear" - unclear if scheduling or just noting
 
-DO NOT use "target_unclear" when user explicitly names the task/event.
+CRITICAL RULE: "target_unclear" should ONLY be used when BOTH conditions are true:
+1. User wants to delete items (tasks/events/reminders)
+2. User provided NEITHER specific names/titles NOR a time window to search within
+
+Examples:
+- "תמחק את האירועים של מחר" → time window exists → NO "target_unclear"
+- "תמחק את הפגישה עם דני" → name exists → NO "target_unclear"
+- "תמחק את התזכורות" → no names, no time window → YES "target_unclear"
 
 ### 6) Risk/approval
 - riskLevel: low=create/read, medium=update, high=delete/send email/bulk delete.
@@ -271,6 +281,69 @@ User: "תמחק את התזכורת של מחר ותזכיר לי לעשות ב�
   ]
 }
 
+### H) Delete ALL tasks → database_task_resolver
+CRITICAL: When user says "תמחק את כולם" / "delete all" / "מחק הכל" → use "delete_all_tasks" (NOT delete_multiple_tasks)
+User: "תמחק את כולם"
+{
+  "intentType": "operation",
+  "confidence": 0.9,
+  "riskLevel": "high",
+  "needsApproval": true,
+  "missingFields": [],
+  "plan": [{
+    "id": "A",
+    "capability": "database",
+    "action": "delete_all_tasks",
+    "constraints": { "rawMessage": "תמחק את כולם" },
+    "changes": {},
+    "dependsOn": []
+  }]
+}
+
+### I) Delete MULTIPLE SPECIFIC tasks → database_task_resolver
+CRITICAL: When user names specific tasks like "תמחק את המשימה X ואת המשימה Y" → use "delete_multiple_tasks" (NOT delete_all_tasks)
+User: "תמחק את המשימה לקנות חלב ואת לנקות הבית"
+{
+  "intentType": "operation",
+  "confidence": 0.9,
+  "riskLevel": "high",
+  "needsApproval": true,
+  "missingFields": [],
+  "plan": [{
+    "id": "A",
+    "capability": "database",
+    "action": "delete_multiple_tasks",
+    "constraints": { "rawMessage": "תמחק את המשימה לקנות חלב ואת המשימה לנקות הבית" },
+    "changes": {},
+    "dependsOn": []
+  }]
+}
+
+### J) Delete by TIME WINDOW → calendar_mutate_resolver or database_task_resolver
+CRITICAL: When user provides a time window (tomorrow, next week, etc.), this is sufficient to identify targets. DO NOT use "target_unclear".
+User: "תמחק את האירועים של מחר"
+{
+  "intentType": "operation",
+  "confidence": 0.85,
+  "riskLevel": "high",
+  "needsApproval": true,
+  "missingFields": [],
+  "plan": [{
+    "id": "A",
+    "capability": "calendar",
+    "action": "delete event",
+    "constraints": {
+      "rawMessage": "תמחק את האירועים של מחר",
+      "extractedInfo": {
+        "timeWindow": "tomorrow",
+        "scope": "all events tomorrow"
+      }
+    },
+    "changes": {},
+    "dependsOn": []
+  }]
+}
+
 ## HARD RULES
 - Output ONLY JSON (no markdown, no comments).
 - Always include constraints.rawMessage for every step.
@@ -287,40 +360,33 @@ const PLANNER_SYSTEM_PROMPT = buildPlannerSystemPrompt();
 
 export class PlannerNode extends LLMNode {
   readonly name = 'planner';
-  
+
   protected validate(state: MemoState): { valid: boolean; reason?: string } {
     if (!state.input.message && !state.input.enhancedMessage) {
       return { valid: false, reason: 'No message to plan' };
     }
     return { valid: true };
   }
-  
+
   protected async process(state: MemoState): Promise<Partial<MemoState>> {
     const modelConfig = getNodeModel('planner');
-    
+
     // Build user message with full context
     const userMessage = this.buildUserMessage(state);
-    
+
     // Make LLM call for planning
     const plannerOutput = await this.callLLM(userMessage, state, modelConfig);
-    
+
     return {
       plannerOutput,
     };
   }
-  
+
   private buildUserMessage(state: MemoState): string {
     const message = state.input.enhancedMessage || state.input.message;
-    
+
     let userMessage = `Current time: ${state.now.formatted}\n\n`;
-    
-    // User capabilities - CRITICAL for routing decisions
-    userMessage += `## User Capabilities\n`;
-    userMessage += `- Calendar: ${state.user.capabilities.calendar ? 'CONNECTED ✓' : 'NOT CONNECTED ✗'}\n`;
-    userMessage += `- Gmail: ${state.user.capabilities.gmail ? 'CONNECTED ✓' : 'NOT CONNECTED ✗'}\n`;
-    userMessage += `- Database (reminders/tasks): ALWAYS AVAILABLE ✓\n`;
-    userMessage += `- Second Brain (memory): ALWAYS AVAILABLE ✓\n\n`;
-    
+
     // PRE-ROUTING HINTS - Pattern matching results to guide LLM
     const routingSuggestions = getRoutingSuggestions(message);
     if (routingSuggestions.length > 0) {
@@ -336,7 +402,7 @@ export class PlannerNode extends LLMNode {
       }
       userMessage += `\nUse these hints to inform your routing decision, but apply the decision tree rules.\n\n`;
     }
-    
+
     // Recent conversation - CRITICAL for context understanding and resolving references like "it", "that", "סיימתי"
     if (state.recentMessages && state.recentMessages.length > 0) {
       userMessage += `## Recent Conversation (use to resolve references like "it", "that", "זה")\n`;
@@ -348,26 +414,26 @@ export class PlannerNode extends LLMNode {
       }
       userMessage += '\n';
     }
-    
+
     // Long-term context if available
     if (state.longTermSummary) {
       userMessage += `## User Context\n${state.longTermSummary}\n\n`;
     }
-    
+
     // The actual user message
     userMessage += `## User Message\n${message}`;
-    
+
     return userMessage;
   }
-  
+
   private async callLLM(
-    userMessage: string, 
+    userMessage: string,
     state: MemoState,
     modelConfig: { model: string; temperature?: number; maxTokens?: number }
   ): Promise<PlannerOutput> {
     try {
       const requestId = (state.input as any).requestId;
-      
+
       const response = await callLLMJSON<any>({
         messages: [
           { role: 'system', content: PLANNER_SYSTEM_PROMPT },
@@ -377,46 +443,46 @@ export class PlannerNode extends LLMNode {
         temperature: modelConfig.temperature || 0.3,
         maxTokens: modelConfig.maxTokens || 2500,
       }, requestId);
-      
+
       // Normalize and validate response
       const normalized = this.normalizeResponse(response, state);
-      
+
       // Validate response structure
       if (!normalized.intentType || !Array.isArray(normalized.plan)) {
         console.warn('[PlannerNode] Invalid LLM response structure, using fallback');
         console.warn('[PlannerNode] Response:', JSON.stringify(response).substring(0, 500));
         return this.createFallbackOutput(state.input.enhancedMessage || state.input.message, state);
       }
-      
+
       // Validate and clamp confidence
       normalized.confidence = Math.max(0, Math.min(1, normalized.confidence ?? 0.7));
-      
+
       // Validate riskLevel
       if (!['low', 'medium', 'high'].includes(normalized.riskLevel)) {
         normalized.riskLevel = this.inferRiskLevel(normalized.plan);
       }
-      
+
       // Ensure arrays exist
       normalized.missingFields = normalized.missingFields || [];
-      
+
       // Validate plan steps
       normalized.plan = this.validatePlanSteps(normalized.plan, state);
-      
+
       console.log(`[PlannerNode] Intent: ${normalized.intentType}, Confidence: ${normalized.confidence}, Steps: ${normalized.plan.length}, Risk: ${normalized.riskLevel}`);
-      
+
       return normalized as PlannerOutput;
     } catch (error: any) {
       console.error('[PlannerNode] LLM call failed:', error.message);
       return this.createFallbackOutput(state.input.enhancedMessage || state.input.message, state);
     }
   }
-  
+
   /**
    * Normalize LLM response to match expected schema
    */
   private normalizeResponse(response: any, state: MemoState): any {
     const message = state.input.enhancedMessage || state.input.message;
-    
+
     return {
       intentType: response.intentType || response.intent_type,
       confidence: response.confidence,
@@ -437,36 +503,36 @@ export class PlannerNode extends LLMNode {
       })),
     };
   }
-  
+
   /**
    * Validate and fix plan steps
    */
   private validatePlanSteps(plan: PlanStep[], state: MemoState): PlanStep[] {
     const validCapabilities: Capability[] = ['calendar', 'database', 'gmail', 'second-brain', 'general', 'meta'];
     const message = state.input.enhancedMessage || state.input.message;
-    
+
     return plan.map((step, index) => {
       // Ensure valid capability
       if (!validCapabilities.includes(step.capability)) {
         console.warn(`[PlannerNode] Invalid capability '${step.capability}', defaulting to 'general'`);
         step.capability = 'general';
       }
-      
+
       // Ensure ID exists
       if (!step.id) {
         step.id = String.fromCharCode(65 + index); // A, B, C...
       }
-      
+
       // Ensure rawMessage exists in constraints
       if (!step.constraints.rawMessage) {
         step.constraints.rawMessage = message;
       }
-      
+
       // Ensure dependsOn is array
       if (!Array.isArray(step.dependsOn)) {
         step.dependsOn = [];
       }
-      
+
       // Validate dependsOn references exist
       const validIds = plan.map(p => p.id);
       step.dependsOn = step.dependsOn.filter(depId => {
@@ -476,32 +542,32 @@ export class PlannerNode extends LLMNode {
         }
         return true;
       });
-      
+
       return step;
     });
   }
-  
+
   /**
    * Infer risk level from plan steps
    */
   private inferRiskLevel(plan: PlanStep[]): 'low' | 'medium' | 'high' {
     for (const step of plan) {
       const action = (step.action || '').toLowerCase();
-      
+
       // High risk: delete, send email
       if (/delete|remove|cancel|מחק|בטל|הסר|send.*email|שלח.*מייל/i.test(action)) {
         return 'high';
       }
-      
+
       // Medium risk: update, modify
       if (/update|modify|change|move|edit|שנה|עדכן|הזז/i.test(action)) {
         return 'medium';
       }
     }
-    
+
     return 'low';
   }
-  
+
   /**
    * Create fallback output when LLM fails
    */
@@ -517,7 +583,7 @@ export class PlannerNode extends LLMNode {
         plan: [],
       };
     }
-    
+
     // Greeting
     if (this.matchesGreeting(message)) {
       return {
@@ -536,11 +602,11 @@ export class PlannerNode extends LLMNode {
         }],
       };
     }
-    
+
     // Determine capability from keywords
     const capability = this.inferCapability(message, state);
     const riskLevel = this.inferRiskFromMessage(message);
-    
+
     return {
       intentType: 'operation',
       confidence: 0.7, // Fallback has medium confidence
@@ -557,17 +623,17 @@ export class PlannerNode extends LLMNode {
       }],
     };
   }
-  
+
   /**
    * Infer capability from message keywords using schema-based pattern matching
    */
   private inferCapability(message: string, state: MemoState): Capability {
     // Use schema-based pattern matching first
     const suggestions = getRoutingSuggestions(message);
-    
+
     if (suggestions.length > 0) {
       const best = suggestions[0];
-      
+
       // Check if the capability is available
       if (best.capability === 'calendar' && !state.user.capabilities.calendar) {
         // Calendar not connected, fall back to database for time-based items
@@ -577,37 +643,37 @@ export class PlannerNode extends LLMNode {
         // Gmail not connected, fall back to general
         return 'general';
       }
-      
+
       console.log(`[PlannerNode] Pattern-based capability inference: ${best.capability} (score: ${best.score})`);
       return best.capability;
     }
-    
+
     // Legacy fallback patterns (in case schema matching doesn't find anything)
-    
+
     // Calendar patterns
     if (/פגישה|אירוע|יומן|לוז|meeting|event|calendar|schedule|appointment/i.test(message)) {
       return state.user.capabilities.calendar ? 'calendar' : 'database';
     }
-    
+
     // Email patterns
     if (/מייל|אימייל|email|mail|inbox/i.test(message)) {
       return state.user.capabilities.gmail ? 'gmail' : 'general';
     }
-    
+
     // Memory patterns (remember facts)
     if (/תזכור ש|זכור ש|שמור.*ש|remember that|save.*that/i.test(message)) {
       return 'second-brain';
     }
-    
+
     // Reminder/task patterns
     if (/תזכיר|תזכורת|להזכיר|משימה|רשימה|remind|reminder|task|todo|list/i.test(message)) {
       return 'database';
     }
-    
+
     // Default to general
     return 'general';
   }
-  
+
   /**
    * Infer risk level from message keywords
    */
@@ -620,12 +686,12 @@ export class PlannerNode extends LLMNode {
     }
     return 'low';
   }
-  
+
   // Pattern matchers
   private matchesMetaIntent(message: string): boolean {
     return /what can you do|מה אתה יכול|help|עזרה|capabilities|יכולות/i.test(message);
   }
-  
+
   private matchesGreeting(message: string): boolean {
     return /^(שלום|היי|הי|בוקר טוב|ערב טוב|hello|hi|hey|good morning|good evening|תודה|thanks)[\s!?]*$/i.test(message.trim());
   }

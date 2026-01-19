@@ -18,6 +18,7 @@ export interface ReminderRecurrence {
 export interface TaskOperationArgs {
   operation: string;
   taskId?: string;
+  taskIds?: string[];  // For bulk operations with resolved IDs
   text?: string;
   category?: string;
   dueDate?: string;
@@ -36,6 +37,7 @@ export interface TaskOperationArgs {
   };
   tasks?: Array<{
     text: string;
+    taskId?: string;  // Added: resolved ID for deleteMultiple
     category?: string;
     dueDate?: string;
     reminder?: string;
@@ -43,14 +45,23 @@ export interface TaskOperationArgs {
   }>;
   updates?: Array<{
     text: string;
+    taskId?: string;  // Added: resolved ID for updateMultiple
     reminderDetails?: any;
   }>;
   where?: {
     window?: string;
     reminderRecurrence?: string;
   };
+  patch?: {  // For updateAll operation
+    dueDate?: string;
+    category?: string;
+    completed?: boolean;
+    reminder?: string;
+    reminderRecurrence?: ReminderRecurrence;
+  };
   preview?: boolean;
   subtaskText?: string;
+  _notFound?: string[];  // Tasks that weren't found during resolution
 }
 
 export interface TaskOperationResult {
@@ -102,6 +113,18 @@ export class TaskServiceAdapter {
           
         case 'addSubtask':
           return await this.addSubtask(taskService, args);
+          
+        case 'deleteAll':
+          return await this.deleteAllTasks(taskService, args);
+          
+        case 'deleteMultiple':
+          return await this.deleteMultipleTasks(taskService, args);
+          
+        case 'updateMultiple':
+          return await this.updateMultipleTasks(taskService, args);
+          
+        case 'updateAll':
+          return await this.updateAllTasks(taskService, args);
           
         default:
           return { success: false, error: `Unknown operation: ${operation}` };
@@ -322,6 +345,215 @@ export class TaskServiceAdapter {
       success: result.success,
       data: result.data,
       error: result.error,
+    };
+  }
+  
+  // ========================================================================
+  // BULK OPERATION IMPLEMENTATIONS
+  // ========================================================================
+  
+  /**
+   * Delete all tasks matching a filter
+   * Uses where.window to filter: 'today', 'this_week', 'overdue', 'all'
+   */
+  private async deleteAllTasks(taskService: any, args: TaskOperationArgs): Promise<TaskOperationResult> {
+    const window = args.where?.window || 'all';
+    
+    // First, get all tasks matching the filter
+    const getAllResult = await taskService.getAll({
+      userPhone: this.userPhone,
+      data: { window },
+    });
+    
+    if (!getAllResult.success) {
+      return { success: false, error: getAllResult.error || 'Failed to fetch tasks' };
+    }
+    
+    // Extract tasks from response
+    let tasks: any[] = [];
+    if (Array.isArray(getAllResult.data)) {
+      tasks = getAllResult.data;
+    } else if (getAllResult.data?.tasks && Array.isArray(getAllResult.data.tasks)) {
+      tasks = getAllResult.data.tasks;
+    }
+    
+    if (tasks.length === 0) {
+      return { success: true, data: { deleted: 0, tasks: [] } };
+    }
+    
+    // Delete each task
+    const deleted: any[] = [];
+    const errors: any[] = [];
+    
+    for (const task of tasks) {
+      const deleteResult = await taskService.delete({
+        userPhone: this.userPhone,
+        id: task.id,
+      });
+      
+      if (deleteResult.success) {
+        deleted.push(task);
+      } else {
+        errors.push({ task: task.text, error: deleteResult.error });
+      }
+    }
+    
+    return {
+      success: errors.length === 0,
+      data: { 
+        deleted: deleted.length, 
+        tasks: deleted,
+        errors: errors.length > 0 ? errors : undefined,
+      },
+    };
+  }
+  
+  /**
+   * Delete multiple specific tasks by their resolved IDs
+   */
+  private async deleteMultipleTasks(taskService: any, args: TaskOperationArgs): Promise<TaskOperationResult> {
+    // Use taskIds if available (from entity resolution), otherwise use tasks array
+    const taskIds = args.taskIds || args.tasks?.map(t => t.taskId).filter(Boolean) || [];
+    
+    if (taskIds.length === 0) {
+      return { success: false, error: 'No tasks to delete' };
+    }
+    
+    const deleted: any[] = [];
+    const errors: any[] = [];
+    
+    for (const taskId of taskIds) {
+      const deleteResult = await taskService.delete({
+        userPhone: this.userPhone,
+        id: taskId,
+      });
+      
+      if (deleteResult.success) {
+        deleted.push(deleteResult.data || { id: taskId });
+      } else {
+        errors.push({ taskId, error: deleteResult.error });
+      }
+    }
+    
+    // Include info about tasks that weren't found during resolution
+    const notFound = args._notFound || [];
+    
+    return {
+      success: deleted.length > 0,
+      data: { 
+        deleted: deleted.length, 
+        tasks: deleted,
+        errors: errors.length > 0 ? errors : undefined,
+        notFound: notFound.length > 0 ? notFound : undefined,
+      },
+    };
+  }
+  
+  /**
+   * Update multiple specific tasks
+   */
+  private async updateMultipleTasks(taskService: any, args: TaskOperationArgs): Promise<TaskOperationResult> {
+    const updates = args.updates || [];
+    
+    if (updates.length === 0) {
+      return { success: false, error: 'No updates to apply' };
+    }
+    
+    const updated: any[] = [];
+    const errors: any[] = [];
+    
+    for (const update of updates) {
+      if (!update.taskId) {
+        errors.push({ text: update.text, error: 'Task not resolved' });
+        continue;
+      }
+      
+      const updateResult = await taskService.update({
+        userPhone: this.userPhone,
+        id: update.taskId,
+        data: update.reminderDetails || {},
+      });
+      
+      if (updateResult.success) {
+        updated.push(updateResult.data || { id: update.taskId });
+      } else {
+        errors.push({ text: update.text, error: updateResult.error });
+      }
+    }
+    
+    // Include info about tasks that weren't found during resolution
+    const notFound = args._notFound || [];
+    
+    return {
+      success: updated.length > 0,
+      data: { 
+        updated: updated.length, 
+        tasks: updated,
+        errors: errors.length > 0 ? errors : undefined,
+        notFound: notFound.length > 0 ? notFound : undefined,
+      },
+    };
+  }
+  
+  /**
+   * Update all tasks matching a filter
+   * Uses where.window to filter and patch to specify what to update
+   */
+  private async updateAllTasks(taskService: any, args: TaskOperationArgs): Promise<TaskOperationResult> {
+    const window = args.where?.window || 'all';
+    const patch = args.patch || {};
+    
+    if (Object.keys(patch).length === 0) {
+      return { success: false, error: 'No update fields specified in patch' };
+    }
+    
+    // First, get all tasks matching the filter
+    const getAllResult = await taskService.getAll({
+      userPhone: this.userPhone,
+      data: { window },
+    });
+    
+    if (!getAllResult.success) {
+      return { success: false, error: getAllResult.error || 'Failed to fetch tasks' };
+    }
+    
+    // Extract tasks from response
+    let tasks: any[] = [];
+    if (Array.isArray(getAllResult.data)) {
+      tasks = getAllResult.data;
+    } else if (getAllResult.data?.tasks && Array.isArray(getAllResult.data.tasks)) {
+      tasks = getAllResult.data.tasks;
+    }
+    
+    if (tasks.length === 0) {
+      return { success: true, data: { updated: 0, tasks: [] } };
+    }
+    
+    // Update each task
+    const updated: any[] = [];
+    const errors: any[] = [];
+    
+    for (const task of tasks) {
+      const updateResult = await taskService.update({
+        userPhone: this.userPhone,
+        id: task.id,
+        data: patch,
+      });
+      
+      if (updateResult.success) {
+        updated.push(updateResult.data || task);
+      } else {
+        errors.push({ task: task.text, error: updateResult.error });
+      }
+    }
+    
+    return {
+      success: errors.length === 0,
+      data: { 
+        updated: updated.length, 
+        tasks: updated,
+        errors: errors.length > 0 ? errors : undefined,
+      },
     };
   }
 }
