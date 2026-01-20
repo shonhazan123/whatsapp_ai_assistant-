@@ -19,7 +19,7 @@
 
 import { getNodeModel } from '../../config/llm-config.js';
 import { callLLM } from '../../services/llm/LLMService.js';
-import type { FailedOperationContext } from '../../types/index.js';
+import type { FailedOperationContext, FormattedResponse } from '../../types/index.js';
 import type { MemoState } from '../state/MemoState.js';
 import { CodeNode } from './BaseNode.js';
 
@@ -242,7 +242,7 @@ ${JSON.stringify(failureDetails, null, 2)}`;
    * Generate success response using ResponseFormatterPrompt
    */
   private async generateSuccessResponse(
-    formattedResponse: any,
+    formattedResponse: FormattedResponse,
     language: 'he' | 'en',
     requestId?: string
   ): Promise<string> {
@@ -253,7 +253,7 @@ ${JSON.stringify(failureDetails, null, 2)}`;
       const modelConfig = getNodeModel('responseWriter');
 
       // Build the prompt data for ResponseFormatterPrompt
-      // The prompt expects JSON with _metadata field
+      // The prompt expects JSON with _metadata field containing capability-specific context
       const promptData = {
         _metadata: {
           agent: formattedResponse.agent,
@@ -263,6 +263,11 @@ ${JSON.stringify(failureDetails, null, 2)}`;
         },
         ...formattedResponse.formattedData,
       };
+
+      // Log the capability-specific context for debugging
+      const ctx = formattedResponse.context;
+      console.log(`[ResponseWriter] Context for ${ctx.capability}: ${JSON.stringify(ctx[ctx.capability as keyof typeof ctx] || {})}`);
+
 
       // Get system prompt from ResponseFormatterPrompt
       if (!ResponseFormatterPrompt) {

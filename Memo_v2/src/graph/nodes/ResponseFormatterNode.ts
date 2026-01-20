@@ -8,11 +8,27 @@
  * Responsibilities:
  * - Format dates to human-readable strings
  * - Categorize tasks (overdue, today, upcoming, recurring)
- * - Build response context for templating
+ * - Build CAPABILITY-SPECIFIC response context for templating
  * - Handle Hebrew/English formatting differences
+ * 
+ * IMPORTANT: V1 services return snake_case fields (due_date, reminder_recurrence)
+ * This node uses snake_case consistently - NOT camelCase.
  */
 
-import type { FailedOperationContext, FormattedResponse, PlanStep, ResponseContext } from '../../types/index.js';
+import type {
+  CalendarEventResult,
+  CalendarResponseContext,
+  DatabaseResponseContext,
+  DatabaseTaskResult,
+  FailedOperationContext,
+  FormattedResponse,
+  GmailResponseContext,
+  GmailResult,
+  PlanStep,
+  ResponseContext,
+  SecondBrainResponseContext,
+  SecondBrainResult,
+} from '../../types/index.js';
 import type { MemoState } from '../state/MemoState.js';
 import { CodeNode } from './BaseNode.js';
 
@@ -124,11 +140,16 @@ function formatDatesInObject(obj: any, timezone: string, language: 'he' | 'en' |
   if (typeof obj === 'object') {
     const formatted: Record<string, any> = {};
     for (const [key, value] of Object.entries(obj)) {
-      // Keep original for certain keys, add formatted version
-      if (['start', 'end', 'dueDate', 'createdAt', 'updatedAt', 'reminderTime'].includes(key)) {
+      // Keep original for date keys, add formatted version
+      // IMPORTANT: V1 uses snake_case (due_date, created_at, next_reminder_at)
+      if ([
+        'start', 'end',
+        'due_date', 'created_at', 'updated_at', 'next_reminder_at',  // snake_case from V1
+        'dueDate', 'createdAt', 'updatedAt', 'reminderTime',          // camelCase fallback
+      ].includes(key)) {
         formatted[key] = value;
-        formatted[`${key}Formatted`] = formatDatesInObject(value, timezone, language);
-      } else if (['days', 'startTime', 'endTime', 'recurrence'].includes(key)) {
+        formatted[`${key}_formatted`] = formatDatesInObject(value, timezone, language);
+      } else if (['days', 'startTime', 'endTime', 'recurrence', 'reminder_recurrence'].includes(key)) {
         // Preserve recurring event parameters as-is (not dates, don't format)
         formatted[key] = value;
       } else {
@@ -146,14 +167,18 @@ function formatDatesInObject(obj: any, timezone: string, language: 'he' | 'en' |
 // ============================================================================
 
 interface CategorizedTasks {
-  overdue: any[];
-  today: any[];
-  upcoming: any[];
-  recurring: any[];
-  noDueDate: any[];
+  overdue: DatabaseTaskResult[];
+  today: DatabaseTaskResult[];
+  upcoming: DatabaseTaskResult[];
+  recurring: DatabaseTaskResult[];
+  noDueDate: DatabaseTaskResult[];
 }
 
-function categorizeTasks(tasks: any[]): CategorizedTasks {
+/**
+ * Categorize tasks by their due date status
+ * IMPORTANT: V1 TaskService returns snake_case fields (due_date, reminder_recurrence)
+ */
+function categorizeTasks(tasks: DatabaseTaskResult[]): CategorizedTasks {
   const now = new Date();
   const todayEnd = new Date(now);
   todayEnd.setHours(23, 59, 59, 999);
@@ -167,19 +192,19 @@ function categorizeTasks(tasks: any[]): CategorizedTasks {
   };
 
   for (const task of tasks) {
-    // Check for recurring tasks
-    if (task.reminderRecurrence || task.isRecurring) {
+    // Check for recurring tasks - use snake_case from V1
+    if (task.reminder_recurrence) {
       categories.recurring.push(task);
       continue;
     }
 
-    // Check due date
-    if (!task.dueDate) {
+    // Check due date - use snake_case from V1
+    if (!task.due_date) {
       categories.noDueDate.push(task);
       continue;
     }
 
-    const dueDate = new Date(task.dueDate);
+    const dueDate = new Date(task.due_date);
 
     if (dueDate < now) {
       categories.overdue.push(task);
@@ -242,11 +267,8 @@ export class ResponseFormatterNode extends CodeNode {
         rawData: allData,
         formattedData: allData, // No date formatting needed
         context: {
-          isRecurring: false,
-          isNudge: false,
-          hasDueDate: false,
-          isToday: false,
-          isTomorrowOrLater: false,
+          capability: 'general',
+          // No capability-specific context for general responses
         },
         failedOperations: failedOperations.length > 0 ? failedOperations : undefined,
       };
@@ -332,16 +354,30 @@ export class ResponseFormatterNode extends CodeNode {
     };
   }
 
+  // ============================================================================
+  // CAPABILITY-SPECIFIC CONTEXT EXTRACTORS
+  // Each capability has its own extraction logic with clear field expectations
+  // ============================================================================
+
   /**
-   * Build context information for response generation
+   * Extract context from Database execution results
+   * V1 TaskService returns snake_case fields: due_date, reminder_recurrence, etc.
    */
-  private buildResponseContext(data: any[], capability: string, action: string): ResponseContext {
-    const context: ResponseContext = {
-      isRecurring: false,
+  private extractDatabaseContext(
+    data: DatabaseTaskResult[],
+    action: string
+  ): DatabaseResponseContext {
+    const context: DatabaseResponseContext = {
+      isReminder: false,
+      isTask: false,
       isNudge: false,
+      isRecurring: false,
       hasDueDate: false,
       isToday: false,
       isTomorrowOrLater: false,
+      isOverdue: false,
+      isListing: action === 'getAll',
+      isEmpty: data.length === 0,
     };
 
     const now = new Date();
@@ -349,37 +385,159 @@ export class ResponseFormatterNode extends CodeNode {
     todayEnd.setHours(23, 59, 59, 999);
 
     for (const item of data) {
-      // Check for recurring series operations (delete/update entire series)
-      // isRecurringSeries indicates a successful series operation - NOT an error!
+      // Use due_date (snake_case from V1) - NOT dueDate
+      if (item.due_date) {
+        context.hasDueDate = true;
+        context.isReminder = true;
+
+        const date = new Date(item.due_date);
+        if (date < now) {
+          context.isOverdue = true;
+        } else if (date <= todayEnd) {
+          context.isToday = true;
+        } else {
+          context.isTomorrowOrLater = true;
+        }
+      } else {
+        context.isTask = true;
+      }
+
+      // Use reminder_recurrence (snake_case from V1)
+      if (item.reminder_recurrence) {
+        context.isRecurring = true;
+        if (item.reminder_recurrence.type === 'nudge') {
+          context.isNudge = true;
+        }
+      }
+    }
+
+    console.log(`[ResponseFormatter] Database context: isReminder=${context.isReminder}, hasDueDate=${context.hasDueDate}, isToday=${context.isToday}`);
+    return context;
+  }
+
+  /**
+   * Extract context from Calendar execution results
+   */
+  private extractCalendarContext(
+    data: CalendarEventResult[],
+    action: string
+  ): CalendarResponseContext {
+    const context: CalendarResponseContext = {
+      isRecurring: false,
+      isRecurringSeries: false,
+      isToday: false,
+      isTomorrowOrLater: false,
+      isListing: action === 'getEvents',
+      isBulkOperation: action === 'deleteByWindow' || action === 'updateByWindow',
+      isEmpty: data.length === 0,
+    };
+
+    const now = new Date();
+    const todayEnd = new Date(now);
+    todayEnd.setHours(23, 59, 59, 999);
+
+    for (const item of data) {
+      // Check recurring series - isRecurringSeries indicates successful series operation
       if (item.isRecurringSeries === true) {
         context.isRecurring = true;
         context.isRecurringSeries = true;
       }
 
-      // Check for recurring patterns
-      // Check for days array or recurrence field (from createRecurringEvent)
-      if (item.reminderRecurrence || item.recurrence || item.isRecurring ||
-        (Array.isArray(item.days) && item.days.length > 0)) {
+      // Check for recurring patterns (days array or recurrence field)
+      if (item.recurrence || (Array.isArray(item.days) && item.days.length > 0)) {
         context.isRecurring = true;
       }
 
-      // Check for nudge reminders
-      if (item.reminderRecurrence?.type === 'nudge') {
-        context.isNudge = true;
-      }
-
-      // Check due dates
-      const dueDate = item.dueDate || item.start;
-      if (dueDate) {
-        context.hasDueDate = true;
-        const date = new Date(dueDate);
-
+      // Check start date
+      if (item.start) {
+        const date = new Date(item.start);
         if (date <= todayEnd && date >= now) {
           context.isToday = true;
         } else if (date > todayEnd) {
           context.isTomorrowOrLater = true;
         }
       }
+    }
+
+    console.log(`[ResponseFormatter] Calendar context: isRecurring=${context.isRecurring}, isRecurringSeries=${context.isRecurringSeries}`);
+    return context;
+  }
+
+  /**
+   * Extract context from Gmail execution results
+   */
+  private extractGmailContext(
+    data: GmailResult[],
+    action: string
+  ): GmailResponseContext {
+    const context: GmailResponseContext = {
+      isPreview: false,
+      isSent: false,
+      isReply: action === 'reply',
+      isListing: action === 'listEmails',
+      isEmpty: data.length === 0,
+    };
+
+    for (const item of data) {
+      if (item.preview === true) {
+        context.isPreview = true;
+      }
+    }
+
+    if (action === 'sendConfirm') {
+      context.isSent = true;
+    }
+
+    console.log(`[ResponseFormatter] Gmail context: isPreview=${context.isPreview}, isSent=${context.isSent}`);
+    return context;
+  }
+
+  /**
+   * Extract context from Second Brain execution results
+   */
+  private extractSecondBrainContext(
+    data: SecondBrainResult[],
+    action: string
+  ): SecondBrainResponseContext {
+    const context: SecondBrainResponseContext = {
+      isStored: action === 'storeMemory',
+      isSearch: action === 'searchMemory',
+      isEmpty: data.length === 0,
+    };
+
+    console.log(`[ResponseFormatter] SecondBrain context: isStored=${context.isStored}, isSearch=${context.isSearch}`);
+    return context;
+  }
+
+  // ============================================================================
+  // MAIN CONTEXT BUILDER - Routes to capability-specific extractors
+  // ============================================================================
+
+  /**
+   * Build context information for response generation
+   * Routes to capability-specific extractors based on the capability
+   */
+  private buildResponseContext(data: any[], capability: string, action: string): ResponseContext {
+    const context: ResponseContext = {
+      capability: capability as ResponseContext['capability'],
+    };
+
+    switch (capability) {
+      case 'database':
+        context.database = this.extractDatabaseContext(data as DatabaseTaskResult[], action);
+        break;
+      case 'calendar':
+        context.calendar = this.extractCalendarContext(data as CalendarEventResult[], action);
+        break;
+      case 'gmail':
+        context.gmail = this.extractGmailContext(data as GmailResult[], action);
+        break;
+      case 'second-brain':
+        context.secondBrain = this.extractSecondBrainContext(data as SecondBrainResult[], action);
+        break;
+      default:
+        // General capability - no specific context needed
+        console.log(`[ResponseFormatter] General capability - no specific context extraction`);
     }
 
     return context;

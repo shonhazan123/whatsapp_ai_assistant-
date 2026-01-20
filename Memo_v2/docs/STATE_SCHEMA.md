@@ -396,6 +396,87 @@ export interface DisambiguationCandidate {
 
 ---
 
+## Capability-Specific Execution Results
+
+> **IMPORTANT**: V1 services return snake_case fields (e.g., `due_date`, `reminder_recurrence`).
+> These types reflect the actual data structure returned by executors.
+
+```typescript
+/**
+ * Database Task Result (from V1 TaskService)
+ */
+export interface DatabaseTaskResult {
+	id: string;
+	text: string;
+	category?: string;
+	due_date?: string;                          // snake_case from V1
+	reminder?: string;                          // INTERVAL string
+	reminder_recurrence?: ReminderRecurrence;   // snake_case from V1
+	next_reminder_at?: string;                  // snake_case from V1
+	nudge_count?: number;
+	completed: boolean;
+	created_at?: string;                        // snake_case from V1
+}
+
+/**
+ * Calendar Event Result (from CalendarServiceAdapter)
+ */
+export interface CalendarEventResult {
+	id?: string;
+	summary: string;
+	start?: string;
+	end?: string;
+	htmlLink?: string;
+	days?: string[];              // For recurring events
+	startTime?: string;
+	endTime?: string;
+	recurrence?: string;
+	isRecurringSeries?: boolean;  // True when operating on entire series
+	deleted?: number;             // For bulk operations
+	updated?: number;
+	events?: CalendarEventResult[];
+}
+
+/**
+ * Gmail Result (from GmailServiceAdapter)
+ */
+export interface GmailResult {
+	messageId?: string;
+	threadId?: string;
+	from?: string;
+	to?: string[];
+	subject?: string;
+	body?: string;
+	date?: string;
+	preview?: boolean;
+}
+
+/**
+ * Second Brain Result (from SecondBrainServiceAdapter)
+ */
+export interface SecondBrainResult {
+	id?: string;
+	text: string;
+	metadata?: Record<string, any>;
+	similarity?: number;
+}
+
+/**
+ * Reminder Recurrence (matches V1 TaskService.ReminderRecurrence)
+ */
+export interface ReminderRecurrence {
+	type: "daily" | "weekly" | "monthly" | "nudge";
+	time?: string;        // "HH:mm" format
+	days?: number[];      // For weekly: [0-6]
+	dayOfMonth?: number;  // For monthly: 1-31
+	interval?: string;    // For nudge: "10 minutes"
+	until?: string;       // Optional end date
+	timezone?: string;
+}
+```
+
+---
+
 ## Resolver & Execution Results
 
 ```typescript
@@ -545,37 +626,98 @@ export interface FormattedResponse {
 	/** Formatted data (human-readable dates, etc.) */
 	formattedData: any;
 
-	/** Response context for formatting decisions */
+	/** Response context for formatting decisions (capability-specific) */
 	context: ResponseContext;
+
+	/** Failed operations for contextual error responses */
+	failedOperations?: FailedOperationContext[];
 }
 
+/**
+ * Main ResponseContext - holds capability-specific nested contexts
+ * Only ONE capability context will be populated based on the source
+ */
 export interface ResponseContext {
-	/** Is this a recurring entity? */
-	isRecurring: boolean;
+	/** Capability indicator - tells which sub-context is populated */
+	capability: "database" | "calendar" | "gmail" | "second-brain" | "general";
 
-	/** Is this a nudge reminder? */
-	isNudge: boolean;
+	/** Database-specific context (populated when capability='database') */
+	database?: DatabaseResponseContext;
 
-	/** Does entity have a due date? */
-	hasDueDate: boolean;
+	/** Calendar-specific context (populated when capability='calendar') */
+	calendar?: CalendarResponseContext;
 
-	/** Is due date today? */
-	isToday: boolean;
+	/** Gmail-specific context (populated when capability='gmail') */
+	gmail?: GmailResponseContext;
 
-	/** Is due date in the future? */
-	isTomorrowOrLater: boolean;
+	/** Second Brain-specific context (populated when capability='second-brain') */
+	secondBrain?: SecondBrainResponseContext;
+}
 
-	/** Number of entities affected */
-	entityCount: number;
+/**
+ * Database Response Context
+ * Flags specific to task/reminder/list operations
+ * IMPORTANT: V1 TaskService returns snake_case fields (due_date, reminder_recurrence)
+ */
+export interface DatabaseResponseContext {
+	isReminder: boolean;        // Task has due_date
+	isTask: boolean;            // Task has NO due_date
+	isNudge: boolean;           // Has nudge-type recurrence
+	isRecurring: boolean;       // Has any reminder_recurrence
+	hasDueDate: boolean;        // Has due_date field
+	isToday: boolean;           // due_date is today
+	isTomorrowOrLater: boolean; // due_date is tomorrow or later
+	isOverdue: boolean;         // due_date is in the past
+	isListing: boolean;         // getAll operation
+	isEmpty: boolean;           // No results returned
+}
 
-	/** Was this a bulk operation? */
-	isBulk: boolean;
+/**
+ * Calendar Response Context
+ * Flags specific to calendar event operations
+ */
+export interface CalendarResponseContext {
+	isRecurring: boolean;       // Event has recurrence pattern
+	isRecurringSeries: boolean; // Operating on entire recurring series
+	isToday: boolean;           // Event start is today
+	isTomorrowOrLater: boolean; // Event start is tomorrow or later
+	isListing: boolean;         // getEvents operation
+	isBulkOperation: boolean;   // deleteByWindow, updateByWindow
+	isEmpty: boolean;           // No events returned
+}
 
-	/** Were there any errors? */
-	hasErrors: boolean;
+/**
+ * Gmail Response Context
+ * Flags specific to email operations
+ */
+export interface GmailResponseContext {
+	isPreview: boolean;         // sendPreview operation
+	isSent: boolean;            // sendConfirm operation
+	isReply: boolean;           // reply operation
+	isListing: boolean;         // listEmails operation
+	isEmpty: boolean;           // No emails returned
+}
 
-	/** Partial success? */
-	isPartialSuccess: boolean;
+/**
+ * Second Brain Response Context
+ * Flags specific to memory operations
+ */
+export interface SecondBrainResponseContext {
+	isStored: boolean;          // storeMemory operation
+	isSearch: boolean;          // searchMemory operation
+	isEmpty: boolean;           // No results returned
+}
+
+/**
+ * Context for failed operations (for contextual error responses)
+ */
+export interface FailedOperationContext {
+	stepId: string;
+	capability: string;         // "database", "calendar", etc.
+	operation: string;          // "delete task", "update event", etc.
+	searchedFor?: string;       // What was being looked for
+	userRequest: string;        // Original user message
+	errorMessage: string;       // The actual error
 }
 ```
 
