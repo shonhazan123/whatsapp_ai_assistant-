@@ -11,18 +11,18 @@ import { BaseExecutor, type ExecutorContext } from './BaseExecutor.js';
 export class CalendarExecutor extends BaseExecutor {
   readonly name = 'calendar_executor';
   readonly capability = 'calendar';
-  
+
   async execute(
     stepId: string,
     args: Record<string, any>,
     context: ExecutorContext
   ): Promise<ExecutionResult> {
     const startTime = Date.now();
-    
+
     try {
       const adapter = new CalendarServiceAdapter(context.userPhone);
       const result = await adapter.execute(args as CalendarOperationArgs);
-      
+
       return {
         stepId,
         success: result.success,

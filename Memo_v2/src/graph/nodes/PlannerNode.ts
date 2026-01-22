@@ -370,25 +370,29 @@ export class PlannerNode extends LLMNode {
 
   protected async process(state: MemoState): Promise<Partial<MemoState>> {
     const modelConfig = getNodeModel('planner');
+    const message = state.input.enhancedMessage || state.input.message;
 
-    // Build user message with full context
-    const userMessage = this.buildUserMessage(state);
+    // Get routing suggestions for disambiguation context (used by HITLGateNode)
+    const routingSuggestions = getRoutingSuggestions(message);
+
+    // Build user message with full context (includes routing suggestions)
+    const userMessage = this.buildUserMessage(state, routingSuggestions);
 
     // Make LLM call for planning
     const plannerOutput = await this.callLLM(userMessage, state, modelConfig);
 
     return {
       plannerOutput,
+      routingSuggestions, // Pass to HITLGateNode for contextual clarification messages
     };
   }
 
-  private buildUserMessage(state: MemoState): string {
+  private buildUserMessage(state: MemoState, routingSuggestions: ReturnType<typeof getRoutingSuggestions>): string {
     const message = state.input.enhancedMessage || state.input.message;
 
     let userMessage = `Current time: ${state.now.formatted}\n\n`;
 
     // PRE-ROUTING HINTS - Pattern matching results to guide LLM
-    const routingSuggestions = getRoutingSuggestions(message);
     if (routingSuggestions.length > 0) {
       userMessage += `## Pattern Matching Hints (pre-computed routing suggestions)\n`;
       userMessage += `Based on pattern analysis, these resolvers are likely matches:\n`;

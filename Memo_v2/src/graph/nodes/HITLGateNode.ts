@@ -17,17 +17,62 @@
  * 5. Graph resumes via Command({ resume: userInput })
  * 6. This node receives userInput and continues
  * 
- * ❌ No LLM
+ * ✅ Uses LLM for generating contextual clarification messages
  * ✅ Uses interrupt() for HITL
  */
 
 import { interrupt } from '@langchain/langgraph';
+import { callLLM } from '../../services/llm/LLMService.js';
+import { getMemoryService } from '../../services/memory/index.js';
 import type { InterruptPayload, InterruptType } from '../../types/index.js';
 import type { MemoState } from '../state/MemoState.js';
 import { CodeNode } from './BaseNode.js';
 
 // Confidence threshold for HITL trigger
 const CONFIDENCE_THRESHOLD = 0.7;
+
+// ============================================================================
+// CLARIFICATION PROMPT - For LLM-based disambiguation message generation
+// ============================================================================
+
+const CLARIFICATION_SYSTEM_PROMPT = `You are a friendly WhatsApp assistant helping clarify an ambiguous user request.
+
+## Your Task
+Generate a SHORT, conversational message asking the user to clarify their intent.
+
+## Context Provided
+- User's original message
+- Detected language (respond in this language ONLY)
+- Possible interpretations (routing suggestions)
+- What's missing or unclear (from planner)
+- What the planner thinks they meant (if any)
+
+## Rules
+1. RESPOND ONLY in the user's language (Hebrew/English)
+2. Be conversational and friendly, NOT robotic
+3. Keep it SHORT (2-4 sentences max)
+4. NEVER expose internal names like "calendar_mutate_resolver" or "database_task_resolver"
+5. If multiple options exist, present them as friendly alternatives
+6. If something specific is missing (like time/date), ask for it naturally
+7. Include a brief example if it helps clarify
+8. Use the user's original words when referring to what they asked
+
+## Capability Descriptions (use these friendly terms, not internal names)
+- calendar (create/edit): "להוסיף/לערוך אירוע ביומן" / "add/edit calendar event"
+- calendar (query): "לבדוק מה יש ביומן" / "check your calendar"  
+- database (reminder): "ליצור תזכורת" / "create a reminder"
+- database (task): "ליצור משימה" / "create a task"
+- gmail: "לטפל במייל" / "handle email"
+- second-brain: "לשמור/לחפש מידע" / "save/search information"
+
+## Missing Field Translations
+- target_unclear: Ask WHICH specific items (by name or time window)
+- time_unclear: Ask WHEN
+- intent_unclear: Ask WHAT they want to do (with friendly alternatives)
+- which_one: Ask which specific item from options
+
+## Output
+Return ONLY the clarification message text. No JSON, no markdown, no explanations.`;
 
 export class HITLGateNode extends CodeNode {
   readonly name = 'hitl_gate';
@@ -63,9 +108,13 @@ export class HITLGateNode extends CodeNode {
     console.log(`[HITLGateNode] HITL check: shouldInterrupt=${hitlCheck.shouldInterrupt}, reason=${hitlCheck.reason}, details=${hitlCheck.details}`);
     
     if (hitlCheck.shouldInterrupt) {
-      // Build interrupt payload
-      const payload = this.buildInterruptPayload(hitlCheck, state);
+      // Build interrupt payload (async for LLM-based clarification)
+      const payload = await this.buildInterruptPayload(hitlCheck, state);
       console.log(`[HITLGateNode] Triggering interrupt with question: "${payload.question?.substring(0, 100)}..."`);
+      
+      // CRITICAL: Add the interrupt message (question) to memory BEFORE interrupting
+      // This ensures the disambiguation/clarification message is in conversation history
+      this.addInterruptMessageToMemory(state, payload.question);
       
       // Store disambiguation context and interrupt timestamp before interrupt
       const updatedState: Partial<MemoState> = {
@@ -150,6 +199,10 @@ export class HITLGateNode extends CodeNode {
         interruptedAt: interruptTimestamp, // Include timestamp in payload for timeout tracking
       },
     };
+    
+    // CRITICAL: Add the interrupt message (question) to memory BEFORE interrupting
+    // This ensures the disambiguation/clarification message is in conversation history
+    this.addInterruptMessageToMemory(state, question);
     
     // Interrupt and wait for user response
     const userResponse = interrupt(payload);
@@ -244,18 +297,30 @@ export class HITLGateNode extends CodeNode {
   }
   
   // ========================================================================
-  // Interrupt Payload Building - Bulding the message that will be sent to the user
+  // Interrupt Payload Building - Building the message that will be sent to the user
   // ========================================================================
   
-  private buildInterruptPayload(
+  private async buildInterruptPayload(
     hitlCheck: HITLCheckResult,
     state: MemoState
-  ): InterruptPayload {
+  ): Promise<InterruptPayload> {
     const language = state.user.language;
+    
+    // Use LLM for clarification cases (low confidence, missing fields)
+    // This provides more natural, contextual messages
+    let question: string;
+    
+    if (hitlCheck.reason === 'clarification') {
+      // Use LLM to generate a contextual clarification message
+      question = await this.generateClarificationWithLLM(hitlCheck, state);
+    } else {
+      // Use existing methods for confirmation/approval (these are more structured)
+      question = this.generateQuestion(hitlCheck, state, language);
+    }
     
     return {
       type: hitlCheck.reason as InterruptType || 'clarification',
-      question: this.generateQuestion(hitlCheck, state, language),
+      question,
       options: this.generateOptions(hitlCheck, state),
       metadata: {
         stepId: state.plannerOutput?.plan[0]?.id,
@@ -316,7 +381,112 @@ export class HITLGateNode extends CodeNode {
   }
   
   // ========================================================================
-  // Message Generation
+  // LLM-Based Clarification Message Generation
+  // ========================================================================
+  
+  /**
+   * Generate a contextual, conversational clarification message using LLM
+   * Uses routing suggestions and planner output to craft a helpful response
+   */
+  private async generateClarificationWithLLM(
+    hitlCheck: HITLCheckResult,
+    state: MemoState
+  ): Promise<string> {
+    const language = state.user.language;
+    const userMessage = state.input.enhancedMessage || state.input.message;
+    
+    // Build context for LLM
+    const context = {
+      userMessage,
+      language,
+      routingSuggestions: state.routingSuggestions?.slice(0, 3) || [],
+      plannerOutput: state.plannerOutput ? {
+        confidence: state.plannerOutput.confidence,
+        missingFields: state.plannerOutput.missingFields,
+        plan: state.plannerOutput.plan.map(p => ({
+          capability: p.capability,
+          action: p.action,
+        })),
+      } : null,
+      hitlReason: hitlCheck.reason,
+      hitlDetails: hitlCheck.details,
+    };
+    
+    const userPrompt = `## User Message
+"${userMessage}"
+
+## Language
+${language === 'he' ? 'Hebrew (עברית) - respond in Hebrew only' : 'English - respond in English only'}
+
+## Routing Suggestions (possible interpretations based on pattern matching)
+${context.routingSuggestions.length > 0 
+  ? JSON.stringify(context.routingSuggestions.map(s => ({
+      capability: s.capability,
+      matchedPatterns: s.matchedPatterns.slice(0, 3),
+      score: s.score,
+    })), null, 2)
+  : 'No clear matches found'}
+
+## Planner Analysis
+${context.plannerOutput 
+  ? JSON.stringify(context.plannerOutput, null, 2)
+  : 'No planner output'}
+
+## Why Clarification Is Needed
+Reason: ${hitlCheck.reason || 'unclear intent'}
+Details: ${hitlCheck.details || 'Low confidence in understanding'}
+${hitlCheck.missingFields?.length ? `Missing fields: ${hitlCheck.missingFields.join(', ')}` : ''}
+
+Generate a friendly, conversational clarification message in ${language === 'he' ? 'Hebrew' : 'English'}:`;
+
+    try {
+      console.log(`[HITLGateNode] Generating LLM clarification for: "${userMessage.substring(0, 50)}..."`);
+      
+      const response = await callLLM({
+        messages: [
+          { role: 'system', content: CLARIFICATION_SYSTEM_PROMPT },
+          { role: 'user', content: userPrompt },
+        ],
+        model: 'gpt-4o-mini', // Fast, cheap model for this task
+        temperature: 0.7,
+        maxTokens: 200,
+      });
+      
+      const clarificationMessage = response.content?.trim();
+      
+      if (clarificationMessage) {
+        console.log(`[HITLGateNode] LLM generated clarification: "${clarificationMessage.substring(0, 100)}..."`);
+        return clarificationMessage;
+      }
+      
+      // Fallback if LLM returns empty
+      console.warn('[HITLGateNode] LLM returned empty clarification, using fallback');
+      return this.getFallbackClarificationMessage(language, hitlCheck);
+    } catch (error) {
+      console.error('[HITLGateNode] LLM clarification failed, using fallback:', error);
+      return this.getFallbackClarificationMessage(language, hitlCheck);
+    }
+  }
+  
+  /**
+   * Fallback clarification message when LLM fails
+   */
+  private getFallbackClarificationMessage(
+    language: 'he' | 'en' | 'other',
+    hitlCheck: HITLCheckResult
+  ): string {
+    // Use existing methods as fallback
+    if (hitlCheck.missingFields?.length) {
+      return this.getMissingFieldsMessage(language, hitlCheck.missingFields);
+    }
+    
+    return language === 'he'
+      ? 'לא הצלחתי להבין בדיוק. אפשר לנסח אחרת?'
+      : "I couldn't quite understand. Could you rephrase?";
+  }
+  
+  // ========================================================================
+  // Legacy Message Generation (used as fallback and for non-clarification cases)
   // ========================================================================
   
   private getLowConfidenceMessage(language: 'he' | 'en' | 'other', state: MemoState): string {
@@ -383,6 +553,25 @@ export class HITLGateNode extends CodeNode {
   // ========================================================================
   // Helper methods
   // ========================================================================
+  
+  /**
+   * Add the interrupt message to memory as an assistant message
+   * This ensures the disambiguation/clarification question is in conversation history
+   */
+  private addInterruptMessageToMemory(state: MemoState, question: string | undefined): void {
+    if (!question) return;
+    
+    try {
+      const memoryService = getMemoryService();
+      const userPhone = state.user.phone || state.input.userPhone;
+      
+      memoryService.addAssistantMessage(userPhone, question);
+      console.log(`[HITLGateNode] Added interrupt message to memory for ${userPhone}`);
+    } catch (error) {
+      console.error('[HITLGateNode] Error adding interrupt message to memory:', error);
+      // Don't fail the interrupt if this fails
+    }
+  }
   
   private describeIntent(state: MemoState, language: 'he' | 'en' | 'other'): string {
     const plan = state.plannerOutput?.plan[0];

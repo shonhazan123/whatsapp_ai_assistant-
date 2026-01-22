@@ -252,17 +252,32 @@ ${JSON.stringify(failureDetails, null, 2)}`;
       // Get model config for response writer
       const modelConfig = getNodeModel('responseWriter');
 
+      // Check if this is a multi-capability response
+      const isMultiStep = formattedResponse.stepResults && formattedResponse.stepResults.length > 1;
+
       // Build the prompt data for ResponseFormatterPrompt
       // The prompt expects JSON with _metadata field containing capability-specific context
-      const promptData = {
+      const promptData: Record<string, any> = {
         _metadata: {
           agent: formattedResponse.agent,
           entityType: formattedResponse.entityType,
           operation: formattedResponse.operation,
           context: formattedResponse.context,
+          isMultiStep: isMultiStep,  // Flag for multi-capability responses
         },
         ...formattedResponse.formattedData,
       };
+
+      // If multi-capability, include all step results with their individual contexts
+      if (isMultiStep && formattedResponse.stepResults) {
+        promptData.stepResults = formattedResponse.stepResults.map(sr => ({
+          capability: sr.capability,
+          action: sr.action,
+          data: sr.data,
+          context: sr.context[sr.capability as keyof typeof sr.context] || sr.context,
+        }));
+        console.log(`[ResponseWriter] Multi-step response with ${formattedResponse.stepResults.length} capabilities: ${formattedResponse.stepResults.map(sr => sr.capability).join(', ')}`);
+      }
 
       // Log the capability-specific context for debugging
       const ctx = formattedResponse.context;

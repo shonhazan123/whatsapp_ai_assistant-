@@ -12,6 +12,7 @@
  * - Optionally update long-term memory summary
  */
 
+import { getMemoryService } from '../../services/memory/index.js';
 import type { ConversationMessage } from '../../types/index.js';
 import type { MemoState } from '../state/MemoState.js';
 import { CodeNode } from './BaseNode.js';
@@ -79,32 +80,43 @@ export class MemoryUpdateNode extends CodeNode {
     const now = Date.now();
     
     console.log('[MemoryUpdate] Updating conversation memory');
+    console.log(`[MemoryUpdate] User message: ${userMessage ? `"${userMessage.substring(0, 50)}..."` : 'MISSING'}`);
+    console.log(`[MemoryUpdate] Assistant response: ${assistantResponse ? `"${assistantResponse.substring(0, 50)}..."` : 'MISSING'}`);
+    console.log(`[MemoryUpdate] Current recentMessages count: ${state.recentMessages.length}`);
     
     // Build new messages to add
     const newMessages: ConversationMessage[] = [];
     
     // Add user message
     if (userMessage) {
-      newMessages.push({
+      const userMsg: ConversationMessage = {
         role: 'user',
         content: enhancedMessage || userMessage,
-        timestamp: now - 1000, // Slightly before assistant response
+        timestamp: new Date(now - 1000).toISOString(), // ISO string format (matches ContextAssemblyNode)
         whatsappMessageId: state.input.whatsappMessageId,
         replyToMessageId: state.input.replyToMessageId,
         metadata: {
           disambiguationContext: state.disambiguation,
           imageContext: state.input.imageContext,
         },
-      });
+      };
+      newMessages.push(userMsg);
+      console.log(`[MemoryUpdate] Added user message to newMessages`);
+    } else {
+      console.warn('[MemoryUpdate] No user message found in state.input.message');
     }
     
     // Add assistant response
     if (assistantResponse) {
-      newMessages.push({
+      const assistantMsg: ConversationMessage = {
         role: 'assistant',
         content: assistantResponse,
-        timestamp: now,
-      });
+        timestamp: new Date(now).toISOString(), // ISO string format (matches ContextAssemblyNode)
+      };
+      newMessages.push(assistantMsg);
+      console.log(`[MemoryUpdate] Added assistant message to newMessages`);
+    } else {
+      console.warn('[MemoryUpdate] No assistant response found in state.finalResponse');
     }
     
     // Merge with existing messages
@@ -118,6 +130,11 @@ export class MemoryUpdateNode extends CodeNode {
     );
     
     console.log(`[MemoryUpdate] ${allMessages.length} messages → ${trimmedMessages.length} after limits`);
+    
+    // Persist messages to ConversationWindow via MemoryService
+    // NOTE: User message is already added by ContextAssemblyNode, we validate as fallback
+    // Assistant message MUST be added here since Memo_v2 has its own ConversationWindow
+    this.persistMessagesToMemory(state, userMessage, enhancedMessage, assistantResponse);
     
     // Update long-term summary if needed
     // This would typically involve an LLM call to summarize older messages
@@ -150,6 +167,59 @@ export class MemoryUpdateNode extends CodeNode {
       longTermSummary,
       metadata,
     };
+  }
+  
+  /**
+   * Persist messages to ConversationWindow via MemoryService
+   * - Validates user message exists (fallback if ContextAssemblyNode didn't add it)
+   * - Adds assistant message to memory (required since Memo_v2 has its own ConversationWindow)
+   */
+  private persistMessagesToMemory(
+    state: MemoState,
+    userMessage: string,
+    enhancedMessage: string | undefined,
+    assistantResponse: string | undefined
+  ): void {
+    try {
+      const memoryService = getMemoryService();
+      const userPhone = state.user.phone || state.input.userPhone;
+      
+      // 1. Validate user message exists (fallback if ContextAssemblyNode missed it)
+      if (userMessage) {
+        const hasUserMsg = memoryService.hasUserMessage(
+          userPhone,
+          userMessage,
+          state.input.whatsappMessageId
+        );
+        
+        if (!hasUserMsg) {
+          console.warn('[MemoryUpdate] User message not found in memory, adding as fallback');
+          memoryService.addUserMessage(
+            userPhone,
+            enhancedMessage || userMessage,
+            {
+              whatsappMessageId: state.input.whatsappMessageId,
+              replyToMessageId: state.input.replyToMessageId,
+              disambiguationContext: state.disambiguation,
+              imageContext: state.input.imageContext,
+            }
+          );
+        }
+      }
+      
+      // 2. Add assistant response to memory
+      // CRITICAL: This must be done here since Memo_v2 has its own ConversationWindow
+      // (V1's sendWhatsAppMessage adds to V1's ConversationWindow, not Memo_v2's)
+      // NOTE: Disambiguation/clarification messages are already added in HITLGateNode before interrupt()
+      if (assistantResponse) {
+        memoryService.addAssistantMessage(userPhone, assistantResponse);
+        console.log(`[MemoryUpdate] Added assistant message to memory for ${userPhone}`);
+      }
+      
+    } catch (error) {
+      console.error('[MemoryUpdate] Error persisting messages to memory:', error);
+      // Don't fail the node if this fails
+    }
   }
   
   /**
@@ -189,5 +259,3 @@ export function createMemoryUpdateNode() {
 
 // Export utilities for use in MemoState reducers
 export { calculateTotalTokens, enforceMemoryLimits, estimateTokens };
-
-

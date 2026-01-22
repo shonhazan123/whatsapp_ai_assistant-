@@ -9,6 +9,9 @@
  * - Singleton pattern (same instance reused)
  * - Pre-loads src/utils/logger to avoid TDZ issues
  * - Fail-fast: errors surface at startup, not during execution
+ * 
+ * NOTE: Memory/ConversationWindow is now handled by Memo_v2's own MemoryService.
+ * See services/memory/ for the new memory implementation.
  */
 
 /* eslint-disable @typescript-eslint/no-var-requires */
@@ -25,7 +28,6 @@ let _taskService: any = null;
 let _listService: any = null;
 let _secondBrainService: any = null;
 let _userService: any = null;
-let _conversationWindow: any = null;
 
 let _initialized = false;
 
@@ -139,14 +141,8 @@ export function initializeServices(): void {
       console.warn('[V1Services] ⚠ UserService not found in module');
     }
 
-    // ConversationWindow (singleton via getInstance)
-    const cwModule = require('../../../src/core/memory/ConversationWindow');
-    if (cwModule?.ConversationWindow) {
-      _conversationWindow = cwModule.ConversationWindow.getInstance?.();
-      console.log('[V1Services] ✓ ConversationWindow');
-    } else {
-      console.warn('[V1Services] ⚠ ConversationWindow not found in module');
-    }
+    // NOTE: ConversationWindow is now handled by Memo_v2's own MemoryService
+    // See: Memo_v2/src/services/memory/
 
     _initialized = true;
     console.log('[V1Services] ✅ All services initialized successfully');
@@ -226,16 +222,6 @@ export function getUserService(): any {
     console.warn('[V1Services] getUserService called before initialization!');
   }
   return _userService;
-}
-
-export function getConversationWindow(): any {
-  if (mockServices.ConversationWindow) {
-    return mockServices.ConversationWindow;
-  }
-  if (!_initialized) {
-    console.warn('[V1Services] getConversationWindow called before initialization!');
-  }
-  return _conversationWindow;
 }
 
 // ============================================================================

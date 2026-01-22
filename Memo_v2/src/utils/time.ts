@@ -6,7 +6,7 @@
  */
 
 import * as chrono from 'chrono-node';
-import { addDays, addWeeks, startOfDay, startOfWeek, endOfDay, endOfWeek } from 'date-fns';
+import { addDays, addWeeks, endOfDay, endOfWeek, startOfDay, startOfWeek } from 'date-fns';
 
 const TIMEZONE = 'Asia/Jerusalem';
 
@@ -18,7 +18,7 @@ export class TimeParser {
   static parseToISO(text: string, referenceDate: Date = new Date()): string | null {
     // Try chrono-node first (handles English well)
     const parsed = chrono.parse(text, referenceDate, { forwardDate: true });
-    
+
     if (parsed.length > 0) {
       const date = parsed[0].start.date();
       return date.toISOString();
@@ -86,11 +86,11 @@ export class TimeParser {
   private static extractTime(text: string, baseDate: Date): Date {
     // Match patterns like "10:00", "ב10", "בשעה 14:30"
     const timeMatch = text.match(/(\d{1,2})(?::(\d{2}))?/);
-    
+
     if (timeMatch) {
       const hours = parseInt(timeMatch[1], 10);
       const minutes = timeMatch[2] ? parseInt(timeMatch[2], 10) : 0;
-      
+
       const result = new Date(baseDate);
       result.setHours(hours, minutes, 0, 0);
       return result;
@@ -222,15 +222,15 @@ export class TimeParser {
     const dayOfWeek = days[date.getDay()];
     const day = date.getDate();
     const month = date.getMonth() + 1;
-    
+
     let result = `${dayOfWeek} ${day}/${month}`;
-    
+
     if (includeTime) {
       const hours = date.getHours().toString().padStart(2, '0');
       const minutes = date.getMinutes().toString().padStart(2, '0');
       result += ` ${hours}:${minutes}`;
     }
-    
+
     return result;
   }
 }

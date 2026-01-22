@@ -214,7 +214,7 @@ export class CalendarEntityResolver implements IEntityResolver {
     }
 
     const selected = candidates[index];
-    
+
     // Check if this is a recurring choice selection (id is 'all' or 'single')
     if (selected.id === 'all' && selected.metadata?.recurringEventId) {
       console.log(`[CalendarEntityResolver] Number selection (${selection}) → ALL - using recurringEventId: ${selected.metadata.recurringEventId}`);
@@ -232,7 +232,7 @@ export class CalendarEntityResolver implements IEntityResolver {
         },
       };
     }
-    
+
     if (selected.id === 'single' && selected.metadata?.eventId) {
       console.log(`[CalendarEntityResolver] Number selection (${selection}) → SINGLE - using eventId: ${selected.metadata.eventId}`);
       return {
@@ -249,7 +249,7 @@ export class CalendarEntityResolver implements IEntityResolver {
         },
       };
     }
-    
+
     // Regular selection (not recurring choice)
     return {
       type: 'resolved',
@@ -908,7 +908,7 @@ export class CalendarEntityResolver implements IEntityResolver {
 
     const recurrencePattern = this.formatRecurrencePattern(selectedCandidate, context.language);
     const instanceDisplay = this.formatEventDisplay(selectedCandidate.entity);
-    
+
     // Build question with numbered options for clear user response
     const question = context.language === 'he'
       ? `האירוע שאתה מנסה לשנות הוא אירוע חוזר כל ${recurrencePattern}.\nהאם תרצה לשנות את כולם או רק את המופע הזה?\n\n1️⃣ כל המופעים\n2️⃣ רק המופע הזה (${instanceDisplay})`
@@ -951,8 +951,8 @@ export class CalendarEntityResolver implements IEntityResolver {
   private buildRecurringChoiceQuestion(candidates: ResolutionCandidate[], language: string): string {
     const allCandidate = candidates.find(c => c.id === 'all');
     const singleCandidate = candidates.find(c => c.id === 'single');
-    
-    const instanceDisplay = singleCandidate?.entity 
+
+    const instanceDisplay = singleCandidate?.entity
       ? this.formatEventDisplay(singleCandidate.entity)
       : '';
 

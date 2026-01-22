@@ -23,18 +23,18 @@ const LIST_OPERATIONS = [
 export class DatabaseExecutor extends BaseExecutor {
   readonly name = 'database_executor';
   readonly capability = 'database';
-  
+
   async execute(
     stepId: string,
     args: Record<string, any>,
     context: ExecutorContext
   ): Promise<ExecutionResult> {
     const startTime = Date.now();
-    
+
     try {
       // Determine if this is a task or list operation based on the args
       const isListOperation = this.isListOperation(args);
-      
+
       let result;
       if (isListOperation) {
         const adapter = new ListServiceAdapter(context.userPhone);
@@ -43,7 +43,7 @@ export class DatabaseExecutor extends BaseExecutor {
         const adapter = new TaskServiceAdapter(context.userPhone);
         result = await adapter.execute(args as TaskOperationArgs);
       }
-      
+
       return {
         stepId,
         success: result.success,
@@ -61,7 +61,7 @@ export class DatabaseExecutor extends BaseExecutor {
       };
     }
   }
-  
+
   /**
    * Determine if this is a list operation based on args
    */
@@ -70,24 +70,24 @@ export class DatabaseExecutor extends BaseExecutor {
     if (args._entityType) {
       return args._entityType === 'list';
     }
-    
+
     // Fall back to field-based detection for backward compatibility
     // If it has list-specific fields, it's a list operation
     if (args.listId || args.listName || args.isChecklist !== undefined) {
       return true;
     }
-    
+
     // If it has task-specific fields, it's a task operation
     if (args.taskId || args.dueDate || args.reminder || args.reminderRecurrence) {
       return false;
     }
-    
+
     // Check operation name patterns
     const op = args.operation;
     if (op === 'addItem' || op === 'toggleItem' || op === 'deleteItem') {
       return true;
     }
-    
+
     // Default to task operation
     return false;
   }

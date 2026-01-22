@@ -11,8 +11,20 @@
 // ============================================================================
 
 export {
-  clearMockServices, getCalendarService, getConversationWindow, getGmailService, getListService, getSecondBrainService, getTaskService, getUserService, setMockService
+  clearMockServices, getCalendarService, getGmailService, getListService, getSecondBrainService, getTaskService, getUserService, setMockService
 } from './v1-services.js';
+
+// ============================================================================
+// MEMO V2 MEMORY SERVICE (self-contained, no V1 dependency)
+// ============================================================================
+
+export {
+  MemoryService,
+  getMemoryService,
+  ConversationWindow,
+  type CWConversationMessage,
+  type RecentTaskSnapshot,
+} from './memory/index.js';
 
 // ============================================================================
 // PLACEHOLDER EXPORTS (for development/testing when V1 not available)
@@ -129,4 +141,3 @@ export const SecondBrainService = {
     return undefined;
   },
 };
-

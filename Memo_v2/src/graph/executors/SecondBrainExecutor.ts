@@ -11,18 +11,18 @@ import { BaseExecutor, type ExecutorContext } from './BaseExecutor.js';
 export class SecondBrainExecutor extends BaseExecutor {
   readonly name = 'secondbrain_executor';
   readonly capability = 'second-brain';
-  
+
   async execute(
     stepId: string,
     args: Record<string, any>,
     context: ExecutorContext
   ): Promise<ExecutionResult> {
     const startTime = Date.now();
-    
+
     try {
       const adapter = new SecondBrainServiceAdapter(context.userPhone);
       const result = await adapter.execute(args as SecondBrainOperationArgs);
-      
+
       return {
         stepId,
         success: result.success,

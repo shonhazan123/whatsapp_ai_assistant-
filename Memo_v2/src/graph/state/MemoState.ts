@@ -17,6 +17,7 @@ import type {
   MessageInput,
   PlannerOutput,
   ResolverResult,
+  RoutingSuggestion,
   StateRefs,
   TimeContext,
   UserContext,
@@ -123,6 +124,14 @@ export const MemoStateAnnotation = Annotation.Root({
 
   // === PLANNER OUTPUT ===
   plannerOutput: Annotation<PlannerOutput | undefined>({
+    default: () => undefined,
+    reducer: (_, update) => update,
+  }),
+
+  // === ROUTING SUGGESTIONS (for disambiguation context) ===
+  // Pattern-matched suggestions from PlannerNode, used by HITLGateNode
+  // to generate contextual clarification messages
+  routingSuggestions: Annotation<RoutingSuggestion[] | undefined>({
     default: () => undefined,
     reducer: (_, update) => update,
   }),
@@ -256,7 +265,7 @@ export function createInitialState(partial: Partial<MemoState> = {}): MemoState 
   return {
     user: partial.user || { ...defaultUser },
     input: partial.input || { ...defaultInput },
-    now: partial.now || { 
+    now: partial.now || {
       ...defaultNow,
       iso: new Date().toISOString(),
       dayOfWeek: new Date().getDay(),
@@ -265,6 +274,7 @@ export function createInitialState(partial: Partial<MemoState> = {}): MemoState 
     recentMessages: partial.recentMessages || [],
     longTermSummary: partial.longTermSummary,
     plannerOutput: partial.plannerOutput,
+    routingSuggestions: partial.routingSuggestions,
     disambiguation: partial.disambiguation,
     resolverResults: partial.resolverResults || new Map(),
     executorArgs: partial.executorArgs || new Map(),

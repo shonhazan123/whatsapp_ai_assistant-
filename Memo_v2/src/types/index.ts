@@ -75,7 +75,8 @@ export interface TimeContext {
 export interface ConversationMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
-  timestamp: number;
+  timestamp: string; // ISO string format (e.g., "2026-01-22T13:36:28.777Z")
+  // Note: V1 ConversationWindow uses number (milliseconds), but ContextAssemblyNode converts to ISO string
   whatsappMessageId?: string;
   replyToMessageId?: string;
   metadata?: {
@@ -155,6 +156,17 @@ export interface PlannerOutput {
   needsApproval: boolean;
   missingFields: string[];
   plan: PlanStep[];
+}
+
+/**
+ * Routing Suggestion (from pattern matching in PlannerNode)
+ * Used by HITLGateNode to generate contextual clarification messages
+ */
+export interface RoutingSuggestion {
+  resolverName: string;
+  capability: Capability;
+  score: number;
+  matchedPatterns: string[];
 }
 
 // ============================================================================
@@ -249,6 +261,12 @@ export interface DatabaseListResult {
 
 /**
  * Calendar Event Result (from CalendarServiceAdapter)
+ * 
+ * Note: This interface covers multiple response formats:
+ * - Raw events from getEvents (id, summary, start, end, attendees, description, location, recurringEventId)
+ * - Created recurring events (days, startTime, endTime, recurrence)
+ * - Bulk operation results (deleted, updated, events, summaries)
+ * - Series operations (isRecurringSeries)
  */
 export interface CalendarEventResult {
   id?: string;
@@ -256,12 +274,17 @@ export interface CalendarEventResult {
   start?: string;
   end?: string;
   htmlLink?: string;
-  // For recurring events
+  // From V1 CalendarService.getEvents() - raw Google API fields
+  attendees?: string[];
+  description?: string;
+  location?: string;
+  recurringEventId?: string;  // Present when event is instance of a recurring series
+  // For created recurring events (from createRecurring)
   days?: string[];
   startTime?: string;
   endTime?: string;
   recurrence?: string;
-  isRecurringSeries?: boolean;
+  isRecurringSeries?: boolean;  // Set when operating on entire recurring series
   // For bulk operations
   deleted?: number;
   updated?: number;
@@ -371,6 +394,18 @@ export interface ResponseContext {
 }
 
 /**
+ * Step Result (for multi-capability responses)
+ * Contains data and context for a single execution step
+ */
+export interface StepResult {
+  stepId: string;
+  capability: Capability;
+  action: string;
+  data: any;
+  context: ResponseContext;
+}
+
+/**
  * Formatted Response (sent to ResponseWriterNode)
  */
 export interface FormattedResponse {
@@ -381,6 +416,7 @@ export interface FormattedResponse {
   formattedData: any; // With human-readable dates
   context: ResponseContext;
   failedOperations?: FailedOperationContext[];  // For contextual error responses
+  stepResults?: StepResult[];  // For multi-capability responses (when > 1 step)
 }
 
 // ============================================================================
