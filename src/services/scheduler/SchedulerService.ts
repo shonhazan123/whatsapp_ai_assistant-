@@ -7,7 +7,7 @@ export class SchedulerService {
   private isRunning: boolean = false;
   private morningDigestHour: number;
 
-  constructor(reminderService?: ReminderService, morningDigestHour: number = 11) {
+  constructor(reminderService?: ReminderService, morningDigestHour: number = 8) {
     this.reminderService = reminderService || new ReminderService();
     this.morningDigestHour = morningDigestHour;
   }

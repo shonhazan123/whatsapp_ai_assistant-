@@ -23,9 +23,11 @@ It talks to `TaskService`, `ListService`, `UserDataService`, and `OnboardingServ
   - One-time due dates (`dueDate`).
   - Recurring reminder patterns (`reminderRecurrence`).
 - Bulk operations:
-  - `createMultiple` tasks.
-  - `updateMultiple` (e.g. "update these two tasks").
-  - `deleteAll` with filters - **Delete immediately, no confirmation**
+  - `createMultiple` - Create multiple tasks at once.
+  - `deleteMultiple` - Delete specific tasks by text (e.g. "delete task A and task B").
+  - `deleteAll` - Delete all tasks matching filter (overdue/today/all) - **No confirmation**.
+  - `updateMultiple` - Update specific tasks (e.g. "change both tasks to 10am").
+  - `updateAll` - Update all tasks matching filter (e.g. "move all overdue to tomorrow").
 - Fetch and filter:
   - `getAll` with filters (category, completion state, date windows).
   - "Overdue", "upcoming", "completed", "work only", etc.
@@ -119,11 +121,29 @@ It talks to `TaskService`, `ListService`, `UserDataService`, and `OnboardingServ
   - Optional: `until` ISO date; `timezone`.
   - `ReminderService` and `SchedulerService` interpret these to compute next runs.
 
-- **Bulk deletion (`deleteAll`)**
+- **Bulk operations**
 
-  - `where` filter: `window: "overdue" | ...`, `reminderRecurrence: "none" | "any" | "daily" | "weekly" | "monthly"`, etc.
-  - **NO preview or confirmation** - deletes immediately
-  - Response: Brief confirmation "✅ נמחק X משימות" / "✅ Deleted X tasks"
+  - **`deleteAll`**: Delete all tasks matching a filter
+    - `where.window`: `"today" | "this_week" | "overdue" | "upcoming" | "all"`
+    - `where.reminderRecurrence`: `"none" | "any" | "daily" | "weekly" | "monthly"`
+    - **NO preview or confirmation** - deletes immediately
+    - Response: "✅ נמחקו X משימות" / "✅ Deleted X tasks"
+
+  - **`deleteMultiple`**: Delete specific tasks by text
+    - `tasks`: Array of `{ text: "task description" }` objects
+    - Entity resolution matches each text to task IDs
+    - Response: "✅ נמחקו X משימות" with optional "לא נמצאו: [list]" for failures
+
+  - **`updateMultiple`**: Update specific tasks
+    - `updates`: Array of `{ text: "task to find", reminderDetails: { dueDate: "..." } }`
+    - Entity resolution matches each text to task IDs
+    - Response: "✅ עודכנו X משימות"
+
+  - **`updateAll`**: Update all tasks matching a filter
+    - `where.window`: Filter same as deleteAll
+    - `patch`: Object with fields to update (`dueDate`, `category`, `completed`, etc.)
+    - Example: Move all overdue tasks to tomorrow
+    - Response: "✅ עודכנו X משימות"
 
 - **Recent tasks context**
   - Some flows store a “recent task snapshot” in `ConversationWindow` (e.g., “update the task I just created”).
@@ -145,9 +165,15 @@ It talks to `TaskService`, `ListService`, `UserDataService`, and `OnboardingServ
   - Supports adding, renaming, removing items.
   - Mark items as done/undone.
 
-- **Disambiguation**
+- **Disambiguation & Fuzzy Matching**
   - When multiple lists share a name:
     - `QueryResolver` + examples in `SystemPrompts` instruct the LLM to ask the user which one they mean by number (1/2/3).
+  - Hebrew query normalization:
+    - Removes common prefixes ("רשימת", "הרשימה", "רשימה") before fuzzy matching.
+    - Example: "רשימת הקניות" matches list named "קניות".
+  - Low-confidence matching (0.1-0.6 score):
+    - If no high-confidence match found but low-confidence candidate exists, asks user to confirm.
+    - Example: "האם התכוונת לרשימה 'נושאים לפוסט'? (כן/לא)"
 
 ---
 
@@ -188,6 +214,39 @@ It talks to `TaskService`, `ListService`, `UserDataService`, and `OnboardingServ
   - Validation errors (e.g., invalid recurrence, missing required text).
 - Destructive operations (deleteAll for bulk) use **preview flows** where specified in `SystemPrompts`.
 
+### Task Resolution & Hebrew Normalization
+
+- **Hebrew query normalization** (for both tasks and lists):
+  - Task prefixes removed: "המשימה", "התזכורת", "משימת", "תזכורת"
+  - List prefixes removed: "רשימת", "הרשימה", "רשימה"
+  - Article "ה" prefix removed from first word
+  - Example: "המשימה לקנות חלב" → "לקנות חלב"
+
+- **Low-confidence matching flow**:
+  - Standard threshold: 0.6+ for automatic match
+  - Low-confidence range: 0.1-0.6 triggers confirmation prompt
+  - Below 0.1: "not found" response
+  - Confirmation message: "האם התכוונת ל-X? (כן/לא)"
+
+### Entity Resolution Data Flow
+
+The entity resolution system ensures resolved IDs flow correctly from fuzzy matching to execution:
+
+1. **DatabaseListResolver/DatabaseTaskResolver** extracts args from user message (e.g., `listName`)
+2. **EntityResolutionNode** calls **DatabaseEntityResolver** which:
+   - Normalizes Hebrew queries
+   - Fuzzy matches against user's entities
+   - Returns resolved `listId`/`taskId` in the args
+3. **EntityResolutionNode** stores resolved args in `executorArgs` (not `resolverResults`)
+4. **ExecutorNode** reads from `executorArgs` (resolved) with fallback to `resolverResults` (original)
+5. **ListServiceAdapter/TaskServiceAdapter** prefers UUID over name lookup
+
+**Key files:**
+- `EntityResolutionNode.ts` - Stores resolved args in `executorArgs`
+- `ExecutorNode.ts` - Reads from `executorArgs` first
+- `ListServiceAdapter.ts` - Uses `listId` for addItem/toggleItem/deleteItem
+- `TaskServiceAdapter.ts` - Uses `taskId` for update/delete/complete
+
 ---
 
 ### Example Flows
@@ -223,6 +282,17 @@ It talks to `TaskService`, `ListService`, `UserDataService`, and `OnboardingServ
 
   - `deleteAll` with `where: { reminderRecurrence: "none" }` - deletes immediately
   - Response: "✅ נמחקו X משימות"
+
+- **"Delete the milk task and the bread task"**
+
+  - `deleteMultiple` with `tasks: [{ text: "milk" }, { text: "bread" }]`
+  - Entity resolver matches each to task IDs
+  - Response: "✅ נמחקו 2 משימות"
+
+- **"Move all overdue tasks to tomorrow at 10am"**
+
+  - `updateAll` with `where: { window: "overdue" }, patch: { dueDate: "2025-01-16T10:00:00+02:00" }`
+  - Response: "✅ עודכנו X משימות"
 
 - **"Create a shopping list with milk, bread, apples"**
 
