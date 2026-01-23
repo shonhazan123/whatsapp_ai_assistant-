@@ -48,13 +48,17 @@ function formatDate(isoString: string, timezone: string, language: 'he' | 'en' |
     // Get locale based on language
     const locale = language === 'he' ? 'he-IL' : 'en-US';
 
+    // Compare dates in user's timezone (sv-SE locale gives YYYY-MM-DD format for easy comparison)
+    const dateInUserTz = date.toLocaleDateString('sv-SE', { timeZone: timezone });
+    const nowInUserTz = now.toLocaleDateString('sv-SE', { timeZone: timezone });
+
     // Check if today
-    const isToday = date.toDateString() === now.toDateString();
+    const isToday = dateInUserTz === nowInUserTz;
 
     // Check if tomorrow
-    const tomorrow = new Date(now);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const isTomorrow = date.toDateString() === tomorrow.toDateString();
+    const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    const tomorrowInUserTz = tomorrow.toLocaleDateString('sv-SE', { timeZone: timezone });
+    const isTomorrow = dateInUserTz === tomorrowInUserTz;
 
     // Format time
     const timeStr = date.toLocaleTimeString(locale, {
@@ -121,39 +125,77 @@ function formatRelativeDate(isoString: string, language: 'he' | 'en' | 'other'):
 }
 
 /**
+ * Check if a value is a Date object
+ */
+function isDateObject(value: any): value is Date {
+  return value instanceof Date && !isNaN(value.getTime());
+}
+
+/**
+ * Convert a date value (Date object or ISO string) to ISO string
+ */
+function toISOString(value: any): string | null {
+  if (isDateObject(value)) {
+    return value.toISOString();
+  }
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(value)) {
+    return value;
+  }
+  return null;
+}
+
+/**
  * Recursively format dates in an object
+ * Handles both Date objects (from PostgreSQL) and ISO strings
  */
 function formatDatesInObject(obj: any, timezone: string, language: 'he' | 'en' | 'other'): any {
   if (obj === null || obj === undefined) return obj;
 
+  // Handle Date objects directly (PostgreSQL returns dates as Date objects)
+  if (isDateObject(obj)) {
+    return formatDate(obj.toISOString(), timezone, language);
+  }
+
+  // Handle ISO date strings
   if (typeof obj === 'string') {
-    // Check if it looks like an ISO date
     if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(obj)) {
       return formatDate(obj, timezone, language);
     }
     return obj;
   }
 
+  // Handle arrays
   if (Array.isArray(obj)) {
     return obj.map(item => formatDatesInObject(item, timezone, language));
   }
 
+  // Handle plain objects (not Date objects)
   if (typeof obj === 'object') {
     const formatted: Record<string, any> = {};
+    const dateFields = [
+      'start', 'end',
+      'due_date', 'created_at', 'updated_at', 'next_reminder_at',  // snake_case from V1
+      'dueDate', 'createdAt', 'updatedAt', 'reminderTime',          // camelCase fallback
+    ];
+    const preserveFields = ['days', 'startTime', 'endTime', 'recurrence', 'reminder_recurrence'];
+
     for (const [key, value] of Object.entries(obj)) {
-      // Keep original for date keys, add formatted version
-      // IMPORTANT: V1 uses snake_case (due_date, created_at, next_reminder_at)
-      if ([
-        'start', 'end',
-        'due_date', 'created_at', 'updated_at', 'next_reminder_at',  // snake_case from V1
-        'dueDate', 'createdAt', 'updatedAt', 'reminderTime',          // camelCase fallback
-      ].includes(key)) {
-        formatted[key] = value;
-        formatted[`${key}_formatted`] = formatDatesInObject(value, timezone, language);
-      } else if (['days', 'startTime', 'endTime', 'recurrence', 'reminder_recurrence'].includes(key)) {
+      if (dateFields.includes(key)) {
+        // For date fields: keep original ISO string, add formatted version
+        const isoString = toISOString(value);
+        if (isoString) {
+          formatted[key] = isoString;  // Always store as ISO string
+          formatted[`${key}_formatted`] = formatDate(isoString, timezone, language);
+        } else {
+          // Not a valid date, just copy the value
+          formatted[key] = value;
+          formatted[`${key}_formatted`] = value;
+        }
+      } else if (preserveFields.includes(key)) {
         // Preserve recurring event parameters as-is (not dates, don't format)
         formatted[key] = value;
       } else {
+        // Recursively process other fields
         formatted[key] = formatDatesInObject(value, timezone, language);
       }
     }
