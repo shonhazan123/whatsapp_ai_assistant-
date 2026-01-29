@@ -5,8 +5,8 @@
  */
 
 export class ResponseFormatterPrompt {
-   static getSystemPrompt(): string {
-      return `
+	static getSystemPrompt(): string {
+		return `
 
     You are the Response Formatting LLM.
 
@@ -585,5 +585,6 @@ Return a generic message:
 ❌ לא הצלחתי לבצע את הפעולה. אפשר לנסות שוב?
 
 
-`}
+`;
+	}
 }

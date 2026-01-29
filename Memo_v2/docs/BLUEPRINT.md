@@ -268,7 +268,7 @@ const response = await RequestContext.run(context, () =>
 	processMessageV2(userPhone, messageText, {
 		whatsappMessageId: message.id,
 		replyToMessageId: replyToMessageId,
-	})
+	}),
 );
 ```
 
@@ -281,7 +281,7 @@ const response = await RequestContext.run(context, () =>
 		whatsappMessageId: message.id,
 		replyToMessageId: replyToMessageId,
 		triggerType: "user",
-	})
+	}),
 );
 ```
 
@@ -473,7 +473,7 @@ export class LLMService {
 		options?: {
 			functions?: FunctionDefinition[];
 			tools?: ToolDefinition[];
-		}
+		},
 	): Promise<CompletionResult> {
 		const modelConfig = this.getModelConfig(nodeType);
 
@@ -623,12 +623,12 @@ function replyContext(state: MemoState): MemoState {
 			if (hasNumberedList(repliedTo.content)) {
 				state.input.enhancedMessage = buildNumberedListContext(
 					repliedTo,
-					state.input.message
+					state.input.message,
 				);
 			} else {
 				state.input.enhancedMessage = buildReplyContext(
 					repliedTo,
-					state.input.message
+					state.input.message,
 				);
 			}
 
@@ -648,7 +648,7 @@ function replyContext(state: MemoState): MemoState {
 	if (state.input.imageContext) {
 		state.input.enhancedMessage = buildImageContextMessage(
 			state.input.imageContext,
-			state.input.enhancedMessage || state.input.message
+			state.input.enhancedMessage || state.input.message,
 		);
 	}
 
@@ -794,14 +794,15 @@ but **punish confidence** and set `missingFields` to include `intent_unclear` so
 - \"תמחק את התזכורות\" / \"delete reminders\" routes to **database** (bulk delete reminders).
 
 **CRITICAL: target_unclear validation**:
+
 - `target_unclear` should ONLY be used when user wants to delete items but provided NEITHER:
-  * Specific names/titles of items to delete, NOR
-  * A time window (tomorrow, next week, etc.) to search within
+  - Specific names/titles of items to delete, NOR
+  - A time window (tomorrow, next week, etc.) to search within
 - If user provides EITHER names OR time window, DO NOT use `target_unclear`
 - Examples:
-  * \"תמחק את האירועים של מחר\" (delete tomorrow's events) → time window exists → NO `target_unclear`
-  * \"תמחק את הפגישה עם דני\" (delete meeting with Danny) → name exists → NO `target_unclear`
-  * \"תמחק את התזכורות\" (delete reminders) → no names, no time window → YES `target_unclear`
+  - \"תמחק את האירועים של מחר\" (delete tomorrow's events) → time window exists → NO `target_unclear`
+  - \"תמחק את הפגישה עם דני\" (delete meeting with Danny) → name exists → NO `target_unclear`
+  - \"תמחק את התזכורות\" (delete reminders) → no names, no time window → YES `target_unclear`
 
 **General fallback (out-of-capability requests)**:
 If the user request is not actionable by tools (calendar/database/gmail/second-brain), route to `general` (conversation/advice).
@@ -1248,7 +1249,7 @@ async function handleMessage(userPhone: string, message: string) {
 		// Fresh invocation
 		const result = await graph.invoke(
 			{ message, userPhone, triggerType: "user" },
-			config
+			config,
 		);
 		return result.final_response;
 	}
@@ -1495,14 +1496,14 @@ export interface IEntityResolver {
 	resolve(
 		operation: string,
 		args: Record<string, any>,
-		context: EntityResolverContext
+		context: EntityResolverContext,
 	): Promise<ResolutionOutput>;
 
 	// Apply user's disambiguation selection
 	applySelection(
 		selection: number | number[] | string,
 		candidates: ResolutionCandidate[],
-		args: Record<string, any>
+		args: Record<string, any>,
 	): Promise<ResolutionOutput>;
 }
 
@@ -2192,19 +2193,16 @@ export LANGCHAIN_PROJECT=memo-v2
 ### 15.1 Pending Decisions
 
 1. **Supabase conversation persistence**: Keep or remove?
-
    - Current: Optional, 50 messages, 24h cleanup
    - Proposal: Remove for V2, keep only LangGraph state
    - Decision: TBD
 
 2. **LangSmith tracing**: Required for production?
-
    - Pros: Excellent debugging, cost tracking
    - Cons: Additional cost, dependency
    - Decision: TBD
 
 3. **Parallel execution limits**: How many concurrent Resolvers?
-
    - Proposal: Max 3 parallel
    - Decision: TBD
 
