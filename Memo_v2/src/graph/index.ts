@@ -129,9 +129,10 @@ export function buildMemoGraph(input: TriggerInput) {
 		.addConditionalEdges("planner", plannerRouter)
 		// Capability check routes based on whether capabilities are missing
 		.addConditionalEdges("capability_check", capabilityCheckRouter)
-		// HITL Gate can interrupt(), so no conditional edge needed
-		// After interrupt resumes, it continues to resolver_router
-		.addEdge("hitl_gate", "resolver_router")
+		// HITL Gate routes based on hitlType after resume:
+		// - intent_unclear: re-route to planner for re-planning
+		// - missing_fields/confirmation: continue to resolver_router
+		.addConditionalEdges("hitl_gate", hitlGateRouter)
 		.addEdge("resolver_router", "entity_resolution")
 		// Entity Resolution can trigger HITL for disambiguation
 		.addConditionalEdges("entity_resolution", entityResolutionRouter)
@@ -216,6 +217,27 @@ function entityResolutionRouter(state: MemoState): string {
 	}
 
 	return "executor";
+}
+
+/**
+ * Route from HITLGate based on hitlType after resume
+ *
+ * Two-stage disambiguation:
+ * 1. intent_unclear: User clarified what action they want -> re-route to planner for re-planning
+ * 2. missing_fields/confirmation: Continue to resolver with updated constraints
+ */
+function hitlGateRouter(state: MemoState): string {
+	// If intent_unclear was resolved, re-plan with clarified intent
+	if (state.hitlType === "intent_unclear" && state.plannerHITLResponse) {
+		console.log(
+			`[hitlGateRouter] Intent clarified ("${state.plannerHITLResponse}"), re-routing to planner`,
+		);
+		return "planner";
+	}
+
+	// All other cases (missing_fields, confirmation, no HITL) continue to resolver
+	console.log(`[hitlGateRouter] Continuing to resolver_router`);
+	return "resolver_router";
 }
 
 // ============================================================================
@@ -309,8 +331,8 @@ export async function invokeMemoGraph(
 	// Check if this is a resume from a pending interrupt
 	let isPendingInterrupt = await hasPendingInterrupt(threadId);
 
-	// 5-minute timeout for HITL interrupts
-	const INTERRUPT_TIMEOUT_MS = 5 * 60 * 1000;
+	// 1-minute timeout for HITL interrupts
+	const INTERRUPT_TIMEOUT_MS = 1 * 60 * 1000;
 
 	// Result type per LangGraph docs - __interrupt__ contains interrupt payloads
 	let result: MemoState & {

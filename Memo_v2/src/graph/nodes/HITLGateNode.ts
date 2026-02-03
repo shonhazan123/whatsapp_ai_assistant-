@@ -116,8 +116,16 @@ export class HITLGateNode extends CodeNode {
       // This ensures the disambiguation/clarification message is in conversation history
       this.addInterruptMessageToMemory(state, payload.question);
       
-      // Store disambiguation context and interrupt timestamp before interrupt
+      // Determine hitlType for routing after resume
+      const hitlType = hitlCheck.reason === 'intent_unclear' ? 'intent_unclear' as const :
+                       hitlCheck.missingFields?.length ? 'missing_fields' as const : 
+                       'confirmation' as const;
+      
+      console.log(`[HITLGateNode] Setting hitlType=${hitlType} for routing after resume`);
+      
+      // Store disambiguation context, hitlType, and interrupt timestamp before interrupt
       const updatedState: Partial<MemoState> = {
+        hitlType,
         disambiguation: hitlCheck.disambiguationContext ? {
           ...hitlCheck.disambiguationContext,
           resolved: false,
@@ -131,6 +139,10 @@ export class HITLGateNode extends CodeNode {
       
       // === CODE BELOW RUNS AFTER USER REPLIES ===
       console.log(`[HITLGateNode] Resumed from interrupt with user response: "${userResponse}"`);
+      
+      // CRITICAL: Add user's response to memory
+      // This ensures the clarification conversation is in history
+      this.addUserResponseToMemory(state, userResponse as string);
       
       // Update state with user's selection
       // IMPORTANT: Clear any previous error state and interruptedAt when resuming successfully
@@ -208,6 +220,10 @@ export class HITLGateNode extends CodeNode {
     const userResponse = interrupt(payload);
     
     // === CODE BELOW RUNS AFTER USER REPLIES ===
+    console.log(`[HITLGateNode] Resumed from entity resolution HITL with user response: "${userResponse}"`);
+    
+    // CRITICAL: Add user's response to memory
+    this.addUserResponseToMemory(state, userResponse as string);
     
     // Parse user response
     const selection = this.parseUserSelection(userResponse as string);
@@ -256,7 +272,18 @@ export class HITLGateNode extends CodeNode {
   private checkHITLConditions(state: MemoState): HITLCheckResult {
     const plannerOutput = state.plannerOutput!;
     
-    // 1. Low confidence
+    // 1. Check for intent_unclear FIRST (triggers re-planning flow after HITL)
+    // This is separate from other missing fields because it routes back to planner
+    if (plannerOutput.missingFields.includes('intent_unclear')) {
+      return {
+        shouldInterrupt: true,
+        reason: 'intent_unclear',
+        details: 'Unclear what action user wants to take - will re-plan after clarification',
+        missingFields: plannerOutput.missingFields,
+      };
+    }
+    
+    // 2. Low confidence (without intent_unclear)
     if (plannerOutput.confidence < CONFIDENCE_THRESHOLD) {
       return {
         shouldInterrupt: true,
@@ -265,7 +292,7 @@ export class HITLGateNode extends CodeNode {
       };
     }
     
-    // 2. Missing fields
+    // 3. Other missing fields (not intent_unclear)
     if (plannerOutput.missingFields.length > 0) {
       return {
         shouldInterrupt: true,
@@ -275,7 +302,7 @@ export class HITLGateNode extends CodeNode {
       };
     }
     
-    // 3. High risk operations
+    // 4. High risk operations
     if (plannerOutput.riskLevel === 'high') {
       return {
         shouldInterrupt: true,
@@ -284,7 +311,7 @@ export class HITLGateNode extends CodeNode {
       };
     }
     
-    // 4. Explicit approval needed
+    // 5. Explicit approval needed
     if (plannerOutput.needsApproval) {
       return {
         shouldInterrupt: true,
@@ -306,11 +333,11 @@ export class HITLGateNode extends CodeNode {
   ): Promise<InterruptPayload> {
     const language = state.user.language;
     
-    // Use LLM for clarification cases (low confidence, missing fields)
+    // Use LLM for clarification cases (low confidence, missing fields, intent_unclear)
     // This provides more natural, contextual messages
     let question: string;
     
-    if (hitlCheck.reason === 'clarification') {
+    if (hitlCheck.reason === 'clarification' || hitlCheck.reason === 'intent_unclear') {
       // Use LLM to generate a contextual clarification message
       question = await this.generateClarificationWithLLM(hitlCheck, state);
     } else {
@@ -513,11 +540,19 @@ Generate a friendly, conversational clarification message in ${language === 'he'
   
   private getConfirmationMessage(language: 'he' | 'en' | 'other', state: MemoState): string {
     const action = state.plannerOutput?.plan[0]?.action || 'this action';
-    
+    const isDeleteEvents =
+      action === 'delete_event' || action === 'delete_events_by_window';
+
     if (language === 'he') {
+      if (isDeleteEvents) {
+        return `🙂 רק מוודאה שאתה בטוח שברצונך לבצע מחיקה (:`;
+      }
       return `⚠️ זו פעולה משמעותית (${action}).\nאתה בטוח שאתה רוצה להמשיך?`;
     }
-    
+
+    if (isDeleteEvents) {
+      return `Just making sure you want to go ahead with deleting (single or multiple events) (:`;
+    }
     return `⚠️ This is a significant action (${action}).\nAre you sure you want to proceed?`;
   }
   
@@ -570,6 +605,25 @@ Generate a friendly, conversational clarification message in ${language === 'he'
     } catch (error) {
       console.error('[HITLGateNode] Error adding interrupt message to memory:', error);
       // Don't fail the interrupt if this fails
+    }
+  }
+  
+  /**
+   * Add the user's response to memory after HITL resume
+   * This ensures the clarification conversation is in history
+   */
+  private addUserResponseToMemory(state: MemoState, response: string | undefined): void {
+    if (!response) return;
+    
+    try {
+      const memoryService = getMemoryService();
+      const userPhone = state.user.phone || state.input.userPhone;
+      
+      memoryService.addUserMessage(userPhone, response, {});
+      console.log(`[HITLGateNode] Added user response to memory for ${userPhone}`);
+    } catch (error) {
+      console.error('[HITLGateNode] Error adding user response to memory:', error);
+      // Don't fail the resume if this fails
     }
   }
   
@@ -634,7 +688,7 @@ Generate a friendly, conversational clarification message in ${language === 'he'
 
 interface HITLCheckResult {
   shouldInterrupt: boolean;
-  reason?: 'clarification' | 'confirmation' | 'approval' | 'disambiguation';
+  reason?: 'clarification' | 'confirmation' | 'approval' | 'disambiguation' | 'intent_unclear';
   details?: string;
   missingFields?: string[];
   disambiguationContext?: MemoState['disambiguation'];

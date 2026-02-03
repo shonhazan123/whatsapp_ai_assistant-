@@ -207,7 +207,7 @@ export class DatabaseEntityResolver implements IEntityResolver {
     args: Record<string, any>,
     context: EntityResolverContext
   ): Promise<ResolutionOutput> {
-    // Operations that need resolution (single or multiple)
+    // Operations that need entity resolution (single or multiple)
     const operationsNeedingResolution = [
       'get', 'update', 'delete', 'complete', 'addSubtask',
       'deleteMultiple', 'updateMultiple'  // Bulk operations need resolution for each item
@@ -537,7 +537,7 @@ export class DatabaseEntityResolver implements IEntityResolver {
     
     return [];
   }
-  
+
   /**
    * Fuzzy match tasks against search text
    */

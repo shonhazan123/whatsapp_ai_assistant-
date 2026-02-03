@@ -301,6 +301,35 @@ function categorizeTasks(tasks: DatabaseTaskResult[]): CategorizedTasks {
 }
 
 // ============================================================================
+// ACTION DETECTION HELPERS
+// Action values come from PlannerNode (human-readable, with spaces)
+// ============================================================================
+
+/**
+ * Check if action is a database listing operation
+ * PlannerNode uses "list tasks" (with space)
+ */
+function isDatabaseListing(action: string): boolean {
+	return action === "list tasks";
+}
+
+/**
+ * Check if action is a calendar listing operation
+ * PlannerNode uses "list events" (with space)
+ */
+function isCalendarListing(action: string): boolean {
+	return action === "list events";
+}
+
+/**
+ * Check if action is a gmail listing operation
+ * PlannerNode uses "list emails" (with space)
+ */
+function isGmailListing(action: string): boolean {
+	return action === "list emails";
+}
+
+// ============================================================================
 // RESPONSE FORMATTER NODE
 // ============================================================================
 
@@ -332,9 +361,13 @@ export class ResponseFormatterNode extends CodeNode {
 			} else if (!result.success) {
 				// Build failed operation context
 				const step = plan.find((s) => s.id === stepId);
+				
+				// Extract meaningful error message with fallbacks
+				const errorMessage = this.extractErrorMessage(result);
+				
 				const failedOp = this.buildFailedOperationContext(
 					stepId,
-					result.error || "Unknown error",
+					errorMessage,
 					step,
 					state,
 				);
@@ -370,7 +403,7 @@ export class ResponseFormatterNode extends CodeNode {
 			return {
 				formattedResponse,
 			};
-		}
+		}	
 
 		// For function call results (calendar, database, gmail, second-brain), format dates and categorize
 
@@ -489,6 +522,36 @@ export class ResponseFormatterNode extends CodeNode {
 		};
 	}
 
+	/**
+	 * Extract meaningful error message from execution result
+	 * Handles various error locations: top-level error, data.errors array, data.notFound
+	 */
+	private extractErrorMessage(result: { success: boolean; error?: string; data?: any }): string {
+		// 1. Top-level error (preferred)
+		if (result.error && result.error.trim()) {
+			return result.error;
+		}
+
+		// 2. Extract from data.errors array (bulk operations like updateMultiple, deleteMultiple)
+		if (result.data?.errors && Array.isArray(result.data.errors) && result.data.errors.length > 0) {
+			const errorMessages = result.data.errors
+				.map((e: any) => e.error || e.text || 'Unknown')
+				.filter((msg: string) => msg && msg !== 'Unknown');
+			
+			if (errorMessages.length > 0) {
+				return errorMessages.join('; ');
+			}
+		}
+
+		// 3. Extract from data.notFound array (entity resolution failures)
+		if (result.data?.notFound && Array.isArray(result.data.notFound) && result.data.notFound.length > 0) {
+			return `Tasks not found: ${result.data.notFound.join(', ')}`;
+		}
+
+		// 4. Fallback
+		return "Unknown error";
+	}
+
 	// ============================================================================
 	// DATA EXTRACTION UTILITIES
 	// Handle various response structures from ServiceAdapters
@@ -582,6 +645,11 @@ export class ResponseFormatterNode extends CodeNode {
 	 * Extract context from Database execution results
 	 * V1 TaskService returns snake_case fields: due_date, reminder_recurrence, etc.
 	 *
+	 * This method handles ALL database context building:
+	 * - Builds the DatabaseResponseContext flags
+	 * - Enriches EACH item with _itemContext (per-item status)
+	 * - Adds _categorized and _isEmpty for listing operations
+	 *
 	 * Handles various response formats:
 	 * - Array of tasks directly
 	 * - { tasks: [...] } wrapper
@@ -597,8 +665,10 @@ export class ResponseFormatterNode extends CodeNode {
 			data,
 			"database",
 		) as DatabaseTaskResult[];
-		const meta = this.extractMetadata(data);
+		const isListing = isDatabaseListing(action);
 
+		// Initialize context - for listings, we only set isListing + isEmpty
+		// Per-item flags are on each item's _itemContext
 		const context: DatabaseResponseContext = {
 			isReminder: false,
 			isTask: false,
@@ -608,7 +678,7 @@ export class ResponseFormatterNode extends CodeNode {
 			isToday: false,
 			isTomorrowOrLater: false,
 			isOverdue: false,
-			isListing: action === "getAll",
+			isListing,
 			isEmpty: items.length === 0,
 		};
 
@@ -616,41 +686,65 @@ export class ResponseFormatterNode extends CodeNode {
 		const todayEnd = new Date(now);
 		todayEnd.setHours(23, 59, 59, 999);
 
+		// Process each item - ALWAYS enrich with _itemContext
 		for (const item of items) {
-			// Use due_date (snake_case from V1) - NOT dueDate
-			if (item.due_date) {
-				context.hasDueDate = true;
-				context.isReminder = true;
+			const dueDate = item.due_date ? new Date(item.due_date) : null;
 
-				const date = new Date(item.due_date);
-				if (date < now) {
-					context.isOverdue = true;
-				} else if (date <= todayEnd) {
-					context.isToday = true;
+			// Attach per-item context to each item
+			(item as any)._itemContext = {
+				isReminder: !!item.due_date,
+				isTask: !item.due_date,
+				isRecurring: !!item.reminder_recurrence,
+				isNudge: item.reminder_recurrence?.type === "nudge",
+				isOverdue: dueDate ? dueDate < now : false,
+				isToday: dueDate ? dueDate >= now && dueDate <= todayEnd : false,
+				isTomorrowOrLater: dueDate ? dueDate > todayEnd : false,
+				hasDueDate: !!item.due_date,
+			};
+
+			// For NON-listings, also aggregate flags to context (for single item operations)
+			if (!isListing) {
+				if (item.due_date) {
+					context.hasDueDate = true;
+					context.isReminder = true;
+					if (dueDate! < now) {
+						context.isOverdue = true;
+					} else if (dueDate! <= todayEnd) {
+						context.isToday = true;
+					} else {
+						context.isTomorrowOrLater = true;
+					}
 				} else {
-					context.isTomorrowOrLater = true;
+					context.isTask = true;
 				}
-			} else {
-				context.isTask = true;
-			}
 
-			// Use reminder_recurrence (snake_case from V1)
-			if (item.reminder_recurrence) {
-				context.isRecurring = true;
-				if (item.reminder_recurrence.type === "nudge") {
-					context.isNudge = true;
+				if (item.reminder_recurrence) {
+					context.isRecurring = true;
+					if (item.reminder_recurrence.type === "nudge") {
+						context.isNudge = true;
+					}
 				}
 			}
 		}
 
+		// For listings, add _categorized buckets to the data
+		if (isListing && data && typeof data === "object") {
+			(data as any)._categorized = categorizeTasks(items);
+			(data as any)._isEmpty = items.length === 0;
+		}
+
 		console.log(
-			`[ResponseFormatter] Database context: isReminder=${context.isReminder}, hasDueDate=${context.hasDueDate}, isToday=${context.isToday}, itemCount=${items.length}`,
+			`[ResponseFormatter] Database context: isListing=${isListing}, isReminder=${context.isReminder}, hasDueDate=${context.hasDueDate}, isToday=${context.isToday}, itemCount=${items.length}`,
 		);
 		return context;
 	}
 
 	/**
 	 * Extract context from Calendar execution results
+	 *
+	 * This method handles ALL calendar context building:
+	 * - Builds the CalendarResponseContext flags
+	 * - Enriches EACH event with _itemContext (per-item status)
 	 *
 	 * Handles various response formats:
 	 * - { events: [...], count: N } from getEvents
@@ -668,15 +762,16 @@ export class ResponseFormatterNode extends CodeNode {
 			"calendar",
 		) as CalendarEventResult[];
 		const meta = this.extractMetadata(data);
+		const isListing = isCalendarListing(action);
 
 		const context: CalendarResponseContext = {
 			isRecurring: false,
 			isRecurringSeries: meta.isRecurringSeries || false, // Check metadata first (from wrapper)
 			isToday: false,
 			isTomorrowOrLater: false,
-			isListing: action === "getEvents",
+			isListing,
 			isBulkOperation:
-				action === "deleteByWindow" || action === "updateByWindow",
+				action === "delete events by window" || action === "update events by window",
 			isEmpty: events.length === 0,
 		};
 
@@ -685,6 +780,21 @@ export class ResponseFormatterNode extends CodeNode {
 		todayEnd.setHours(23, 59, 59, 999);
 
 		for (const item of events) {
+			const startDate = item.start ? new Date(item.start) : null;
+
+			// Attach per-item context to each event
+			(item as any)._itemContext = {
+				isRecurring: !!(
+					item.recurrence ||
+					(Array.isArray(item.days) && item.days.length > 0) ||
+					item.recurringEventId
+				),
+				isRecurringSeries: item.isRecurringSeries === true,
+				isToday: startDate ? startDate >= now && startDate <= todayEnd : false,
+				isTomorrowOrLater: startDate ? startDate > todayEnd : false,
+				isPast: startDate ? startDate < now : false,
+			};
+
 			// Check recurring series - isRecurringSeries indicates successful series operation
 			if (item.isRecurringSeries === true) {
 				context.isRecurring = true;
@@ -702,8 +812,8 @@ export class ResponseFormatterNode extends CodeNode {
 				context.isRecurring = true;
 			}
 
-			// Check start date
-			if (item.start) {
+			// Check start date for aggregated context (for non-listings)
+			if (!isListing && item.start) {
 				const date = new Date(item.start);
 				if (date <= todayEnd && date >= now) {
 					context.isToday = true;
@@ -714,13 +824,17 @@ export class ResponseFormatterNode extends CodeNode {
 		}
 
 		console.log(
-			`[ResponseFormatter] Calendar context: isRecurring=${context.isRecurring}, isRecurringSeries=${context.isRecurringSeries}, eventCount=${events.length}`,
+			`[ResponseFormatter] Calendar context: isListing=${isListing}, isRecurring=${context.isRecurring}, isRecurringSeries=${context.isRecurringSeries}, eventCount=${events.length}`,
 		);
 		return context;
 	}
 
 	/**
 	 * Extract context from Gmail execution results
+	 *
+	 * This method handles ALL gmail context building:
+	 * - Builds the GmailResponseContext flags
+	 * - Enriches EACH email with _itemContext (per-item status)
 	 *
 	 * Handles various response formats:
 	 * - { emails: [...] } from listEmails
@@ -733,34 +847,43 @@ export class ResponseFormatterNode extends CodeNode {
 	): GmailResponseContext {
 		// Extract items array from various wrapper structures
 		const emails = this.extractItemsArray(data, "gmail") as GmailResult[];
-		const meta = this.extractMetadata(data);
+		const isListing = isGmailListing(action);
 
 		const context: GmailResponseContext = {
 			isPreview: false,
 			isSent: false,
 			isReply: action === "reply",
-			isListing: action === "listEmails",
+			isListing,
 			isEmpty: emails.length === 0,
 		};
 
 		for (const item of emails) {
+			// Attach per-item context to each email
+			(item as any)._itemContext = {
+				isPreview: item.preview === true,
+			};
+
 			if (item.preview === true) {
 				context.isPreview = true;
 			}
 		}
 
-		if (action === "sendConfirm") {
+		if (action === "sendConfirm" || action === "send confirm") {
 			context.isSent = true;
 		}
 
 		console.log(
-			`[ResponseFormatter] Gmail context: isPreview=${context.isPreview}, isSent=${context.isSent}, emailCount=${emails.length}`,
+			`[ResponseFormatter] Gmail context: isListing=${isListing}, isPreview=${context.isPreview}, isSent=${context.isSent}, emailCount=${emails.length}`,
 		);
 		return context;
 	}
 
 	/**
 	 * Extract context from Second Brain execution results
+	 *
+	 * This method handles ALL second-brain context building:
+	 * - Builds the SecondBrainResponseContext flags
+	 * - Enriches EACH memory with _itemContext (per-item status)
 	 *
 	 * Handles various response formats:
 	 * - Array of results from searchMemory
@@ -776,16 +899,28 @@ export class ResponseFormatterNode extends CodeNode {
 			data,
 			"second-brain",
 		) as SecondBrainResult[];
-		const meta = this.extractMetadata(data);
+
+		// Action values from PlannerNode: "store memory", "search memory", "list memories"
+		const isStored = action === "store memory";
+		const isSearch = action === "search memory";
+		const isListing = action === "list memories";
 
 		const context: SecondBrainResponseContext = {
-			isStored: action === "storeMemory",
-			isSearch: action === "searchMemory",
+			isStored,
+			isSearch,
 			isEmpty: memories.length === 0,
 		};
 
+		// Enrich each memory with _itemContext
+		for (const item of memories) {
+			(item as any)._itemContext = {
+				isNew: isStored,
+				hasMetadata: !!(item as any).metadata,
+			};
+		}
+
 		console.log(
-			`[ResponseFormatter] SecondBrain context: isStored=${context.isStored}, isSearch=${context.isSearch}, memoryCount=${memories.length}`,
+			`[ResponseFormatter] SecondBrain context: isStored=${isStored}, isSearch=${isSearch}, memoryCount=${memories.length}`,
 		);
 		return context;
 	}

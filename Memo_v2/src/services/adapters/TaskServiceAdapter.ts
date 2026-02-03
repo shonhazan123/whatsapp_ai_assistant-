@@ -33,6 +33,7 @@ export interface TaskOperationArgs {
     completed?: boolean;
     category?: string;
     window?: string;
+    type?: string;  // recurring | unplanned | reminder
     reminderRecurrence?: string;
   };
   tasks?: Array<{
@@ -221,16 +222,103 @@ export class TaskServiceAdapter {
   }
   
   private async getAllTasks(taskService: any, args: TaskOperationArgs): Promise<TaskOperationResult> {
+    const filters = args.filters;
+    const needsInMemoryFilter = filters && (filters.window || filters.type);
+
+    // V1 supports only: completed, category, dueDateFrom, dueDateTo
+    const v1Filters: Record<string, any> = { completed: false };
+    if (filters?.category && !needsInMemoryFilter) {
+      v1Filters.category = filters.category;
+    }
+
     const result = await taskService.getAll({
       userPhone: this.userPhone,
-      data: args.filters,
+      filters: v1Filters,
     });
-    
+
+    if (!result.success) {
+      return { success: false, error: result.error };
+    }
+
+    let tasks = Array.isArray(result.data) ? result.data : result.data?.tasks ?? [];
+    if (needsInMemoryFilter && tasks.length > 0 && filters) {
+      tasks = this.filterTasks(tasks, filters);
+      return {
+        success: true,
+        data: { tasks, count: tasks.length },
+      };
+    }
+
     return {
       success: result.success,
       data: result.data,
       error: result.error,
     };
+  }
+
+  /**
+   * Filter tasks by window and type (used when V1 does not support these filters)
+   */
+  private filterTasks(tasks: any[], filters: Record<string, any>): any[] {
+    let result = tasks;
+    const now = new Date();
+    const todayStart = new Date(now);
+    todayStart.setHours(0, 0, 0, 0);
+    const todayEnd = new Date(now);
+    todayEnd.setHours(23, 59, 59, 999);
+
+    if (filters.window) {
+      result = result.filter(task => {
+        const dueDate = task.due_date ? new Date(task.due_date) : null;
+        switch (filters.window) {
+          case 'today':
+            return dueDate && dueDate >= todayStart && dueDate <= todayEnd;
+          case 'tomorrow': {
+            const tomorrowStart = new Date(todayStart);
+            tomorrowStart.setDate(tomorrowStart.getDate() + 1);
+            const tomorrowEnd = new Date(todayEnd);
+            tomorrowEnd.setDate(tomorrowEnd.getDate() + 1);
+            return dueDate && dueDate >= tomorrowStart && dueDate <= tomorrowEnd;
+          }
+          case 'this_week': {
+            const weekEnd = new Date(todayStart);
+            weekEnd.setDate(weekEnd.getDate() + 7);
+            return dueDate && dueDate >= now && dueDate <= weekEnd;
+          }
+          case 'overdue':
+            return dueDate && dueDate < now;
+          case 'upcoming':
+            return dueDate && dueDate >= now;
+          default:
+            return true;
+        }
+      });
+    }
+
+    if (filters.type) {
+      result = result.filter(task => {
+        const hasRecurrence = !!task.reminder_recurrence;
+        const hasDueDate = !!task.due_date;
+        switch (filters.type) {
+          case 'recurring':
+            return hasRecurrence;
+          case 'unplanned':
+            return !hasDueDate && !hasRecurrence;
+          case 'reminder':
+            return hasDueDate && !hasRecurrence;
+          default:
+            return true;
+        }
+      });
+    }
+
+    if (filters.category) {
+      result = result.filter(task =>
+        task.category?.toLowerCase() === filters.category.toLowerCase()
+      );
+    }
+
+    return result;
   }
   
   private async updateTask(taskService: any, args: TaskOperationArgs): Promise<TaskOperationResult> {
@@ -431,12 +519,18 @@ export class TaskServiceAdapter {
       if (deleteResult.success) {
         deleted.push(deleteResult.data || { id: taskId });
       } else {
-        errors.push({ taskId, error: deleteResult.error });
+        errors.push({ taskId, error: deleteResult.error || 'Delete failed' });
       }
     }
     
     // Include info about tasks that weren't found during resolution
     const notFound = args._notFound || [];
+    
+    // Build error summary when all deletes fail
+    const allFailed = deleted.length === 0 && errors.length > 0;
+    const errorSummary = allFailed 
+      ? `Failed to delete ${errors.length} task(s): ${errors.map(e => e.error || 'Unknown error').join('; ')}`
+      : undefined;
     
     return {
       success: deleted.length > 0,
@@ -446,6 +540,8 @@ export class TaskServiceAdapter {
         errors: errors.length > 0 ? errors : undefined,
         notFound: notFound.length > 0 ? notFound : undefined,
       },
+      // Add top-level error when all deletes fail for proper error propagation
+      error: errorSummary,
     };
   }
   
@@ -468,21 +564,34 @@ export class TaskServiceAdapter {
         continue;
       }
       
+      // Validate reminderDetails has actual fields to update
+      const updateData = update.reminderDetails || {};
+      if (Object.keys(updateData).length === 0) {
+        errors.push({ text: update.text, error: 'No fields to update specified' });
+        continue;
+      }
+      
       const updateResult = await taskService.update({
         userPhone: this.userPhone,
         id: update.taskId,
-        data: update.reminderDetails || {},
+        data: updateData,
       });
       
       if (updateResult.success) {
         updated.push(updateResult.data || { id: update.taskId });
       } else {
-        errors.push({ text: update.text, error: updateResult.error });
+        errors.push({ text: update.text, error: updateResult.error || 'Update failed' });
       }
     }
     
     // Include info about tasks that weren't found during resolution
     const notFound = args._notFound || [];
+    
+    // Build error summary when all updates fail
+    const allFailed = updated.length === 0 && errors.length > 0;
+    const errorSummary = allFailed 
+      ? `Failed to update ${errors.length} task(s): ${errors.map(e => e.error || 'Unknown error').join('; ')}`
+      : undefined;
     
     return {
       success: updated.length > 0,
@@ -492,6 +601,8 @@ export class TaskServiceAdapter {
         errors: errors.length > 0 ? errors : undefined,
         notFound: notFound.length > 0 ? notFound : undefined,
       },
+      // Add top-level error when all updates fail for proper error propagation
+      error: errorSummary,
     };
   }
   

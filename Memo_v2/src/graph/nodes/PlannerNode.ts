@@ -142,7 +142,10 @@ If critical info is unclear, keep confidence low and include:
   * If user provides EITHER names OR time window, DO NOT use "target_unclear"
 - "time_unclear" - when time is ambiguous
 - "which_one" - multiple matches possible
-- "intent_unclear" - unclear if scheduling or just noting
+- "intent_unclear" - CRITICAL: Use when user provides information but it's unclear WHAT ACTION they want:
+  * User mentions multiple activities but no clear verb indicating what to DO with them
+  * Example: "מחר יש לי אימון בשמונה, חלאקה ב10, טיול ב12" - unclear if they want calendar events, reminders, or just sharing info
+  * When intent_unclear: set confidence < 0.6 and route to "general" capability
 
 CRITICAL RULE: "target_unclear" should ONLY be used when BOTH conditions are true:
 1. User wants to delete items (tasks/events/reminders)
@@ -344,6 +347,25 @@ User: "תמחק את האירועים של מחר"
   }]
 }
 
+### K) Intent unclear - user lists activities without clear action verb
+CRITICAL: When user lists items/events WITHOUT saying "add to calendar", "remind me", "schedule", etc., set intent_unclear.
+User: "מחר בבוקר יש לי אימון בשמונה, חלאקה לאימרי ב 10 וחצי, וב 12 טיול עם עדן"
+{
+  "intentType": "operation",
+  "confidence": 0.5,
+  "riskLevel": "low",
+  "needsApproval": false,
+  "missingFields": ["intent_unclear"],
+  "plan": [{
+    "id": "A",
+    "capability": "general",
+    "action": "respond",
+    "constraints": { "rawMessage": "מחר בבוקר יש לי אימון בשמונה, חלאקה לאימרי ב 10 וחצי, וב 12 טיול עם עדן" },
+    "changes": {},
+    "dependsOn": []
+  }]
+}
+
 ## HARD RULES
 - Output ONLY JSON (no markdown, no comments).
 - Always include constraints.rawMessage for every step.
@@ -372,25 +394,51 @@ export class PlannerNode extends LLMNode {
     const modelConfig = getNodeModel('planner');
     const message = state.input.enhancedMessage || state.input.message;
 
+    // Check if we're re-planning after intent_unclear HITL
+    const isReplanning = state.hitlType === 'intent_unclear' && !!state.plannerHITLResponse;
+    
+    if (isReplanning) {
+      console.log(`[PlannerNode] Re-planning after intent clarification: "${state.plannerHITLResponse}"`);
+    }
+
     // Get routing suggestions for disambiguation context (used by HITLGateNode)
     const routingSuggestions = getRoutingSuggestions(message);
 
-    // Build user message with full context (includes routing suggestions)
-    const userMessage = this.buildUserMessage(state, routingSuggestions);
+    // Build user message with full context (includes routing suggestions and clarification if re-planning)
+    const userMessage = this.buildUserMessage(state, routingSuggestions, isReplanning);
 
     // Make LLM call for planning
     const plannerOutput = await this.callLLM(userMessage, state, modelConfig);
 
+    // Clear hitlType and plannerHITLResponse after re-planning to avoid loops
     return {
       plannerOutput,
       routingSuggestions, // Pass to HITLGateNode for contextual clarification messages
+      // Clear HITL state after re-planning
+      hitlType: isReplanning ? undefined : state.hitlType,
+      plannerHITLResponse: isReplanning ? undefined : state.plannerHITLResponse,
     };
   }
 
-  private buildUserMessage(state: MemoState, routingSuggestions: ReturnType<typeof getRoutingSuggestions>): string {
+  private buildUserMessage(
+    state: MemoState, 
+    routingSuggestions: ReturnType<typeof getRoutingSuggestions>,
+    isReplanning: boolean = false
+  ): string {
     const message = state.input.enhancedMessage || state.input.message;
 
     let userMessage = `Current time: ${state.now.formatted}\n\n`;
+
+    // If re-planning after intent clarification, include the clarification prominently
+    if (isReplanning && state.plannerHITLResponse) {
+      userMessage += `## INTENT CLARIFICATION (User was asked what they want to do)\n`;
+      userMessage += `Original message: "${message}"\n`;
+      userMessage += `User clarified they want: **${state.plannerHITLResponse}**\n`;
+      userMessage += `\nIMPORTANT: The user has clarified their intent. Plan accordingly with HIGH confidence.\n`;
+      userMessage += `- If they said "יומן" / "calendar" → route to calendar capability\n`;
+      userMessage += `- If they said "תזכורת" / "reminder" → route to database capability\n`;
+      userMessage += `- Otherwise interpret their response as the desired action\n\n`;
+    }
 
     // PRE-ROUTING HINTS - Pattern matching results to guide LLM
     if (routingSuggestions.length > 0) {

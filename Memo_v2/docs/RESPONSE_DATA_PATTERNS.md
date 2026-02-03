@@ -188,6 +188,51 @@ ServiceAdapter → Executor → ResponseFormatterNode
 [{ id, text, category, due_date, ... }, ...]
 ```
 
+### Task Filtering (getAll with filters)
+
+> **Added February 2026**: Tasks are filtered in `TaskServiceAdapter` when the V1 TaskService does not support the filter (e.g. `window`, `type`).
+
+When the user asks for tasks with constraints (e.g., "today", "tomorrow", "recurring"), the resolver outputs `getAll` with `filters`. The executor calls the adapter with those args; the adapter fetches from V1 then filters in memory when needed.
+
+**Supported Filters:**
+
+| Filter | Values | Description |
+|--------|--------|-------------|
+| `window` | `today`, `tomorrow`, `this_week`, `overdue`, `upcoming` | Filter by due date time window (in-adapter) |
+| `type` | `recurring`, `unplanned`, `reminder` | Filter by task type (in-adapter) |
+| `category` | any string | Filter by category (passed to V1 when no window/type) |
+
+**Flow:**
+```
+Resolver LLM → { operation: "getAll", filters: { window: "today" } }
+    ↓
+EntityResolver → passes args through (getAll needs no resolution)
+    ↓
+ExecutorNode → calls TaskServiceAdapter.execute(args)
+    ↓
+TaskServiceAdapter.getAllTasks():
+  - If filters.window or filters.type: call V1 getAll({ completed: false }), then filterTasks() in memory
+  - Else: call V1 getAll with filters as-is
+    ↓
+ResponseFormatterNode → formats result
+```
+
+**Examples:**
+
+```typescript
+// "מה יש לי להיום?"
+{ operation: "getAll", filters: { window: "today" } }
+
+// "מה התזכורות החוזרות שלי?"
+{ operation: "getAll", filters: { type: "recurring" } }
+
+// "מה המשימות שלי ללא תאריך?"
+{ operation: "getAll", filters: { type: "unplanned" } }
+
+// "מה עבר את הזמן?"
+{ operation: "getAll", filters: { window: "overdue" } }
+```
+
 ### create
 
 **Raw Response:**
@@ -436,6 +481,130 @@ private extractMetadata(data: any): Record<string, any> {
   if (data.summaries) meta.summaries = data.summaries;
 
   return meta;
+}
+```
+
+---
+
+## Context Enrichment
+
+> **Updated January 2026**: ResponseFormatterNode now enriches items with per-item context.
+
+### Per-Item Context (_itemContext)
+
+Each item returned from ServiceAdapters is enriched with an `_itemContext` object that contains status flags specific to that item. This allows the LLM to understand each item's status individually rather than relying on aggregated context.
+
+**Action values come from PlannerNode** (human-readable, with spaces):
+- Database: `"list tasks"`, `"create reminder"`, `"delete reminder"`, etc.
+- Calendar: `"list events"`, `"create event"`, `"delete event"`, etc.
+- Gmail: `"list emails"`, `"send email"`, etc.
+- Second Brain: `"store memory"`, `"search memory"`, `"list memories"`
+
+### Database Items
+
+```typescript
+task._itemContext = {
+  isReminder: boolean,      // Has due_date
+  isTask: boolean,          // No due_date
+  isRecurring: boolean,     // Has reminder_recurrence
+  isNudge: boolean,         // reminder_recurrence.type === "nudge"
+  isOverdue: boolean,       // due_date < now
+  isToday: boolean,         // due_date is today
+  isTomorrowOrLater: boolean, // due_date > today
+  hasDueDate: boolean       // Has due_date field
+}
+```
+
+### Calendar Items
+
+```typescript
+event._itemContext = {
+  isRecurring: boolean,      // Has recurrence pattern
+  isRecurringSeries: boolean, // Operating on entire series
+  isToday: boolean,          // Start date is today
+  isTomorrowOrLater: boolean, // Start date > today
+  isPast: boolean            // Start date < now
+}
+```
+
+### Gmail Items
+
+```typescript
+email._itemContext = {
+  isPreview: boolean         // Is a preview (not sent yet)
+}
+```
+
+### Second Brain Items
+
+```typescript
+memory._itemContext = {
+  isNew: boolean,            // Just stored
+  hasMetadata: boolean       // Has metadata attached
+}
+```
+
+---
+
+## Categorized Data (_categorized)
+
+For **listing operations** (action === "list tasks"), ResponseFormatterNode adds `_categorized` to the data payload. This groups tasks by their status for easy sectioned rendering.
+
+```typescript
+data._categorized = {
+  overdue: DatabaseTaskResult[],    // due_date < now
+  today: DatabaseTaskResult[],      // due_date is today
+  upcoming: DatabaseTaskResult[],   // due_date > today
+  recurring: DatabaseTaskResult[],  // Has reminder_recurrence
+  noDueDate: DatabaseTaskResult[]   // No due_date (pure tasks)
+}
+
+data._isEmpty = boolean  // true if no tasks found
+```
+
+### Context Behavior
+
+For **listings** (action === "list tasks"):
+- Global context: Only `isListing: true` and `isEmpty` are set
+- Per-item flags (`isOverdue`, `isToday`, etc.) are on each item's `_itemContext`
+- `_categorized` buckets are added to the data
+
+For **single operations** (create/update/delete):
+- Global context: Aggregates flags from all items (existing behavior)
+- Per-item `_itemContext` is also attached to each item
+
+### Example: List Tasks Response to LLM
+
+```json
+{
+  "_metadata": {
+    "agent": "database",
+    "operation": "list tasks",
+    "context": {
+      "capability": "database",
+      "database": { "isListing": true, "isEmpty": false }
+    }
+  },
+  "tasks": [
+    {
+      "text": "Buy groceries",
+      "due_date_formatted": "Yesterday at 10:00",
+      "_itemContext": { "isOverdue": true, "isReminder": true }
+    },
+    {
+      "text": "Call mom",
+      "due_date_formatted": "Today at 18:00",
+      "_itemContext": { "isToday": true, "isReminder": true }
+    }
+  ],
+  "_categorized": {
+    "overdue": [/* task objects */],
+    "today": [/* task objects */],
+    "upcoming": [],
+    "recurring": [],
+    "noDueDate": []
+  },
+  "_isEmpty": false
 }
 ```
 

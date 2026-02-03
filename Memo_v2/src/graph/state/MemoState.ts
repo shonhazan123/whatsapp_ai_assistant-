@@ -213,6 +213,16 @@ export const MemoStateAnnotation = Annotation.Root({
     reducer: (_, update) => update,
   }),
 
+  // === HITL TYPE (for routing after resume) ===
+  // Tracks which type of HITL was triggered to determine routing:
+  // - 'intent_unclear': Re-route to planner for re-planning
+  // - 'missing_fields': Continue to resolver with updated constraints
+  // - 'confirmation': Continue to resolver after user confirms
+  hitlType: Annotation<'intent_unclear' | 'missing_fields' | 'confirmation' | undefined>({
+    default: () => undefined,
+    reducer: (_, update) => update,
+  }),
+
   // === PLANNER HITL RESPONSE ===
   // Stores user response to planner-triggered HITL (confirmation/clarification)
   // Separate from disambiguation which is used by EntityResolutionNode
@@ -285,6 +295,7 @@ export function createInitialState(partial: Partial<MemoState> = {}): MemoState 
     error: partial.error,
     needsHITL: partial.needsHITL || false,
     hitlReason: partial.hitlReason,
+    hitlType: partial.hitlType,
     plannerHITLResponse: partial.plannerHITLResponse,
     interruptedAt: partial.interruptedAt,
     metadata: partial.metadata || { ...defaultMetadata, startTime: Date.now() },

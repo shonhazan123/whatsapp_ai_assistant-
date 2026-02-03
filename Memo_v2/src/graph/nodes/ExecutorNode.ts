@@ -100,7 +100,6 @@ export class ExecutorNode extends CodeNode {
           break;
           
         case 'database':
-          // Determine if task or list
           if (this.isListOperation(args)) {
             const listAdapter = new ListServiceAdapter(userPhone);
             result = await listAdapter.execute(args as any);

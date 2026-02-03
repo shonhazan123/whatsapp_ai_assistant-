@@ -143,6 +143,32 @@ Pattern: "תזכיר לי מחר" / "remind me tomorrow" (no time mentioned)
 Examples:
 - "תזכיר לי מחר לקנות חלב" → { dueDate: "...T08:00:00...", reminder: "0 minutes" }
 
+## DATE INFERENCE RULES (CRITICAL - READ CAREFULLY):
+
+### Time without date → ALWAYS assume TODAY
+When user specifies only a time (e.g., "בשמונה", "בשבע וארבעים", "at 8pm") WITHOUT explicitly mentioning a date:
+- **ALWAYS assume TODAY**, never tomorrow
+- The user will say "מחר" (tomorrow) or a specific date if they mean a different day
+- This applies even if the time seems ambiguous
+
+### Time ambiguity resolution (morning vs evening):
+- For times like "בשמונה" (at 8) or "בשבע" (at 7) without AM/PM:
+  - If current time is afternoon/evening (after 12:00) → assume EVENING (PM) for hours 1-11
+  - If current time is morning (before 12:00) → assume the nearest upcoming occurrence
+  - "בערב" (evening) or "בבוקר" (morning) makes it explicit
+- Times 13:00+ (1pm+) are unambiguous (24-hour format)
+
+### Examples of correct date inference:
+- Current time: 17:22 → "בשבע וארבעים" = TODAY at 19:47 (7:47 PM)
+- Current time: 17:22 → "בשמונה וחצי" = TODAY at 20:30 (8:30 PM)
+- Current time: 09:00 → "בשמונה" = TODAY at 08:00 if not passed, else 20:00
+- Current time: 14:00 → "בחמש" = TODAY at 17:00 (5:00 PM)
+
+### NEVER default to tomorrow unless:
+- User explicitly says "מחר" (tomorrow)
+- User specifies a specific date like "ביום שני" (on Monday)
+- User says "מחר בבוקר" (tomorrow morning)
+
 ## RECURRING REMINDERS (reminderRecurrence):
 
 ### Daily: "כל יום ב-X" / "every day at X"
@@ -201,6 +227,24 @@ Example 5 - Weekly recurring:
 User: "תזכיר לי כל יום ראשון ב-14:00 להתקשר לאמא"
 → { "operation": "create", "text": "להתקשר לאמא", "reminderRecurrence": { "type": "weekly", "days": [0], "time": "14:00" } }
 
+Example 5a - Time only WITHOUT date (MUST be TODAY):
+User: "תזכיר לי בשבע וארבעים למשוך כסף"
+Current time: Monday, 02/02/2025 17:22
+→ { "operation": "create", "text": "למשוך כסף", "dueDate": "2025-02-02T19:47:00+02:00", "reminder": "0 minutes" }
+Note: No date mentioned → assume TODAY. Time is 19:47 (evening, since current time is afternoon)
+
+Example 5b - Multiple reminders with time only (all TODAY):
+User: "תזכיר לי בשבע וארבעים למשוך כסף ובשמונה וחצי להתקין את הממיר"
+Current time: Monday, 02/02/2025 17:22
+→ {
+  "operation": "createMultiple",
+  "tasks": [
+    { "text": "למשוך כסף", "dueDate": "2025-02-02T19:47:00+02:00", "reminder": "0 minutes" },
+    { "text": "להתקין את הממיר", "dueDate": "2025-02-02T20:30:00+02:00", "reminder": "0 minutes" }
+  ]
+}
+Note: Both times are TODAY evening - NEVER assume tomorrow when date not specified
+
 Example 6a - Complete/delete a task (with task name in message):
 User: "סיימתי לבדוק את הפיצ'ר"
 → { "operation": "delete", "text": "לבדוק את הפיצ'ר" }
@@ -218,9 +262,29 @@ Example 6d - Confirm disambiguation (extracting from reply context):
 User message: "[Replying to: \"האם התכוונת למשימה \\\"לבדוק אם אלי דלתות מגיע ולפנות את החדר עבודה (one-time)\"? (כן/לא)\"]\n\nכן"
 → { "operation": "delete", "text": "לבדוק אם אלי דלתות מגיע ולפנות את החדר עבודה" }
 
-Example 7 - List tasks:
+Example 7 - List tasks for today:
 User: "מה התזכורות שלי להיום?"
 → { "operation": "getAll", "filters": { "window": "today" } }
+
+Example 7a - List tasks for tomorrow:
+User: "מה יש לי מחר?"
+→ { "operation": "getAll", "filters": { "window": "tomorrow" } }
+
+Example 7b - List recurring reminders:
+User: "מה התזכורות החוזרות שלי?"
+→ { "operation": "getAll", "filters": { "type": "recurring" } }
+
+Example 7c - List tasks without dates:
+User: "מה המשימות שלי ללא תאריך?"
+→ { "operation": "getAll", "filters": { "type": "unplanned" } }
+
+Example 7d - List overdue tasks:
+User: "מה עבר את הזמן?"
+→ { "operation": "getAll", "filters": { "window": "overdue" } }
+
+Example 7e - List all tasks (no filter):
+User: "מה המשימות שלי?"
+→ { "operation": "getAll" }
 
 Example 8 - Delete all overdue:
 User: "תמחק את כל המשימות שזמנם עבר"
@@ -306,12 +370,20 @@ Output only the JSON, no explanation. NEVER include IDs you don't have.`;
           },
           filters: {
             type: 'object',
-            description: 'Filters for getAll',
+            description: 'Filters for getAll - use to narrow down results by time window or type',
             properties: {
               completed: { type: 'boolean' },
               category: { type: 'string' },
-              window: { type: 'string', enum: ['today', 'this_week', 'overdue', 'upcoming'] },
-              reminderRecurrence: { type: 'string', enum: ['none', 'any', 'daily', 'weekly', 'monthly'] },
+              window: { 
+                type: 'string', 
+                enum: ['today', 'tomorrow', 'this_week', 'overdue', 'upcoming'],
+                description: 'Time window: today, tomorrow, this_week, overdue, upcoming'
+              },
+              type: {
+                type: 'string',
+                enum: ['recurring', 'unplanned', 'reminder'],
+                description: 'Task type: recurring (has recurrence), unplanned (no date), reminder (has due date)'
+              },
             },
           },
           tasks: {

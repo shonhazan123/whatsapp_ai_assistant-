@@ -657,44 +657,60 @@ export interface ResponseContext {
 /**
  * Database Response Context
  * Flags specific to task/reminder/list operations
+ * 
  * IMPORTANT: V1 TaskService returns snake_case fields (due_date, reminder_recurrence)
+ * 
+ * For LISTING operations (action === "list tasks"):
+ * - Only isListing and isEmpty are set at context level
+ * - Per-item flags are on each item's _itemContext
+ * - Data includes _categorized buckets
+ * 
+ * For SINGLE operations (create/update/delete):
+ * - All flags are aggregated from items
+ * - Per-item _itemContext is also attached
  */
 export interface DatabaseResponseContext {
-	isReminder: boolean;        // Task has due_date
-	isTask: boolean;            // Task has NO due_date
-	isNudge: boolean;           // Has nudge-type recurrence
-	isRecurring: boolean;       // Has any reminder_recurrence
-	hasDueDate: boolean;        // Has due_date field
-	isToday: boolean;           // due_date is today
-	isTomorrowOrLater: boolean; // due_date is tomorrow or later
-	isOverdue: boolean;         // due_date is in the past
-	isListing: boolean;         // getAll operation
+	isReminder: boolean;        // Task has due_date (aggregated, not set for listings)
+	isTask: boolean;            // Task has NO due_date (aggregated, not set for listings)
+	isNudge: boolean;           // Has nudge-type recurrence (aggregated, not set for listings)
+	isRecurring: boolean;       // Has any reminder_recurrence (aggregated, not set for listings)
+	hasDueDate: boolean;        // Has due_date field (aggregated, not set for listings)
+	isToday: boolean;           // due_date is today (aggregated, not set for listings)
+	isTomorrowOrLater: boolean; // due_date is tomorrow or later (aggregated, not set for listings)
+	isOverdue: boolean;         // due_date is in the past (aggregated, not set for listings)
+	isListing: boolean;         // action === "list tasks" (from PlannerNode)
 	isEmpty: boolean;           // No results returned
 }
 
 /**
  * Calendar Response Context
  * Flags specific to calendar event operations
+ * 
+ * Per-item _itemContext is attached to each event with:
+ * { isRecurring, isRecurringSeries, isToday, isTomorrowOrLater, isPast }
  */
 export interface CalendarResponseContext {
 	isRecurring: boolean;       // Event has recurrence pattern
 	isRecurringSeries: boolean; // Operating on entire recurring series
 	isToday: boolean;           // Event start is today
 	isTomorrowOrLater: boolean; // Event start is tomorrow or later
-	isListing: boolean;         // getEvents operation
-	isBulkOperation: boolean;   // deleteByWindow, updateByWindow
+	isListing: boolean;         // action === "list events" (from PlannerNode)
+	isBulkOperation: boolean;   // action contains "by window"
 	isEmpty: boolean;           // No events returned
 }
 
 /**
  * Gmail Response Context
  * Flags specific to email operations
+ * 
+ * Per-item _itemContext is attached to each email with:
+ * { isPreview }
  */
 export interface GmailResponseContext {
 	isPreview: boolean;         // sendPreview operation
-	isSent: boolean;            // sendConfirm operation
+	isSent: boolean;            // sendConfirm / "send confirm" operation
 	isReply: boolean;           // reply operation
-	isListing: boolean;         // listEmails operation
+	isListing: boolean;         // action === "list emails" (from PlannerNode)
 	isEmpty: boolean;           // No emails returned
 }
 
