@@ -106,7 +106,6 @@ The user message you receive may be enhanced with context:
 - **deleteMultiple**: Delete multiple specific tasks (use "tasks" array with "text" to identify each)
 - **deleteAll**: Delete all tasks matching a filter (with optional "where" filter)
 - **complete**: Mark task as complete (same as delete for reminders)
-- **addSubtask**: Add a subtask to a parent task
 
 ## OUTPUT FORMAT:
 {
@@ -142,6 +141,14 @@ Examples:
 Pattern: "תזכיר לי מחר" / "remind me tomorrow" (no time mentioned)
 Examples:
 - "תזכיר לי מחר לקנות חלב" → { dueDate: "...T08:00:00...", reminder: "0 minutes" }
+
+### 4. "In X minutes/hours" (relative from now) → dueDate = current time + X, reminder: "0 minutes"
+Pattern: "תזכיר לי עוד X דקות/שעות" / "remind me in X minutes/hours"
+Meaning: Fire the reminder at (now + X). You MUST output dueDate as ISO with timezone (use [Current time] from context and add the interval).
+Examples:
+- "תזכירי לי עוד חמש דקות לעשות בדיקה" → { dueDate: "<now+5min ISO>", text: "לעשות בדיקה", reminder: "0 minutes" }
+- "Remind me in 30 minutes to call John" → { dueDate: "<now+30min ISO>", text: "to call John", reminder: "0 minutes" }
+- "תזכיר לי בעוד שעה לשלוח מייל" → { dueDate: "<now+1hour ISO>", text: "לשלוח מייל", reminder: "0 minutes" }
 
 ## DATE INFERENCE RULES (CRITICAL - READ CAREFULLY):
 
@@ -219,11 +226,16 @@ User: "תזכיר לי בשמונה בערב ותציק לי על זה כל עש
   "reminderRecurrence": { "type": "nudge", "interval": "10 minutes" }
 }
 
-Example 4 - Daily recurring:
+Example 4 - "In X minutes" (relative from now):
+User: "תזכירי לי עוד חמש דקות לעשות בדיקה"
+Current time: Thursday, 02/01/2025 14:00 (2025-01-02T14:00:00+02:00)
+→ { "operation": "create", "text": "לעשות בדיקה", "dueDate": "2025-01-02T14:05:00+02:00", "reminder": "0 minutes" }
+
+Example 5 - Daily recurring:
 User: "תזכיר לי כל בוקר ב-9 לעשות ספורט"
 → { "operation": "create", "text": "לעשות ספורט", "reminderRecurrence": { "type": "daily", "time": "09:00" } }
 
-Example 5 - Weekly recurring:
+Example 6 - Weekly recurring:
 User: "תזכיר לי כל יום ראשון ב-14:00 להתקשר לאמא"
 → { "operation": "create", "text": "להתקשר לאמא", "reminderRecurrence": { "type": "weekly", "days": [0], "time": "14:00" } }
 
@@ -324,6 +336,18 @@ Example 15 - Delete all overdue tasks:
 User: "תמחק את כל המשימות שעברו"
 → { "operation": "deleteAll", "where": { "window": "overdue" }, "preview": false }
 
+Example 16 - Update all unplanned tasks (no date) to tomorrow morning:
+User: "תעדכן את המשימות הלא מתוכננות למחר בבוקר"
+→ { "operation": "updateAll", "where": { "type": "unplanned" }, "patch": { "dueDate": "2025-01-03T08:00:00+02:00" } }
+
+Example 17 - Delete all recurring reminders:
+User: "תמחק את כל התזכורות החוזרות"
+→ { "operation": "deleteAll", "where": { "type": "recurring" }, "preview": false }
+
+Example 18 - Update all overdue tasks to tomorrow:
+User: "תזיז את כל המשימות שעברו למחר"
+→ { "operation": "updateAll", "where": { "window": "overdue" }, "patch": { "dueDate": "2025-01-03T08:00:00+02:00" } }
+
 ## LANGUAGE RULE:
 Output only the JSON, no explanation. NEVER include IDs you don't have.`;
   }
@@ -419,6 +443,11 @@ Output only the JSON, no explanation. NEVER include IDs you don't have.`;
                 type: 'string', 
                 enum: ['today', 'this_week', 'overdue', 'upcoming', 'all'],
                 description: 'Time window filter: today, this_week, overdue, upcoming, all' 
+              },
+              type: {
+                type: 'string',
+                enum: ['recurring', 'unplanned', 'reminder'],
+                description: 'Task type filter: recurring (has recurrence), unplanned (no date), reminder (has due date)'
               },
               reminderRecurrence: { type: 'string' },
             },

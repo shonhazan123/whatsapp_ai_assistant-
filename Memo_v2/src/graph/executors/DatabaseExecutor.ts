@@ -32,6 +32,17 @@ export class DatabaseExecutor extends BaseExecutor {
     const startTime = Date.now();
 
     try {
+      // If data was pre-fetched and filtered by EntityResolver, use it directly
+      if (args._prefetchedData) {
+        console.log(`[DatabaseExecutor] Using pre-fetched data for step ${stepId}`);
+        return {
+          stepId,
+          success: true,
+          data: args._prefetchedData,
+          durationMs: Date.now() - startTime,
+        };
+      }
+
       // Determine if this is a task or list operation based on the args
       const isListOperation = this.isListOperation(args);
 

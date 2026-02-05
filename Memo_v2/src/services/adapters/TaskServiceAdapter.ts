@@ -51,6 +51,7 @@ export interface TaskOperationArgs {
   }>;
   where?: {
     window?: string;
+    type?: string;  // recurring | unplanned | reminder
     reminderRecurrence?: string;
   };
   patch?: {  // For updateAll operation
@@ -320,6 +321,26 @@ export class TaskServiceAdapter {
 
     return result;
   }
+
+  /**
+   * Convert bulk operation's `where` constraints to `filters` format
+   * This allows reusing the existing filterTasks method for deleteAll/updateAll
+   */
+  private whereToFilters(where?: TaskOperationArgs['where']): Record<string, any> {
+    const filters: Record<string, any> = {};
+    
+    if (where?.window && where.window !== 'all') {
+      filters.window = where.window;
+    }
+    if (where?.type) {
+      filters.type = where.type;
+    }
+    if (where?.reminderRecurrence) {
+      filters.reminderRecurrence = where.reminderRecurrence;
+    }
+    
+    return filters;
+  }
   
   private async updateTask(taskService: any, args: TaskOperationArgs): Promise<TaskOperationResult> {
     // First find the task if we don't have an ID
@@ -443,21 +464,20 @@ export class TaskServiceAdapter {
   /**
    * Delete all tasks matching a filter
    * Uses where.window to filter: 'today', 'this_week', 'overdue', 'all'
+   * Uses where.type to filter: 'recurring', 'unplanned', 'reminder'
    */
   private async deleteAllTasks(taskService: any, args: TaskOperationArgs): Promise<TaskOperationResult> {
-    const window = args.where?.window || 'all';
-    
-    // First, get all tasks matching the filter
+    // Step 1: Fetch all uncompleted tasks from V1
     const getAllResult = await taskService.getAll({
       userPhone: this.userPhone,
-      data: { window },
+      filters: { completed: false },
     });
     
     if (!getAllResult.success) {
       return { success: false, error: getAllResult.error || 'Failed to fetch tasks' };
     }
     
-    // Extract tasks from response
+    // Step 2: Extract tasks from response
     let tasks: any[] = [];
     if (Array.isArray(getAllResult.data)) {
       tasks = getAllResult.data;
@@ -465,11 +485,17 @@ export class TaskServiceAdapter {
       tasks = getAllResult.data.tasks;
     }
     
+    // Step 3: Apply in-memory filtering using existing filterTasks method
+    const filters = this.whereToFilters(args.where);
+    if (Object.keys(filters).length > 0) {
+      tasks = this.filterTasks(tasks, filters);
+    }
+    
     if (tasks.length === 0) {
       return { success: true, data: { deleted: 0, tasks: [] } };
     }
     
-    // Delete each task
+    // Step 4: Delete each filtered task
     const deleted: any[] = [];
     const errors: any[] = [];
     
@@ -608,27 +634,28 @@ export class TaskServiceAdapter {
   
   /**
    * Update all tasks matching a filter
-   * Uses where.window to filter and patch to specify what to update
+   * Uses where.window to filter: 'today', 'this_week', 'overdue', 'all'
+   * Uses where.type to filter: 'recurring', 'unplanned', 'reminder'
+   * Uses patch to specify what fields to update
    */
   private async updateAllTasks(taskService: any, args: TaskOperationArgs): Promise<TaskOperationResult> {
-    const window = args.where?.window || 'all';
     const patch = args.patch || {};
     
     if (Object.keys(patch).length === 0) {
       return { success: false, error: 'No update fields specified in patch' };
     }
     
-    // First, get all tasks matching the filter
+    // Step 1: Fetch all uncompleted tasks from V1
     const getAllResult = await taskService.getAll({
       userPhone: this.userPhone,
-      data: { window },
+      filters: { completed: false },
     });
     
     if (!getAllResult.success) {
       return { success: false, error: getAllResult.error || 'Failed to fetch tasks' };
     }
     
-    // Extract tasks from response
+    // Step 2: Extract tasks from response
     let tasks: any[] = [];
     if (Array.isArray(getAllResult.data)) {
       tasks = getAllResult.data;
@@ -636,11 +663,17 @@ export class TaskServiceAdapter {
       tasks = getAllResult.data.tasks;
     }
     
+    // Step 3: Apply in-memory filtering using existing filterTasks method
+    const filters = this.whereToFilters(args.where);
+    if (Object.keys(filters).length > 0) {
+      tasks = this.filterTasks(tasks, filters);
+    }
+    
     if (tasks.length === 0) {
       return { success: true, data: { updated: 0, tasks: [] } };
     }
     
-    // Update each task
+    // Step 4: Update each filtered task
     const updated: any[] = [];
     const errors: any[] = [];
     

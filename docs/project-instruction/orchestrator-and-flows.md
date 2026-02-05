@@ -38,11 +38,13 @@ User Message → Pattern Matching → LLM Planner → Resolver Router → Resolv
 ### Key Components
 
 1. **ResolverSchema** (`Memo_v2/src/graph/resolvers/ResolverSchema.ts`)
+
    - Defines each resolver's capabilities, action hints, trigger patterns, and examples
    - Provides pattern matching for pre-routing hints
    - Exports `formatSchemasForPrompt()` for LLM context injection
 
 2. **Pattern Matching Layer**
+
    - Before LLM call, matches user message against resolver patterns
    - Scores each resolver by matched patterns + priority
    - Provides top candidates to LLM as routing hints
@@ -62,19 +64,19 @@ User Message → Pattern Matching → LLM Planner → Resolver Router → Resolv
 
 ```typescript
 interface ResolverSchema {
-  name: string;           // e.g., "calendar_find_resolver"
-  capability: Capability; // e.g., "calendar"
-  summary: string;        // Brief description for Planner
-  actionHints: string[];  // Action hints this resolver handles
-  triggerPatterns: {
-    hebrew: string[];     // Hebrew keywords/phrases
-    english: string[];    // English keywords/phrases
-  };
-  examples: Array<{
-    input: string;        // Example user message
-    action: string;       // Expected action hint
-  }>;
-  priority: number;       // For conflict resolution
+	name: string; // e.g., "calendar_find_resolver"
+	capability: Capability; // e.g., "calendar"
+	summary: string; // Brief description for Planner
+	actionHints: string[]; // Action hints this resolver handles
+	triggerPatterns: {
+		hebrew: string[]; // Hebrew keywords/phrases
+		english: string[]; // English keywords/phrases
+	};
+	examples: Array<{
+		input: string; // Example user message
+		action: string; // Expected action hint
+	}>;
+	priority: number; // For conflict resolution
 }
 ```
 
@@ -96,17 +98,20 @@ The Planner follows this priority order:
 ### Schema-Based Resolver Selection (selectResolver)
 
 The `selectResolver()` function uses **ResolverSchema actionHints as the SINGLE SOURCE OF TRUTH** for routing within a capability. This ensures:
+
 - PlannerNode, ResolverRouterNode, and selectResolver all use the same schema definitions
 - No redundant action lists scattered across the codebase
 - Adding new actions only requires updating the schema
 
 **Algorithm:**
+
 1. **Normalize the hint** - Convert spaces to underscores (e.g., "list tasks" → "list_tasks")
 2. **Match against schema actionHints** - Check each resolver's schema for exact actionHint match
 3. **Fallback to trigger patterns** - If no exact match, check triggerPatterns (Hebrew + English)
 4. **Default to highest priority** - Return the highest-priority resolver for the capability
 
 **Example for database capability:**
+
 - Hint "list_tasks" → Matches `DATABASE_TASK_SCHEMA.actionHints` → DatabaseTaskResolver
 - Hint "create_list" → Matches `DATABASE_LIST_SCHEMA.actionHints` → DatabaseListResolver
 - Hint with "רשימה" → Matches `DATABASE_LIST_SCHEMA.triggerPatterns.hebrew` → DatabaseListResolver
@@ -203,6 +208,7 @@ The system implements a **5-minute timeout** for HITL interrupts to prevent stal
 - This prevents issues where users abandon disambiguation flows and return hours/days later
 
 **Implementation:**
+
 - `interruptedAt` timestamp stored in `InterruptPayload.metadata`
 - Timeout check in `invokeMemoGraph()` before resuming
 - Constant: `INTERRUPT_TIMEOUT_MS = 5 * 60 * 1000` (5 minutes)
@@ -212,12 +218,14 @@ The system implements a **5-minute timeout** for HITL interrupts to prevent stal
 The system has **two distinct types of HITL interrupts**:
 
 ### 1. Planner HITL (Confirmation/Clarification)
+
 - Triggered by `HITLGateNode` when planner identifies high-risk operations
 - Examples: Delete operations, unclear requests
 - User response stored in `state.plannerHITLResponse`
 - Does NOT create disambiguation object
 
 ### 2. Entity Resolution HITL (Disambiguation)
+
 - Triggered by `EntityResolutionNode` when entity matching is ambiguous
 - Examples: Multiple matching tasks, low-confidence fuzzy match
 - User response stored in `state.disambiguation.userSelection`
@@ -226,14 +234,17 @@ The system has **two distinct types of HITL interrupts**:
 **Key Implementation Details:**
 
 1. **HITLGateNode**: Distinguishes between planner and entity resolution HITL
+
    - Planner HITL: Sets `plannerHITLResponse`, NOT `disambiguation`
    - Entity Resolution HITL: Updates existing `disambiguation` with `userSelection`
 
 2. **EntityResolutionNode**: Validates disambiguation before processing
+
    - Only processes if `resolverStepId` AND `candidates.length > 0`
    - Prevents confusion from planner HITL responses
 
 3. **ResolverRouterNode**: Caches results to prevent re-execution
+
    - Skips steps that already have results in `state.resolverResults`
    - Prevents unnecessary LLM calls after resume
 
@@ -242,6 +253,7 @@ The system has **two distinct types of HITL interrupts**:
    - Recognizes "לא"/"no" as rejection (returns `not_found`)
 
 **Files:**
+
 - `Memo_v2/src/graph/nodes/HITLGateNode.ts` - Interrupt handling
 - `Memo_v2/src/graph/nodes/EntityResolutionNode.ts` - Disambiguation processing
 - `Memo_v2/src/graph/nodes/ResolverRouterNode.ts` - Result caching
@@ -266,6 +278,7 @@ User Message → PlannerNode → HITLGateNode (needs clarification?)
 ### Key Components
 
 1. **RoutingSuggestion** (`Memo_v2/src/types/index.ts`)
+
    - Pattern-matched suggestions computed from user message
    - Contains: `resolverName`, `capability`, `score`, `matchedPatterns`
    - Stored in `state.routingSuggestions` by PlannerNode
@@ -278,19 +291,20 @@ User Message → PlannerNode → HITLGateNode (needs clarification?)
 
 ### Context Provided to LLM
 
-| Data | Purpose |
-|------|---------|
-| `userMessage` | Original request to understand intent |
-| `language` | Respond in correct language |
-| `routingSuggestions` | Possible capabilities that might match |
-| `plannerOutput.confidence` | How uncertain the system is |
-| `plannerOutput.missingFields` | What specific info is missing |
-| `plannerOutput.plan` | What the planner thinks user wants |
-| `hitlReason` | Why clarification is needed |
+| Data                          | Purpose                                |
+| ----------------------------- | -------------------------------------- |
+| `userMessage`                 | Original request to understand intent  |
+| `language`                    | Respond in correct language            |
+| `routingSuggestions`          | Possible capabilities that might match |
+| `plannerOutput.confidence`    | How uncertain the system is            |
+| `plannerOutput.missingFields` | What specific info is missing          |
+| `plannerOutput.plan`          | What the planner thinks user wants     |
+| `hitlReason`                  | Why clarification is needed            |
 
 ### Example Improvements
 
 **Before (robotic):**
+
 ```
 לא בטוח שהבנתי נכון. התכוונת ל:
 • create event
@@ -298,6 +312,7 @@ User Message → PlannerNode → HITLGateNode (needs clarification?)
 ```
 
 **After (LLM-generated):**
+
 ```
 לא הצלחתי להבין - רצית שאוסיף אירוע ליומן מחר בשמונה, או שאזכיר לך משהו בזמן הזה?
 ```
@@ -332,6 +347,7 @@ The `ContextAssemblyNode.buildTimeContext()` generates time context with ISO tim
 ```
 
 **Key Components:**
+
 - Human-readable date/time
 - ISO timestamp WITH timezone offset (critical for LLM date calculations)
 - Day of week name and index (0=Sunday, 6=Saturday)
@@ -364,6 +380,7 @@ When a user request triggers multiple capabilities (e.g., "remind me to pack and
 ```
 
 **NOT:**
+
 ```
 ✅ יצרתי תזכורת:
 *לבנות את המחשב*
@@ -375,6 +392,7 @@ When a user request triggers multiple capabilities (e.g., "remind me to pack and
 ```
 
 **Files:**
+
 - `Memo_v2/src/types/index.ts` - `StepResult` interface, `FormattedResponse.stepResults`
 - `Memo_v2/src/graph/nodes/ResponseFormatterNode.ts` - Builds per-step results
 - `Memo_v2/src/graph/nodes/ResponseWriterNode.ts` - Passes stepResults to LLM

@@ -28,6 +28,7 @@ Each Resolver:
 
 - Database agent handles **REMINDERS only** (not general tasks)
 - **NUDGE vs DAILY**: "כל X דקות" → nudge, "כל יום ב-X" → daily
+- **"In X minutes"** (עוד X דקות / remind me in X minutes): resolver outputs `dueDate` = current time + X (ISO with timezone) and `reminder: "0 minutes"` so the task has a due date.
 - **reminderRecurrence**: `{ type, time, days, interval, dayOfMonth, until }`
 - **Completion = Deletion** for reminder tasks (V1 behavior)
 - Lists require explicit "list"/"רשימה" keyword
@@ -359,11 +360,46 @@ const taskSchema = {
 			reminderDetails: { type: "object" },
 			filters: {
 				type: "object",
+				description: "Filters for getAll operation",
 				properties: {
 					completed: { type: "boolean" },
 					category: { type: "string" },
+					window: {
+						type: "string",
+						enum: ["today", "tomorrow", "this_week", "overdue", "upcoming"],
+					},
+					type: {
+						type: "string",
+						enum: ["recurring", "unplanned", "reminder"],
+					},
 					dueDateFrom: { type: "string" },
 					dueDateTo: { type: "string" },
+				},
+			},
+			where: {
+				type: "object",
+				description: "Filter for deleteAll/updateAll bulk operations",
+				properties: {
+					window: {
+						type: "string",
+						enum: ["today", "this_week", "overdue", "upcoming", "all"],
+					},
+					type: {
+						type: "string",
+						enum: ["recurring", "unplanned", "reminder"],
+					},
+					reminderRecurrence: { type: "string" },
+				},
+			},
+			patch: {
+				type: "object",
+				description: "Fields to update for updateAll operation",
+				properties: {
+					dueDate: { type: "string" },
+					category: { type: "string" },
+					completed: { type: "boolean" },
+					reminder: { type: "string" },
+					reminderRecurrence: { type: "object" },
 				},
 			},
 			tasks: { type: "array" },

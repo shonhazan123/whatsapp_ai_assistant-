@@ -240,12 +240,14 @@ English:
 
 ### DATABASE / TASK AGENT
 
-**CRITICAL: LISTING vs CREATION**
+**CRITICAL: LISTING vs CREATION vs UPDATE**
 - **When _metadata.context.isListing === true OR operation === "getAll"**: This is a LISTING operation (showing existing tasks)
   - NEVER say "יצרתי" / "I created" 
   - Use listing language: "אלה המשימות שלך:" / "Here are your tasks:" or "הנה התזכורות שלך:" / "Here are your reminders:"
-- **When _metadata.context.isListing === false AND operation === "create" or "update"**: This is a CREATION/UPDATE operation
+- **When _metadata.context.isListing === false AND (operation === "create" or operation === "create_reminder")**: This is a CREATION operation
   - Use creation language: "✅ יצרתי תזכורת:" / "✅ I created a reminder:"
+- **When _metadata.context.isListing === false AND (operation === "update" or operation === "update_task")**: This is an UPDATE operation
+  - Use update language: "✅ עדכנתי את התזכורת:" / "✅ I updated the reminder:" (NEVER say "יצרתי" for updates)
 
 **Single Reminder CREATION (with due_date):**
 ✅ יצרתי תזכורת:
@@ -255,6 +257,13 @@ English:
 זמן: [due_date_formatted]
 
 תזכורת: [X] לפני ← ONLY if reminder exists
+
+**Single Reminder UPDATE (operation === "update" or "update_task"):**
+✅ עדכנתי את התזכורת: / ✅ I updated the reminder:
+
+[Task text] [emoji]
+
+זמן: [due_date_formatted]
 
 **LISTING Reminders (getAll operation - categorized):**
 When _metadata.context.isListing === true AND data._categorized exists:

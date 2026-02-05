@@ -38,6 +38,7 @@ ServiceAdapter → Executor → ResponseFormatterNode
 ### getEvents
 
 **Raw Response:**
+
 ```typescript
 {
   events: [
@@ -49,16 +50,27 @@ ServiceAdapter → Executor → ResponseFormatterNode
 ```
 
 **After extractItemsArray:**
+
 ```typescript
 [
-  { id, summary, start, end, attendees, description, location, recurringEventId },
-  // ... more events
-]
+	{
+		id,
+		summary,
+		start,
+		end,
+		attendees,
+		description,
+		location,
+		recurringEventId,
+	},
+	// ... more events
+];
 ```
 
 ### create
 
 **Raw Response:**
+
 ```typescript
 {
   id: "abc123",
@@ -70,13 +82,23 @@ ServiceAdapter → Executor → ResponseFormatterNode
 ```
 
 **After extractItemsArray:**
+
 ```typescript
-[{ id: "abc123", summary: "Meeting", start: "...", end: "...", htmlLink: "..." }]
+[
+	{
+		id: "abc123",
+		summary: "Meeting",
+		start: "...",
+		end: "...",
+		htmlLink: "...",
+	},
+];
 ```
 
 ### createRecurring
 
 **Raw Response:**
+
 ```typescript
 {
   id: "abc123",
@@ -89,6 +111,7 @@ ServiceAdapter → Executor → ResponseFormatterNode
 ```
 
 **After extractItemsArray:**
+
 ```typescript
 [{ id: "abc123", summary: "Weekly Meeting", days: [...], startTime: "...", endTime: "...", recurrence: "weekly" }]
 ```
@@ -96,6 +119,7 @@ ServiceAdapter → Executor → ResponseFormatterNode
 ### update
 
 **Raw Response:**
+
 ```typescript
 {
   id: "abc123",
@@ -107,13 +131,17 @@ ServiceAdapter → Executor → ResponseFormatterNode
 ```
 
 **Metadata extracted:**
+
 ```typescript
-{ isRecurringSeries: true }
+{
+	isRecurringSeries: true;
+}
 ```
 
 ### delete
 
 **Raw Response:**
+
 ```typescript
 {
   summary: "Deleted Event",
@@ -125,6 +153,7 @@ ServiceAdapter → Executor → ResponseFormatterNode
 ### deleteByWindow
 
 **Raw Response:**
+
 ```typescript
 {
   deleted: 3,
@@ -139,6 +168,7 @@ ServiceAdapter → Executor → ResponseFormatterNode
 ```
 
 **Metadata extracted:**
+
 ```typescript
 { deleted: 3, errors: [...], summaries: [...] }
 ```
@@ -146,6 +176,7 @@ ServiceAdapter → Executor → ResponseFormatterNode
 ### updateByWindow
 
 **Raw Response:**
+
 ```typescript
 {
   updated: 2,
@@ -158,6 +189,7 @@ ServiceAdapter → Executor → ResponseFormatterNode
 ```
 
 **Metadata extracted:**
+
 ```typescript
 { updated: 2, errors: [] }
 ```
@@ -169,21 +201,31 @@ ServiceAdapter → Executor → ResponseFormatterNode
 ### getAll
 
 **Raw Response:**
+
 ```typescript
 {
-  tasks: [
-    { id, text, category, due_date, reminder_recurrence, completed, created_at },
-    // ... more tasks
-  ]
+	tasks: [
+		{
+			id,
+			text,
+			category,
+			due_date,
+			reminder_recurrence,
+			completed,
+			created_at,
+		},
+		// ... more tasks
+	];
 }
 // OR directly as array:
 [
-  { id, text, category, due_date, reminder_recurrence, completed, created_at },
-  // ... more tasks
-]
+	{ id, text, category, due_date, reminder_recurrence, completed, created_at },
+	// ... more tasks
+];
 ```
 
 **After extractItemsArray:**
+
 ```typescript
 [{ id, text, category, due_date, ... }, ...]
 ```
@@ -196,13 +238,14 @@ When the user asks for tasks with constraints (e.g., "today", "tomorrow", "recur
 
 **Supported Filters:**
 
-| Filter | Values | Description |
-|--------|--------|-------------|
-| `window` | `today`, `tomorrow`, `this_week`, `overdue`, `upcoming` | Filter by due date time window (in-adapter) |
-| `type` | `recurring`, `unplanned`, `reminder` | Filter by task type (in-adapter) |
-| `category` | any string | Filter by category (passed to V1 when no window/type) |
+| Filter     | Values                                                  | Description                                           |
+| ---------- | ------------------------------------------------------- | ----------------------------------------------------- |
+| `window`   | `today`, `tomorrow`, `this_week`, `overdue`, `upcoming` | Filter by due date time window (in-adapter)           |
+| `type`     | `recurring`, `unplanned`, `reminder`                    | Filter by task type (in-adapter)                      |
+| `category` | any string                                              | Filter by category (passed to V1 when no window/type) |
 
 **Flow:**
+
 ```
 Resolver LLM → { operation: "getAll", filters: { window: "today" } }
     ↓
@@ -236,6 +279,7 @@ ResponseFormatterNode → formats result
 ### create
 
 **Raw Response:**
+
 ```typescript
 {
   id: "task123",
@@ -248,6 +292,7 @@ ResponseFormatterNode → formats result
 ```
 
 **After extractItemsArray:**
+
 ```typescript
 [{ id: "task123", text: "Buy groceries", ... }]
 ```
@@ -255,6 +300,7 @@ ResponseFormatterNode → formats result
 ### createMultiple
 
 **Raw Response:**
+
 ```typescript
 {
   created: [
@@ -266,6 +312,7 @@ ResponseFormatterNode → formats result
 ```
 
 **After extractItemsArray:**
+
 ```typescript
 [{ id: "task1", text: "Task 1", ... }, { id: "task2", text: "Task 2", ... }]
 ```
@@ -273,6 +320,7 @@ ResponseFormatterNode → formats result
 ### deleteMultiple
 
 **Raw Response:**
+
 ```typescript
 {
   deleted: 2,
@@ -286,6 +334,7 @@ ResponseFormatterNode → formats result
 ```
 
 **Metadata extracted:**
+
 ```typescript
 { deleted: 2, notFound: ["Task 3"], errors: [] }
 ```
@@ -293,6 +342,7 @@ ResponseFormatterNode → formats result
 ### update / complete / delete
 
 **Raw Response:**
+
 ```typescript
 {
   id: "task123",
@@ -309,12 +359,13 @@ ResponseFormatterNode → formats result
 ### getAll (lists)
 
 **Raw Response:**
+
 ```typescript
 {
-  lists: [
-    { id, name, is_checklist, items, created_at },
-    // ... more lists
-  ]
+	lists: [
+		{ id, name, is_checklist, items, created_at },
+		// ... more lists
+	];
 }
 // OR directly as array
 ```
@@ -322,6 +373,7 @@ ResponseFormatterNode → formats result
 ### create (list)
 
 **Raw Response:**
+
 ```typescript
 {
   id: "list123",
@@ -338,6 +390,7 @@ ResponseFormatterNode → formats result
 ### listEmails
 
 **Raw Response:**
+
 ```typescript
 {
   emails: [
@@ -354,6 +407,7 @@ ResponseFormatterNode → formats result
 ### sendPreview
 
 **Raw Response:**
+
 ```typescript
 {
   messageId: "msg123",
@@ -367,6 +421,7 @@ ResponseFormatterNode → formats result
 ### sendConfirm / reply
 
 **Raw Response:**
+
 ```typescript
 {
   messageId: "msg123",
@@ -383,6 +438,7 @@ ResponseFormatterNode → formats result
 ### searchMemory
 
 **Raw Response:**
+
 ```typescript
 [
   { id: "mem1", text: "Memory content", similarity: 0.85, metadata: {...} },
@@ -397,6 +453,7 @@ ResponseFormatterNode → formats result
 ### storeMemory
 
 **Raw Response:**
+
 ```typescript
 {
   id: "mem123",
@@ -490,12 +547,14 @@ private extractMetadata(data: any): Record<string, any> {
 
 > **Updated January 2026**: ResponseFormatterNode now enriches items with per-item context.
 
-### Per-Item Context (_itemContext)
+### Per-Item Context (\_itemContext)
 
 Each item returned from ServiceAdapters is enriched with an `_itemContext` object that contains status flags specific to that item. This allows the LLM to understand each item's status individually rather than relying on aggregated context.
 
 **Action values come from PlannerNode** (human-readable, with spaces):
-- Database: `"list tasks"`, `"create reminder"`, `"delete reminder"`, etc.
+
+- Database: `"list tasks"`, `"create reminder"`, `"update_task"`, `"delete reminder"`, etc.
+- For **update_task** / **update**: Response formatter uses "updated" language (e.g. "עדכנתי את התזכורת" / "I updated the reminder"), not "created".
 - Calendar: `"list events"`, `"create event"`, `"delete event"`, etc.
 - Gmail: `"list emails"`, `"send email"`, etc.
 - Second Brain: `"store memory"`, `"search memory"`, `"list memories"`
@@ -504,49 +563,49 @@ Each item returned from ServiceAdapters is enriched with an `_itemContext` objec
 
 ```typescript
 task._itemContext = {
-  isReminder: boolean,      // Has due_date
-  isTask: boolean,          // No due_date
-  isRecurring: boolean,     // Has reminder_recurrence
-  isNudge: boolean,         // reminder_recurrence.type === "nudge"
-  isOverdue: boolean,       // due_date < now
-  isToday: boolean,         // due_date is today
-  isTomorrowOrLater: boolean, // due_date > today
-  hasDueDate: boolean       // Has due_date field
-}
+	isReminder: boolean, // Has due_date
+	isTask: boolean, // No due_date
+	isRecurring: boolean, // Has reminder_recurrence
+	isNudge: boolean, // reminder_recurrence.type === "nudge"
+	isOverdue: boolean, // due_date < now
+	isToday: boolean, // due_date is today
+	isTomorrowOrLater: boolean, // due_date > today
+	hasDueDate: boolean, // Has due_date field
+};
 ```
 
 ### Calendar Items
 
 ```typescript
 event._itemContext = {
-  isRecurring: boolean,      // Has recurrence pattern
-  isRecurringSeries: boolean, // Operating on entire series
-  isToday: boolean,          // Start date is today
-  isTomorrowOrLater: boolean, // Start date > today
-  isPast: boolean            // Start date < now
-}
+	isRecurring: boolean, // Has recurrence pattern
+	isRecurringSeries: boolean, // Operating on entire series
+	isToday: boolean, // Start date is today
+	isTomorrowOrLater: boolean, // Start date > today
+	isPast: boolean, // Start date < now
+};
 ```
 
 ### Gmail Items
 
 ```typescript
 email._itemContext = {
-  isPreview: boolean         // Is a preview (not sent yet)
-}
+	isPreview: boolean, // Is a preview (not sent yet)
+};
 ```
 
 ### Second Brain Items
 
 ```typescript
 memory._itemContext = {
-  isNew: boolean,            // Just stored
-  hasMetadata: boolean       // Has metadata attached
-}
+	isNew: boolean, // Just stored
+	hasMetadata: boolean, // Has metadata attached
+};
 ```
 
 ---
 
-## Categorized Data (_categorized)
+## Categorized Data (\_categorized)
 
 For **listing operations** (action === "list tasks"), ResponseFormatterNode adds `_categorized` to the data payload. This groups tasks by their status for easy sectioned rendering.
 
@@ -565,11 +624,13 @@ data._isEmpty = boolean  // true if no tasks found
 ### Context Behavior
 
 For **listings** (action === "list tasks"):
+
 - Global context: Only `isListing: true` and `isEmpty` are set
 - Per-item flags (`isOverdue`, `isToday`, etc.) are on each item's `_itemContext`
 - `_categorized` buckets are added to the data
 
 For **single operations** (create/update/delete):
+
 - Global context: Aggregates flags from all items (existing behavior)
 - Per-item `_itemContext` is also attached to each item
 
@@ -577,34 +638,38 @@ For **single operations** (create/update/delete):
 
 ```json
 {
-  "_metadata": {
-    "agent": "database",
-    "operation": "list tasks",
-    "context": {
-      "capability": "database",
-      "database": { "isListing": true, "isEmpty": false }
-    }
-  },
-  "tasks": [
-    {
-      "text": "Buy groceries",
-      "due_date_formatted": "Yesterday at 10:00",
-      "_itemContext": { "isOverdue": true, "isReminder": true }
-    },
-    {
-      "text": "Call mom",
-      "due_date_formatted": "Today at 18:00",
-      "_itemContext": { "isToday": true, "isReminder": true }
-    }
-  ],
-  "_categorized": {
-    "overdue": [/* task objects */],
-    "today": [/* task objects */],
-    "upcoming": [],
-    "recurring": [],
-    "noDueDate": []
-  },
-  "_isEmpty": false
+	"_metadata": {
+		"agent": "database",
+		"operation": "list tasks",
+		"context": {
+			"capability": "database",
+			"database": { "isListing": true, "isEmpty": false }
+		}
+	},
+	"tasks": [
+		{
+			"text": "Buy groceries",
+			"due_date_formatted": "Yesterday at 10:00",
+			"_itemContext": { "isOverdue": true, "isReminder": true }
+		},
+		{
+			"text": "Call mom",
+			"due_date_formatted": "Today at 18:00",
+			"_itemContext": { "isToday": true, "isReminder": true }
+		}
+	],
+	"_categorized": {
+		"overdue": [
+			/* task objects */
+		],
+		"today": [
+			/* task objects */
+		],
+		"upcoming": [],
+		"recurring": [],
+		"noDueDate": []
+	},
+	"_isEmpty": false
 }
 ```
 
