@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { DEBUG_INSTANCE_URL, DEBUG_PHONE_NUMBER, ENVIRONMENT } from '../../config/environment';
+import { DEBUG_INSTANCE_URL, DEBUG_PHONE_NUMBER, ENVIRONMENT, FORWARD_TO_DEBUG } from '../../config/environment';
 import { logger } from '../../utils/logger';
 
 export interface ForwardRequest {
@@ -85,7 +85,7 @@ export class DebugForwarderService {
    * Check if phone number should be forwarded to DEBUG
    */
   shouldForwardToDebug(phoneNumber: string): boolean {
-    return ENVIRONMENT === 'PRODUCTION' && phoneNumber === DEBUG_PHONE_NUMBER;
+    return ENVIRONMENT === 'PRODUCTION' && phoneNumber === DEBUG_PHONE_NUMBER && FORWARD_TO_DEBUG;
   }
 }
 

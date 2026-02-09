@@ -13,6 +13,7 @@ if (environment !== 'PRODUCTION' && environment !== 'DEBUG') {
 export const ENVIRONMENT: Environment = environment;
 export const DEBUG_INSTANCE_URL: string | undefined = process.env.DEBUG_INSTANCE_URL;
 export const DEBUG_PHONE_NUMBER = '+972543911602';
+export const FORWARD_TO_DEBUG = process.env.FORWARD_TO_DEBUG === 'True' ? true : false;
 
 if (ENVIRONMENT === 'PRODUCTION' && !DEBUG_INSTANCE_URL) {
   console.warn('⚠️  WARNING: ENVIRONMENT is PRODUCTION but DEBUG_INSTANCE_URL is not set');
