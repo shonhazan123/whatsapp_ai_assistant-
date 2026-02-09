@@ -255,17 +255,17 @@ export class CalendarService {
   async createMultipleEvents(request: BulkEventRequest): Promise<IResponse> {
     try {
       this.logger.info(`📅 Creating ${request.events.length} calendar events`);
-      
+
       const results = [];
       const errors = [];
-      
+
       // Create events sequentially to avoid rate limits
       for (let i = 0; i < request.events.length; i++) {
         const eventRequest = request.events[i];
-        
+
         try {
           const result = await this.createEvent(eventRequest);
-          
+
           if (result.success) {
             results.push(result.data);
           } else {
@@ -283,7 +283,7 @@ export class CalendarService {
       }
 
       this.logger.info(`✅ Created ${results.length} events successfully`);
-      
+
       return {
         success: errors.length === 0,
         data: {
@@ -305,7 +305,7 @@ export class CalendarService {
   async getEvents(request: GetEventsRequest): Promise<IResponse> {
     try {
       this.logger.info(`📅 Getting calendar events from ${request.timeMin} to ${request.timeMax}`);
-      
+
       const calendarClient = this.buildCalendar();
       const calendarId = this.resolveCalendarId(request.calendarId);
 
@@ -329,7 +329,7 @@ export class CalendarService {
       })) || [];
 
       this.logger.info(`✅ Retrieved ${events.length} calendar events`);
-      
+
       return {
         success: true,
         data: {
@@ -349,28 +349,28 @@ export class CalendarService {
   async updateEvent(request: UpdateEventRequest): Promise<IResponse> {
     try {
       this.logger.info(`📅 Updating calendar event: ${request.eventId}`);
-      
+
       const updates: any = {};
       const timeZone = request.timeZone || process.env.DEFAULT_TIMEZONE || 'Asia/Jerusalem';
-      
+
       if (request.summary) updates.summary = request.summary;
       if (request.description) updates.description = request.description;
       if (request.location) updates.location = request.location;
-      
+
       if (request.start) {
         updates.start = {
           dateTime: request.start,
           timeZone
         };
       }
-      
+
       if (request.end) {
         updates.end = {
           dateTime: request.end,
           timeZone
         };
       }
-      
+
       if (request.attendees) {
         updates.attendees = request.attendees.map((email: string) => ({ email }));
       }
@@ -390,7 +390,7 @@ export class CalendarService {
         });
 
         this.logger.info(`✅ Event updated: ${request.eventId}`);
-        
+
         return {
           success: true,
           data: response.data,
@@ -404,8 +404,8 @@ export class CalendarService {
           error?.errors?.[0]?.reason === 'badRequest'
         );
         const hasDateOnlyInput = (request.start && this.isDateOnlyFormat(request.start)) ||
-                                 (request.end && this.isDateOnlyFormat(request.end));
-        
+          (request.end && this.isDateOnlyFormat(request.end));
+
         if (isFormatError || hasDateOnlyInput) {
           this.logger.warn(`⚠️  Format mismatch detected, retrying with date format for event: ${request.eventId}`);
           if (updates.start?.dateTime) {
@@ -442,7 +442,7 @@ export class CalendarService {
   async deleteEvent(eventId: string): Promise<IResponse> {
     try {
       this.logger.info(`📅 Deleting calendar event: ${eventId}`);
-      
+
       const calendarClient = this.buildCalendar();
       const calendarId = this.resolveCalendarId();
 
@@ -452,7 +452,7 @@ export class CalendarService {
       });
 
       this.logger.info(`✅ Event deleted: ${eventId}`);
-      
+
       return {
         success: true,
         message: 'Event deleted successfully'
@@ -466,10 +466,126 @@ export class CalendarService {
     }
   }
 
+  /**
+   * Delete an entire recurring event series
+   * Deleting the master event removes all instances
+   */
+  async deleteRecurringSeries(recurringEventId: string): Promise<IResponse> {
+    try {
+      this.logger.info(`📅 Deleting recurring series: ${recurringEventId}`);
+
+      const calendarClient = this.buildCalendar();
+      const calendarId = this.resolveCalendarId();
+
+      // Get the master event info before deletion for response
+      let eventSummary = 'Recurring Event';
+      try {
+        const eventResp = await calendarClient.events.get({
+          calendarId,
+          eventId: recurringEventId
+        });
+        eventSummary = eventResp.data.summary || 'Recurring Event';
+      } catch {
+        // Event might be an instance ID, try to get it anyway
+      }
+
+      // Deleting the master event removes all instances
+      await calendarClient.events.delete({
+        calendarId,
+        eventId: recurringEventId
+      });
+
+      this.logger.info(`✅ Recurring series deleted: ${recurringEventId}`);
+
+      return {
+        success: true,
+        message: 'Recurring event series deleted successfully',
+        data: {
+          recurringEventId,
+          summary: eventSummary,
+          isRecurringSeries: true
+        }
+      };
+    } catch (error) {
+      this.logger.error('Error deleting recurring series:', error);
+      return {
+        success: false,
+        error: 'Failed to delete recurring event series'
+      };
+    }
+  }
+
+  /**
+   * Update an entire recurring event series
+   * Updating the master event updates all future instances
+   */
+  async updateRecurringSeries(recurringEventId: string, updates: Partial<UpdateEventRequest>): Promise<IResponse> {
+    try {
+      this.logger.info(`📅 Updating recurring series: ${recurringEventId}`);
+
+      const calendarClient = this.buildCalendar();
+      const calendarId = this.resolveCalendarId();
+      const timeZone = updates.timeZone || process.env.DEFAULT_TIMEZONE || 'Asia/Jerusalem';
+
+      // Build update payload
+      const updatePayload: any = {};
+
+      if (updates.summary) updatePayload.summary = updates.summary;
+      if (updates.description) updatePayload.description = updates.description;
+      if (updates.location) updatePayload.location = updates.location;
+
+      if (updates.start) {
+        updatePayload.start = {
+          dateTime: updates.start,
+          timeZone
+        };
+      }
+
+      if (updates.end) {
+        updatePayload.end = {
+          dateTime: updates.end,
+          timeZone
+        };
+      }
+
+      if (updates.attendees) {
+        updatePayload.attendees = updates.attendees.map((email: string) => ({ email }));
+      }
+
+      if (updates.reminders) {
+        updatePayload.reminders = updates.reminders;
+      }
+
+      // Update the master event (applies to all future instances)
+      const response = await calendarClient.events.patch({
+        calendarId,
+        eventId: recurringEventId,
+        requestBody: updatePayload
+      });
+
+      this.logger.info(`✅ Recurring series updated: ${recurringEventId}`);
+
+      return {
+        success: true,
+        message: 'Recurring event series updated successfully',
+        data: {
+          ...response.data,
+          isRecurringSeries: true
+        }
+      };
+    } catch (error) {
+      this.logger.error('Error updating recurring series:', error);
+      return {
+        success: false,
+        error: 'Failed to update recurring event series'
+      };
+    }
+  }
+
   async getEventById(eventId: string): Promise<IResponse> {
     try {
       this.logger.info(`📅 Getting calendar event: ${eventId}`);
-      
+
       const calendarClient = this.buildCalendar();
       const calendarId = this.resolveCalendarId();
 
@@ -490,7 +606,7 @@ export class CalendarService {
       };
 
       this.logger.info(`✅ Retrieved calendar event: ${eventId}`);
-      
+
       return {
         success: true,
         data: event
@@ -529,7 +645,7 @@ export class CalendarService {
         // Find the next occurrence of this day of month
         const today = new Date();
         const currentDay = today.getDate();
-        
+
         if (currentDay < dayOfMonth) {
           // This month, set to the day
           startDate.setDate(dayOfMonth);
@@ -564,12 +680,12 @@ export class CalendarService {
         // Find the NEAREST day from the requested days (not just the first one)
         const today = new Date();
         const currentDayIndex = today.getDay();
-        
+
         // Map all requested days to their indices and find nearest occurrence
         const dayIndices = request.days.map(day => this.getDayIndex(day));
         let nearestDayIndex = -1;
         let daysToAdd = 7; // Max days to look ahead
-        
+
         // Find the nearest day (including today if it's one of the requested days)
         for (let i = 0; i <= 6; i++) {
           const checkDayIndex = (currentDayIndex + i) % 7;
@@ -579,20 +695,20 @@ export class CalendarService {
             break;
           }
         }
-        
+
         // If no day found (shouldn't happen), fall back to first day
         if (nearestDayIndex === -1) {
           nearestDayIndex = dayIndices[0];
           daysToAdd = 0;
           while (startDate.getDay() !== nearestDayIndex) {
-          startDate.setDate(startDate.getDate() + 1);
+            startDate.setDate(startDate.getDate() + 1);
             daysToAdd++;
           }
         } else {
           // Set to the nearest day
           startDate.setDate(startDate.getDate() + daysToAdd);
         }
-        
+
         // Log which day we're starting from
         const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
         this.logger.info(`📅 Starting recurring event from ${dayNames[nearestDayIndex]} (${startDate.toDateString()}), days to add: ${daysToAdd}`);
@@ -610,7 +726,7 @@ export class CalendarService {
       const endDate = new Date(startDate);
       const [endHour, endMinute] = request.endTime.split(':').map(Number);
       endDate.setHours(endHour, endMinute, 0, 0);
-      
+
       // Add UNTIL if provided, otherwise default to 1 year from start date
       if (request.until) {
         // Convert until date to UTC and format as YYYYMMDDTHHMMSSZ (RRULE format)
@@ -696,7 +812,7 @@ export class CalendarService {
   async getRecurringEventInstances(recurringEventId: string): Promise<IResponse> {
     try {
       this.logger.info(`📅 Getting instances of recurring event: ${recurringEventId}`);
-      
+
       const calendarClient = this.buildCalendar();
       const calendarId = this.resolveCalendarId();
 
@@ -714,7 +830,7 @@ export class CalendarService {
       }));
 
       this.logger.info(`✅ Retrieved ${instances.length} instances`);
-      
+
       return {
         success: true,
         data: { instances }
@@ -735,7 +851,7 @@ export class CalendarService {
   async truncateRecurringEvent(eventId: string, until: string): Promise<IResponse> {
     try {
       this.logger.info(`📅 Truncating recurring event: ${eventId} until ${until}`);
-      
+
       // Get the current event
       const calendarClient = this.buildCalendar();
       const calendarId = this.resolveCalendarId();
@@ -746,7 +862,7 @@ export class CalendarService {
       });
 
       const currentEvent = eventResponse.data;
-      
+
       if (!currentEvent.recurrence) {
         return {
           success: false,
@@ -775,7 +891,7 @@ export class CalendarService {
       });
 
       this.logger.info(`✅ Truncated recurring event: ${eventId}`);
-      
+
       return {
         success: true,
         data: response.data,
@@ -816,8 +932,8 @@ export class CalendarService {
         const event1 = events[i];
         const event2 = events[i + 1];
 
-        if (!event1.start?.dateTime || !event1.end?.dateTime || 
-            !event2.start?.dateTime || !event2.end?.dateTime) {
+        if (!event1.start?.dateTime || !event1.end?.dateTime ||
+          !event2.start?.dateTime || !event2.end?.dateTime) {
           continue;
         }
 

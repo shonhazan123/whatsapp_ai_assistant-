@@ -346,3 +346,52 @@ whatsapp-ai-assistant/
 - `agents-gmail.md` - Gmail agent details
 - `agents-second-brain.md` - Second-brain agent details
 - `orchestrator-and-flows.md` - Orchestration and planning logic
+
+---
+
+## Memo V2 (LangGraph Architecture)
+
+> 📁 Location: `Memo_v2/`
+
+### Overview
+
+Memo V2 is a LangGraph-based rewrite of the assistant that provides:
+
+- **Explicit state management** - No hidden state in prompts
+- **Deterministic branching** - HITL, ambiguity, risk handling
+- **Pause/resume** - Native support for human replies
+- **Parallel execution** - Calendar + DB + Gmail safely
+- **Auditable flows** - Debuggability + cost control
+
+### Enabling Memo V2
+
+Set environment variable:
+
+```
+USE_MEMO_V2=true
+```
+
+The webhook (`src/routes/webhook.ts`) will route to Memo V2's `invokeMemoGraphSimple` instead of V1's `processMessageV2`.
+
+### Key Features
+
+1. **Reuses V1 Services** - All service adapters call the same V1 services
+2. **Reuses V1 Cron/Scheduler** - No changes to reminders, morning briefs
+3. **Reuses V1 Webhook Flow** - Audio transcription, image analysis, onboarding handled by V1
+
+### Graph Flow
+
+```
+Context Assembly → Reply Context → Planner → HITL Gate
+    ↓                                           ↓
+Resolver Router → [Parallel Resolvers] → Executors → Join
+    ↓
+Response Formatter → Response Writer → Memory Update → END
+```
+
+### Documentation
+
+- `Memo_v2/docs/BLUEPRINT.md` - Full architecture specification
+- `Memo_v2/docs/STATE_SCHEMA.md` - State type definitions
+- `Memo_v2/docs/RESOLVER_SPECS.md` - Resolver specifications
+- `Memo_v2/docs/MIGRATION_CHECKLIST.md` - Migration progress tracking

@@ -282,42 +282,79 @@ export class ReminderService {
    * Excludes recurring reminders (they have no due_date)
    */
   async sendMorningDigest(morningDigestHour: number = 8): Promise<void> {
+    const startTime = Date.now();
+    const sentToUsers: string[] = [];
+    const skippedUsers: string[] = [];
+    const failedUsers: string[] = [];
+    
     try {
       this.loggerInstance.info(`📋 Sending morning digest (checking for hour ${morningDigestHour})...`);
 
       const users = await this.getAllUsers();
+      this.loggerInstance.info(`📊 Found ${users.length} users to check for morning digest`);
 
-      for (const user of users) {
-        try {
-          // Check if it's the specified hour in user's timezone
-          const userTime = this.getCurrentTimeInTimezone(user.timezone);
-          const hour = userTime.getHours();
-          const minute = userTime.getMinutes();
+      // Process users in parallel batches (max 5 concurrent) to reduce delays
+      const batchSize = 5;
+      const userBatches: User[][] = [];
+      for (let i = 0; i < users.length; i += batchSize) {
+        userBatches.push(users.slice(i, i + batchSize));
+      }
 
-          // Only send if it's the specified hour (within 0-10 minute window)
-          if (hour === morningDigestHour && minute < 10) {
-            const plannedTasks = await this.getTodaysTasks(user.id, user.timezone);
-            const unplannedTasks = await this.getUnplannedTasks(user.id);
-            const calendarEvents = await this.getTodaysCalendarEvents(user.id, user.timezone);
-            
-            let message: string;
-            if (plannedTasks.length > 0 || unplannedTasks.length > 0 || calendarEvents.length > 0) {
-              const rawData = this.buildDailyDigestData(plannedTasks, unplannedTasks, calendarEvents, user);
-              message = await this.enhanceMessageWithAI(rawData, user.phone);
-              await sendWhatsAppMessage(user.phone, message);
-            } else {
-              // No tasks or events - send empty digest message
-              const rawData = this.buildEmptyDigestData(user);
-              message = await this.enhanceMessageWithAI(rawData, user.phone);
-              await sendWhatsAppMessage(user.phone, message);
+      for (const batch of userBatches) {
+        // Process batch in parallel
+        await Promise.all(batch.map(async (user) => {
+          try {
+            // Phase 6: Filter morning digest in DEBUG environment
+            if (ENVIRONMENT === 'DEBUG' && user.phone !== DEBUG_PHONE_NUMBER) {
+              this.loggerInstance.info(`⏭️  Skipping morning digest for ${user.phone} (DEBUG mode, only sending to ${DEBUG_PHONE_NUMBER})`);
+              skippedUsers.push(user.phone);
+              return;
             }
+            
+            // Validate timezone before processing
+            if (!this.isValidTimezone(user.timezone)) {
+              this.loggerInstance.warn(`⚠️  Invalid timezone "${user.timezone}" for user ${user.phone}, using default Asia/Jerusalem`);
+              user.timezone = 'Asia/Jerusalem';
+            }
+            
+            // Check if it's the specified hour in user's timezone (FIXED: use direct hour/minute)
+            const userTime = this.getCurrentTimeInTimezone(user.timezone);
+            const hour = userTime.hour;
+            const minute = userTime.minute;
+
+            // Expanded time window: 0-15 minutes (was 0-10) to account for processing delays
+            if (hour === morningDigestHour && minute < 15) {
+              this.loggerInstance.info(`📧 Sending morning digest to ${user.phone} (${user.timezone}, local time: ${hour}:${String(minute).padStart(2, '0')})`);
+              
+              const success = await this.sendMorningDigestToUser(user, morningDigestHour);
+              if (success) {
+                sentToUsers.push(user.phone);
+              } else {
+                failedUsers.push(user.phone);
+              }
+            } else {
+              this.loggerInstance.debug(`⏭️  Skipping ${user.phone} - not in digest window (local time: ${hour}:${String(minute).padStart(2, '0')}, target: ${morningDigestHour}:00-${morningDigestHour}:14)`);
+              skippedUsers.push(user.phone);
+            }
+          } catch (error) {
+            this.loggerInstance.error(`❌ Error processing morning digest for ${user.phone}:`, error);
+            failedUsers.push(user.phone);
           }
-        } catch (error) {
-          this.loggerInstance.error(`Failed to send morning digest to ${user.phone}:`, error);
-        }
+        }));
+      }
+
+      const duration = Date.now() - startTime;
+      this.loggerInstance.info(`✅ Morning digest completed in ${duration}ms`);
+      this.loggerInstance.info(`📊 Summary: ${sentToUsers.length} sent, ${skippedUsers.length} skipped (not in window), ${failedUsers.length} failed`);
+      
+      if (sentToUsers.length > 0) {
+        this.loggerInstance.info(`✅ Successfully sent to: ${sentToUsers.join(', ')}`);
+      }
+      if (failedUsers.length > 0) {
+        this.loggerInstance.warn(`⚠️  Failed to send to: ${failedUsers.join(', ')}`);
       }
     } catch (error) {
-      this.loggerInstance.error('Error in sendMorningDigest:', error);
+      this.loggerInstance.error('❌ Error in sendMorningDigest:', error);
       throw error;
     }
   }
@@ -965,9 +1002,9 @@ export class ReminderService {
 
   /**
    * Get current time in user's timezone
-   * Returns a date object representing the current time as it would be in the user's timezone
+   * Returns hour and minute directly from the user's timezone (FIXED: no longer returns Date object)
    */
-  private getCurrentTimeInTimezone(timezone: string): Date {
+  private getCurrentTimeInTimezone(timezone: string): { hour: number; minute: number; second: number } {
     // Get current UTC time
     const now = new Date();
     // Format in the user's timezone to get local components
@@ -983,15 +1020,64 @@ export class ReminderService {
     });
     
     const parts = formatter.formatToParts(now);
-    const year = parseInt(parts.find(p => p.type === 'year')!.value);
-    const month = parseInt(parts.find(p => p.type === 'month')!.value) - 1; // 0-indexed
-    const day = parseInt(parts.find(p => p.type === 'day')!.value);
     const hour = parseInt(parts.find(p => p.type === 'hour')!.value);
     const minute = parseInt(parts.find(p => p.type === 'minute')!.value);
     const second = parseInt(parts.find(p => p.type === 'second')!.value);
 
-    // Create date object in UTC but representing the user's local time
-    return new Date(Date.UTC(year, month, day, hour, minute, second));
+    // Return hour and minute directly (FIXED: no Date object conversion)
+    return { hour, minute, second };
+  }
+
+  /**
+   * Validate timezone string
+   * Returns true if timezone is valid, false otherwise
+   */
+  private isValidTimezone(timezone: string): boolean {
+    try {
+      // Try to create a formatter with the timezone to validate it
+      const formatter = new Intl.DateTimeFormat('en-US', { timeZone: timezone });
+      // If formatter was created successfully, timezone is valid
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  /**
+   * Send morning digest to a single user with retry logic
+   */
+  private async sendMorningDigestToUser(user: User, morningDigestHour: number, retries: number = 2): Promise<boolean> {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const plannedTasks = await this.getTodaysTasks(user.id, user.timezone);
+        const unplannedTasks = await this.getUnplannedTasks(user.id);
+        const calendarEvents = await this.getTodaysCalendarEvents(user.id, user.timezone);
+        
+        let message: string;
+        if (plannedTasks.length > 0 || unplannedTasks.length > 0 || calendarEvents.length > 0) {
+          const rawData = this.buildDailyDigestData(plannedTasks, unplannedTasks, calendarEvents, user);
+          message = await this.enhanceMessageWithAI(rawData, user.phone);
+        } else {
+          // No tasks or events - send empty digest message
+          const rawData = this.buildEmptyDigestData(user);
+          message = await this.enhanceMessageWithAI(rawData, user.phone);
+        }
+        
+        await sendWhatsAppMessage(user.phone, message);
+        this.loggerInstance.info(`✅ Morning digest sent successfully to ${user.phone} (attempt ${attempt + 1})`);
+        return true;
+      } catch (error) {
+        if (attempt < retries) {
+          this.loggerInstance.warn(`⚠️  Failed to send morning digest to ${user.phone} (attempt ${attempt + 1}/${retries + 1}), retrying...`, error);
+          // Wait before retry (exponential backoff: 1s, 2s)
+          await new Promise(resolve => setTimeout(resolve, (attempt + 1) * 1000));
+        } else {
+          this.loggerInstance.error(`❌ Failed to send morning digest to ${user.phone} after ${retries + 1} attempts:`, error);
+          return false;
+        }
+      }
+    }
+    return false;
   }
 }
 

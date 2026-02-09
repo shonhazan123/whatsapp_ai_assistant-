@@ -3,6 +3,7 @@ import { RequestContext } from '../../core/context/RequestContext';
 import { IResponse } from '../../core/types/AgentTypes';
 import { RequestUserContext } from '../../types/UserContext';
 import { UpsertGoogleTokenPayload, UserService } from '../database/UserService';
+import { logger } from '../../utils/logger';
 
 export interface EmailAttachment {
   filename: string;

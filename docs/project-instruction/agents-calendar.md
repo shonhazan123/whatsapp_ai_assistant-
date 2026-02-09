@@ -27,6 +27,9 @@ It is responsible for **calendar events only** (single and recurring), including
   - Update either a **single instance** or the **whole recurring series** (via `isRecurring` / `recurringEventId`).
 - **Delete events**
   - `delete` a single event by `eventId`, or via `summary` + window.
+  - When deleting by summary, the adapter fetches the event first and includes event data (summary, start, end) in the response for formatting.
+  - `deleteByWindow` to bulk-delete all events in a time window.
+  - `deleteByWindow` includes an `events` array with full event data (start/end times) for accurate response formatting.
   - `deleteBySummary` to bulk-delete all future events matching a summary (fuzzy).
 - **Utilities**
   - `checkConflicts` to detect overlapping events in a time window.
@@ -69,9 +72,11 @@ Whenever you see **time on the calendar** (events, meetings), it’s the calenda
 - **`createRecurring`** – create a recurring series.
 - **`get`** – get one event, possibly via summary + time window.
 - **`getEvents`** – list events in `[timeMin, timeMax]`.
-- **`update`** – modify an existing event (instance or series).
-- **`delete`** – delete an event by ID or by summary + time window.
-- **`deleteBySummary`** – delete multiple events/master series by fuzzy-matched summary.
+- **`update`** – modify a single existing event (instance or series).
+- **`updateByWindow`** – update ALL events in a time window (move to new date/time).
+- **`delete`** – delete a single event by ID or by summary.
+- **`deleteByWindow`** – delete ALL events in a time window (with optional summary filter and exclusions).
+- **`deleteBySummary`** – delete multiple events/master series by fuzzy-matched summary (no time window needed).
 - **`getRecurringInstances`** – list instances for a recurring series.
 - **`checkConflicts`** – detect overlapping events.
 - **`truncateRecurring`** – cut off future recurrences for a series.
@@ -112,27 +117,41 @@ Whenever you see **time on the calendar** (events, meetings), it’s the calenda
   - Converted to UTC `UNTIL=YYYYMMDDTHHMMSSZ` for RRULE.
   - If omitted, service may fall back to a `COUNT` to prevent infinite series.
 
+- **Response Formatting for Recurring Events**
+  - `CalendarServiceAdapter.createRecurringEvent()` now includes original request parameters (`days`, `startTime`, `endTime`, `recurrence`) in the returned data.
+  - This ensures response formatters can generate accurate messages like "✅ אירוע חוזר נוסף!" and "כל יום שני ב 09:30 -10:30" instead of generic event messages.
+  - Day names are formatted in Hebrew/English based on user language preference.
+
 #### Reminders (`reminderMinutesBefore`)
 
 - `undefined` → do not alter reminders.
 - `null` → clear existing reminders (`useDefault: false; overrides: []`).
 - Positive number → set a popup reminder that many minutes before the event.
 
-#### Deletion resolution
+#### Bulk operations (deleteByWindow, updateByWindow)
 
-- When `delete` is called with a **time window** but without `eventId`:
-  - `CalendarFunction` calls an internal `deleteByWindow` helper:
-    - `CalendarService.getEvents({ timeMin, timeMax })`.
-    - If a `summary` is present, uses `FuzzyMatcher` to keep only events whose summary matches.
-    - For recurring events, uses `recurringEventId` as the master ID to delete the whole series.
-  - Returns a list of deleted IDs and, optionally, summaries.
+- **`deleteByWindow`** – explicit operation for deleting ALL events in a time window:
+  - Requires `timeMin` and `timeMax` to define the window.
+  - Optional `summary` for fuzzy filtering within the window.
+  - Optional `excludeSummaries` to keep specific events (exceptions).
+  - `CalendarEntityResolver` resolves all matching event IDs and provides `originalEvents` with full event data (including start/end times).
+  - `CalendarServiceAdapter.deleteByWindow()` iterates and deletes each event.
+  - Returns list of deleted IDs, summaries, and **events array with start/end times** for response formatting.
+  - The events array ensures time information is always available in delete responses.
 
-#### delete with exclusions (single-step operation)
+- **`updateByWindow`** – explicit operation for updating ALL events in a time window:
+  - Requires `timeMin` and `timeMax` to define the window.
+  - Uses `updateFields` for the changes (e.g., new start date).
+  - `CalendarEntityResolver` resolves all matching event IDs and includes original events.
+  - `CalendarServiceAdapter.updateByWindow()` calculates new times preserving duration.
+  - Returns list of updated events for response formatting.
 
-- When `delete` is called with **excludeSummaries**:
-  - `CalendarFunctions.deleteByWindow` fetches all events in the time window.
+#### Delete/update with exclusions
+
+- When `deleteByWindow` or `updateByWindow` is called with **excludeSummaries**:
+  - Fetches all events in the time window.
   - `excludeSummaries`: Filters OUT events whose summary contains any of the keywords (case-insensitive) - these are the **exceptions** that should be preserved.
-  - Deletes all remaining events in the window.
+  - Operates on all remaining events in the window.
   - Example: "delete all events this week except ultrasound" → deletes everything except events with "ultrasound" in the title.
 
 ---
@@ -163,16 +182,40 @@ Whenever you see **time on the calendar** (events, meetings), it’s the calenda
     - `summary: "בדיקת משכורת"`, `startTime: "10:00"`, `endTime: "11:00"`, `days: ["10"]`.
   - Service interprets as monthly: `FREQ=MONTHLY;BYMONTHDAY=10;...`.
 
-#### 4. Clear week except specific event (single-step delete with exceptions)
+#### 4. Clear week except specific event (deleteByWindow with exclusions)
 
 - **User**: "תפנה את כל האירועים שיש לי השבוע חוץ מהאולטרסאונד"
 - **Flow**:
-  - Orchestrator intent classifier → `calendar`, no multi-step plan needed.
-  - CalendarAgent → `calendarOperations` with `operation: "delete"`:
+  - Planner → action: `delete_events_by_window`, capability: `calendar`.
+  - CalendarMutateResolver → `operation: "deleteByWindow"`:
     - Extracts time window: "השבוע" → `timeMin`/`timeMax`
     - Extracts exception: "אולטרסאונד" → `excludeSummaries: ["אולטרסאונד"]`
-  - `CalendarFunctions.deleteByWindow` fetches all events in window, filters OUT ultrasound event, deletes the rest.
-  - Reply: "✅ פיניתי את השבוע חוץ מהאולטרסאונד."
+  - CalendarEntityResolver resolves all matching event IDs (excluding ultrasound).
+  - CalendarServiceAdapter.deleteByWindow() iterates and deletes each event.
+  - Reply: "✅ ניקיתי את השבוע ביומן! אלה האירועים שהסרת: ..."
+
+#### 5. Postpone all morning events (updateByWindow)
+
+- **User**: "הזז את כל האירועים של הבוקר מחר לשבת"
+- **Flow**:
+  - Planner → action: `update_events_by_window`, capability: `calendar`.
+  - CalendarMutateResolver → `operation: "updateByWindow"`:
+    - `timeMin`/`timeMax` for tomorrow morning (06:00-12:00)
+    - `updateFields: { start: "Saturday..." }`
+  - CalendarEntityResolver resolves all matching event IDs.
+  - CalendarServiceAdapter.updateByWindow() updates each event, preserving duration.
+  - Reply: "✅ הזזתי 3 אירועים לשבת!"
+
+#### 6. Delete all tomorrow's events (deleteByWindow)
+
+- **User**: "תמחק את כל האירועים של מחר"
+- **Flow**:
+  - Planner → action: `delete_events_by_window`, capability: `calendar`.
+  - CalendarMutateResolver → `operation: "deleteByWindow"`:
+    - `timeMin`: tomorrow 00:00, `timeMax`: tomorrow 23:59
+  - CalendarEntityResolver resolves all event IDs in window.
+  - CalendarServiceAdapter.deleteByWindow() deletes each event.
+  - Reply: "✅ ניקיתי את מחר ביומן!"
 
 ---
 
