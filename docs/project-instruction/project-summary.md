@@ -2,7 +2,9 @@
 
 ## Overview
 
-Focus WhatsApp Assistant is an AI-powered personal assistant accessible via WhatsApp. It helps users manage their calendar, tasks, reminders, emails, and long-term memory through natural language conversations in Hebrew and English.
+Focus WhatsApp Assistant is an AI-powered personal assistant accessible via WhatsApp.
+
+**Memo_v2 is standalone:** Memo_v2 can be deployed to the cloud on its own. The v1 services used by the graph (Calendar, Gmail, Task, List, User, SecondBrain, OpenAI, etc.) have been migrated into `Memo_v2/src/legacy/` so Memo_v2 has no runtime dependency on the root `src/` (v1) codebase. All such code lives under `Memo_v2/src/legacy/` with the same relative structure; entry points are `Memo_v2/src/services/v1-services.ts`, `LLMService.ts`, and `ResponseWriterNode.ts`, which require from `legacy/` only. It helps users manage their calendar, tasks, reminders, emails, and long-term memory through natural language conversations in Hebrew and English.
 
 ---
 

@@ -1,0 +1,576 @@
+/**
+ * Performance Tracker Service
+ * Tracks token usage, execution times, and performance metrics
+ */
+
+import { randomUUID } from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
+import { calculateCacheSavings, calculateCost } from '../../config/model-pricing';
+import { logger } from '../../utils/logger';
+import { PromptCacheService } from '../ai/PromptCacheService';
+import { PerformanceRequestContext } from './RequestContext';
+import { CachePerformanceStats, CallLogEntry, FunctionLogEntry, PerformanceContext, RequestSummary } from './types';
+
+export class PerformanceTracker {
+  private static instance: PerformanceTracker;
+  private requestContext: PerformanceRequestContext;
+  private promptCacheService: PromptCacheService;
+  private logsDir: string;
+  private requestSummaries: Map<string, RequestSummary> = new Map();
+  // In-memory storage for all calls and functions (for database upload)
+  private requestCalls: Map<string, CallLogEntry[]> = new Map();
+  private requestFunctions: Map<string, FunctionLogEntry[]> = new Map();
+
+  private constructor() {
+    this.requestContext = PerformanceRequestContext.getInstance();
+    this.promptCacheService = PromptCacheService.getInstance();
+    this.logsDir = path.join(process.cwd(), 'logs', 'performance');
+    this.ensureLogsDirectory();
+  }
+
+  static getInstance(): PerformanceTracker {
+    if (!PerformanceTracker.instance) {
+      PerformanceTracker.instance = new PerformanceTracker();
+    }
+    return PerformanceTracker.instance;
+  }
+
+  /**
+   * Ensure logs directory exists
+   */
+  private ensureLogsDirectory(): void {
+    if (!fs.existsSync(this.logsDir)) {
+      fs.mkdirSync(this.logsDir, { recursive: true });
+    }
+  }
+
+  /**
+   * Get log file path for today
+   */
+  private getLogFilePath(type: 'calls' | 'functions' | 'requests'): string {
+    const today = new Date().toISOString().split('T')[0];
+    return path.join(this.logsDir, `${type}-${today}.json`);
+  }
+
+  /**
+   * Append entry to JSON log file
+   */
+  private async appendToLogFile(filePath: string, entry: any): Promise<void> {
+    try {
+      let entries: any[] = [];
+      
+      // Read existing entries if file exists
+      if (fs.existsSync(filePath)) {
+        const content = fs.readFileSync(filePath, 'utf-8');
+        if (content.trim()) {
+          entries = JSON.parse(content);
+        }
+      }
+      
+      // Add new entry
+      entries.push(entry);
+      
+      // Write back to file
+      fs.writeFileSync(filePath, JSON.stringify(entries, null, 2), 'utf-8');
+    } catch (error) {
+      logger.error('Error writing to performance log file:', error);
+      // Don't throw - logging failures shouldn't break the app
+    }
+  }
+
+  /**
+   * Start tracking a new request
+   */
+  startRequest(userPhone: string): string {
+    return this.requestContext.startRequest(userPhone);
+  }
+
+  /**
+   * Log an AI call (completion, embedding, vision, transcription)
+   */
+  async logAICall(
+    requestId: string,
+    options: {
+      callType: 'completion' | 'embedding' | 'vision' | 'transcription';
+      model: string | null;
+      requestTokens: number;
+      responseTokens: number;
+      totalTokens: number;
+      startTime: number;
+      endTime: number;
+      messages?: Array<{ role: string; content: string }>;
+      responseContent?: string;
+      functionCall?: { name: string; arguments: any };
+      success: boolean;
+      error: string | null;
+      // Cache metrics (Phase 1)
+      cachedTokens?: number;
+      cacheHit?: boolean;
+      cacheWriteTokens?: number;
+      metadata?: Record<string, any>;
+    }
+  ): Promise<void> {
+    const context = this.requestContext.getContext(requestId);
+    if (!context) {
+      logger.warn(`No context found for requestId: ${requestId}`);
+      return;
+    }
+
+    const callSequence = this.requestContext.incrementCallSequence(requestId);
+    
+    // Truncate messages if too long
+    const truncatedMessages = options.messages?.map(msg => ({
+      role: msg.role,
+      content: msg.content && msg.content.length > 1000 ? msg.content.substring(0, 1000) + '...' : (msg.content || '')
+    }));
+
+    const truncatedResponse = options.responseContent 
+      ? (options.responseContent.length > 1000 ? options.responseContent.substring(0, 1000) + '...' : options.responseContent)
+      : undefined;
+
+    // Calculate actual paid tokens (excluding cached tokens)
+    const cachedTokens = options.cachedTokens || 0;
+    const actualRequestTokens = options.requestTokens - cachedTokens;
+    const actualTotalTokens = options.totalTokens - cachedTokens;
+
+    const entry: CallLogEntry = {
+      id: randomUUID(),
+      timestamp: new Date().toISOString(),
+      requestId,
+      sessionId: context.sessionId,
+      agent: context.currentAgent,
+      functionName: context.currentFunction,
+      callType: options.callType,
+      callSequence,
+      model: options.model,
+      requestTokens: options.requestTokens,  // Keep original for analytics
+      responseTokens: options.responseTokens,
+      totalTokens: options.totalTokens,      // Keep original for analytics
+      // Cache metrics (Phase 1)
+      cachedTokens: options.cachedTokens,
+      cacheHit: options.cacheHit,
+      cacheWriteTokens: options.cacheWriteTokens,
+      // Actual paid tokens (for cost reporting)
+      actualRequestTokens: actualRequestTokens,
+      actualTotalTokens: actualTotalTokens,
+      startTime: new Date(options.startTime).toISOString(),
+      endTime: new Date(options.endTime).toISOString(),
+      durationMs: options.endTime - options.startTime,
+      messages: truncatedMessages,
+      responseContent: truncatedResponse,
+      functionCall: options.functionCall,
+      success: options.success,
+      error: options.error,
+      userPhone: context.userPhone,
+      metadata: {
+        method: options.callType,
+        hasFunctionCall: !!options.functionCall,
+        ...options.metadata,
+      },
+    };
+
+    await this.appendToLogFile(this.getLogFilePath('calls'), entry);
+    
+    // Store in memory for database upload
+    if (!this.requestCalls.has(requestId)) {
+      this.requestCalls.set(requestId, []);
+    }
+    this.requestCalls.get(requestId)!.push(entry);
+    
+    // Update request summary
+    this.updateRequestSummary(requestId, entry);
+  }
+
+  /**
+   * Log agent execution
+   */
+  async logAgentExecution(
+    requestId: string,
+    agentName: string,
+    startTime: number,
+    endTime: number,
+    success: boolean,
+    error: string | null
+  ): Promise<void> {
+    const context = this.requestContext.getContext(requestId);
+    if (!context) {
+      return;
+    }
+
+    this.requestContext.setCurrentAgent(requestId, agentName);
+    const callSequence = this.requestContext.incrementCallSequence(requestId);
+
+    const entry: CallLogEntry = {
+      id: randomUUID(),
+      timestamp: new Date().toISOString(),
+      requestId,
+      sessionId: context.sessionId,
+      agent: agentName,
+      functionName: null,
+      callType: 'agent',
+      callSequence,
+      model: null,
+      requestTokens: 0,
+      responseTokens: 0,
+      totalTokens: 0,
+      startTime: new Date(startTime).toISOString(),
+      endTime: new Date(endTime).toISOString(),
+      durationMs: endTime - startTime,
+      success,
+      error,
+      userPhone: context.userPhone,
+      metadata: {
+        method: 'agentExecution',
+      },
+    };
+
+    await this.appendToLogFile(this.getLogFilePath('calls'), entry);
+    
+    // Store in memory for database upload
+    if (!this.requestCalls.has(requestId)) {
+      this.requestCalls.set(requestId, []);
+    }
+    this.requestCalls.get(requestId)!.push(entry);
+  }
+
+  /**
+   * Log function execution
+   * Now includes all fields to match unified schema
+   */
+  async logFunctionExecution(
+    requestId: string,
+    functionName: string,
+    operation: string | undefined,
+    startTime: number,
+    endTime: number,
+    success: boolean,
+    error: string | null,
+    args?: any,
+    result?: any,
+    parentAICall?: {
+      model?: string | null;
+      requestTokens?: number;
+      responseTokens?: number;
+      totalTokens?: number;
+      cachedTokens?: number;
+      actualRequestTokens?: number;
+      actualTotalTokens?: number;
+    }
+  ): Promise<void> {
+    const context = this.requestContext.getContext(requestId);
+    if (!context) {
+      return;
+    }
+
+    this.requestContext.setCurrentFunction(requestId, functionName);
+    const callSequence = this.requestContext.incrementCallSequence(requestId);
+
+    // Truncate args and result
+    const truncatedArgs = args ? JSON.stringify(args).length > 500 
+      ? JSON.stringify(args).substring(0, 500) + '...' 
+      : args 
+      : undefined;
+    
+    const truncatedResult = result ? JSON.stringify(result).length > 500
+      ? JSON.stringify(result).substring(0, 500) + '...'
+      : result
+      : undefined;
+
+    // Get agent name - ensure it's not null
+    const agentName = context.currentAgent || 'unknown';
+
+    // Calculate actual tokens from parent AI call
+    const parentCachedTokens = parentAICall?.cachedTokens || 0;
+    const parentRequestTokens = parentAICall?.requestTokens || 0;
+    const parentTotalTokens = parentAICall?.totalTokens || 0;
+    const parentActualRequestTokens = parentAICall?.actualRequestTokens 
+      ?? (parentRequestTokens - parentCachedTokens);
+    const parentActualTotalTokens = parentAICall?.actualTotalTokens 
+      ?? (parentTotalTokens - parentCachedTokens);
+
+    const entry: FunctionLogEntry = {
+      id: randomUUID(),
+      timestamp: new Date().toISOString(),
+      requestId,
+      sessionId: context.sessionId, // Added
+      callType: 'function',
+      callSequence, // Added
+      agent: agentName,
+      functionName,
+      operation,
+      model: parentAICall?.model || null, // Inherited from parent AI call
+      requestTokens: parentRequestTokens, // Inherited from parent AI call (including cached)
+      responseTokens: parentAICall?.responseTokens || 0, // Inherited from parent AI call
+      totalTokens: parentTotalTokens, // Inherited from parent AI call (including cached)
+      // Actual paid tokens (inherited from parent)
+      actualRequestTokens: parentActualRequestTokens,
+      actualTotalTokens: parentActualTotalTokens,
+      startTime: new Date(startTime).toISOString(),
+      endTime: new Date(endTime).toISOString(),
+      durationMs: endTime - startTime,
+      success,
+      error,
+      userPhone: context.userPhone, // Added
+      arguments: truncatedArgs,
+      result: truncatedResult,
+      metadata: {
+        method: 'functionExecution',
+      },
+    };
+
+    await this.appendToLogFile(this.getLogFilePath('functions'), entry);
+    
+    // Store in memory for database upload
+    if (!this.requestFunctions.has(requestId)) {
+      this.requestFunctions.set(requestId, []);
+    }
+    this.requestFunctions.get(requestId)!.push(entry);
+    
+    // Clear function context after logging
+    this.requestContext.setCurrentFunction(requestId, null);
+  }
+
+  /**
+   * Update request summary with call data
+   */
+  private updateRequestSummary(requestId: string, entry: CallLogEntry): void {
+    let summary = this.requestSummaries.get(requestId);
+    const context = this.requestContext.getContext(requestId);
+    
+    if (!summary && context) {
+      summary = {
+        requestId,
+        sessionId: context.sessionId,
+        userPhone: context.userPhone,
+        startTime: new Date(context.startTime).toISOString(),
+        endTime: '',
+        totalDurationMs: 0,
+        totalTokens: 0,
+        requestTokens: 0,
+        responseTokens: 0,
+        actualTotalTokens: 0,
+        actualRequestTokens: 0,
+        totalAICalls: 0,
+        totalFunctionCalls: 0,
+        agentsUsed: [],
+        functionsUsed: [],
+        success: true,
+        error: null,
+        // Cache metrics (Phase 1)
+        totalCachedTokens: 0,
+        cacheHitRate: 0,
+        estimatedCacheSavings: 0,
+      };
+      this.requestSummaries.set(requestId, summary);
+    }
+
+    if (summary) {
+      if (entry.callType === 'completion' || entry.callType === 'embedding' || entry.callType === 'vision' || entry.callType === 'transcription') {
+        summary.totalAICalls++;
+        
+        // ACTUAL tokens paid = total tokens, but cached tokens cost 90% less
+        // OpenAI charges: (cached_tokens * 0.003) + (non-cached_tokens * 0.03) per 1k
+        const cachedTokens = entry.cachedTokens || 0;
+        const nonCachedTokens = entry.requestTokens - cachedTokens;
+        
+        // Track actual usage (what OpenAI reports)
+        summary.totalTokens += entry.totalTokens;
+        summary.requestTokens += entry.requestTokens;
+        summary.responseTokens += entry.responseTokens;
+        
+        // Track cache metrics (Phase 1)
+        if (cachedTokens > 0) {
+          summary.totalCachedTokens = (summary.totalCachedTokens || 0) + cachedTokens;
+          // Calculate cache savings using model-specific pricing
+          const model = entry.model || 'gpt-5.1';
+          const savings = calculateCacheSavings(model, cachedTokens);
+          summary.estimatedCacheSavings = (summary.estimatedCacheSavings || 0) + savings;
+        }
+        
+        // Calculate cache hit rate
+        if (summary.totalAICalls > 0) {
+          const cacheHits = this.requestCalls.get(requestId)?.filter(c => c.cacheHit).length || 0;
+          summary.cacheHitRate = cacheHits / summary.totalAICalls;
+        }
+      }
+
+      if (entry.agent && !summary.agentsUsed.includes(entry.agent)) {
+        summary.agentsUsed.push(entry.agent);
+      }
+
+      if (entry.functionName && !summary.functionsUsed.includes(entry.functionName)) {
+        summary.functionsUsed.push(entry.functionName);
+      }
+
+      if (!entry.success) {
+        summary.success = false;
+        summary.error = entry.error || 'Unknown error';
+      }
+    }
+  }
+  
+  /**
+   * Get cache performance statistics
+   * Added in Phase 1: Prompt Caching
+   */
+  getCacheStats(): CachePerformanceStats {
+    const cacheStats = this.promptCacheService.getStats();
+    return {
+      date: new Date().toISOString().split('T')[0],
+      totalRequests: cacheStats.totalRequests,
+      cacheHits: cacheStats.cacheHits,
+      cacheMisses: cacheStats.cacheMisses,
+      cacheHitRate: cacheStats.cacheHitRate,
+      totalTokensCached: cacheStats.tokensSaved,
+      estimatedCostSavings: cacheStats.costSaved
+    };
+  }
+
+  /**
+   * End request and log summary
+   */
+  async endRequest(requestId: string): Promise<void> {
+    const context = this.requestContext.getContext(requestId);
+    if (!context) {
+      return;
+    }
+
+    const summary = this.requestSummaries.get(requestId);
+    if (summary) {
+      summary.endTime = new Date().toISOString();
+      summary.totalDurationMs = Date.now() - context.startTime;
+      
+      await this.appendToLogFile(this.getLogFilePath('requests'), summary);
+      
+      // Print console summary
+      this.printRequestSummary(summary);
+      
+      this.requestSummaries.delete(requestId);
+    }
+
+    this.requestContext.endRequest(requestId);
+  }
+
+  /**
+   * Print request summary to console
+   */
+  private printRequestSummary(summary: RequestSummary): void {
+    const durationSeconds = (summary.totalDurationMs / 1000).toFixed(2);
+    
+    // Calculate ACTUAL cost using model-specific pricing
+    // Get all calls for this request to determine model mix
+    const calls = this.requestCalls.get(summary.requestId) || [];
+    const modelCosts = new Map<string, { input: number; output: number; cached: number }>();
+    
+    // Debug: Log calls for troubleshooting
+    if (calls.length === 0) {
+      logger.warn(`⚠️  No calls found for request ${summary.requestId}`);
+    } else {
+      logger.debug(`📊 Processing ${calls.length} calls for cost calculation`);
+    }
+    
+    // Aggregate costs per model
+    for (const call of calls) {
+      if (call.callType === 'completion' || call.callType === 'vision' || call.callType === 'embedding') {
+        const model = call.model || 'gpt-5.1';
+        const cached = call.cachedTokens || 0;
+        const nonCached = call.requestTokens - cached;
+        
+        logger.debug(`💰 Call: ${call.callType}, Model: ${model}, Request: ${call.requestTokens}, Cached: ${cached}, Response: ${call.responseTokens}`);
+        
+        if (!modelCosts.has(model)) {
+          modelCosts.set(model, { input: 0, output: 0, cached: 0 });
+        }
+        const costs = modelCosts.get(model)!;
+        costs.input += nonCached;
+        costs.output += call.responseTokens;
+        costs.cached += cached;
+      } else {
+        logger.debug(`⏭️  Skipping call type: ${call.callType}`);
+      }
+    }
+    
+    // Calculate total cost across all models
+    let totalCost = 0;
+    if (modelCosts.size === 0) {
+      // Debug: No calls found for cost calculation
+      logger.warn(`⚠️  No calls found for cost calculation (requestId: ${summary.requestId}, calls array length: ${calls.length})`);
+    }
+    for (const [model, costs] of modelCosts.entries()) {
+      const modelCost = calculateCost(model, costs.input + costs.cached, costs.output, costs.cached);
+      totalCost += modelCost;
+      logger.debug(`💰 Cost for ${model}: $${modelCost.toFixed(4)} (input: ${costs.input}, cached: ${costs.cached}, output: ${costs.output})`);
+    }
+    
+    const cachedTokens = summary.totalCachedTokens || 0;
+    
+    logger.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    logger.info('💰 Request Performance Summary:');
+    // Use actual paid tokens for display
+    const actualTotalTokens = summary.actualTotalTokens || summary.totalTokens;
+    const actualRequestTokens = summary.actualRequestTokens || summary.requestTokens;
+    
+    logger.info(`   📊 Total Tokens: ${actualTotalTokens.toLocaleString()} (Request: ${actualRequestTokens.toLocaleString()}, Response: ${summary.responseTokens.toLocaleString()})`);
+    if (cachedTokens > 0) {
+      logger.info(`   💾 Cached Tokens: ${cachedTokens.toLocaleString()} (${((cachedTokens / summary.requestTokens) * 100).toFixed(1)}% of input)`);
+      logger.info(`   💵 Actual Cost: $${totalCost.toFixed(4)} (Saved: $${(summary.estimatedCacheSavings || 0).toFixed(4)})`);
+    } else {
+      logger.info(`   💵 Estimated Cost: $${totalCost.toFixed(4)}`);
+    }
+    logger.info(`   ⏱️  Total Duration: ${durationSeconds}s`);
+    logger.info(`   🤖 Agents: ${summary.agentsUsed.length > 0 ? summary.agentsUsed.join(', ') : 'none'}`);
+    logger.info(`   🔧 Functions: ${summary.functionsUsed.length > 0 ? summary.functionsUsed.join(', ') : 'none'}`);
+    logger.info(`   📞 AI Calls: ${summary.totalAICalls}`);
+    if (summary.cacheHitRate && summary.cacheHitRate > 0) {
+      logger.info(`   🎯 Cache Hit Rate: ${(summary.cacheHitRate * 100).toFixed(1)}%`);
+    }
+    logger.info(`   ✅ Status: ${summary.success ? 'Success' : 'Failed'}`);
+    if (summary.error) {
+      logger.info(`   ❌ Error: ${summary.error}`);
+    }
+    logger.info('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  }
+
+  /**
+   * Get current request context (for external access)
+   */
+  getCurrentContext(requestId: string): PerformanceContext | null {
+    return this.requestContext.getContext(requestId);
+  }
+
+  /**
+   * Get last AI call info for a request (for function tracking)
+   */
+  getLastAICall(requestId: string): {
+    model: string | null;
+    requestTokens: number;
+    responseTokens: number;
+    totalTokens: number;
+  } | undefined {
+    return this.requestContext.getLastAICall(requestId);
+  }
+
+  /**
+   * Get all calls for a request (for database upload)
+   */
+  getRequestCalls(requestId: string): CallLogEntry[] {
+    return this.requestCalls.get(requestId) || [];
+  }
+
+  /**
+   * Get all functions for a request (for database upload)
+   */
+  getRequestFunctions(requestId: string): FunctionLogEntry[] {
+    return this.requestFunctions.get(requestId) || [];
+  }
+
+  /**
+   * Clear in-memory data for a request (after upload)
+   */
+  clearRequestData(requestId: string): void {
+    this.requestCalls.delete(requestId);
+    this.requestFunctions.delete(requestId);
+  }
+}
+

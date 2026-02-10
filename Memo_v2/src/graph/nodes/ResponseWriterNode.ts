@@ -28,7 +28,7 @@ let ResponseFormatterPrompt: any;
 try {
   // Path: From Memo_v2/dist/graph/nodes/ to workspace root src/config/response-formatter-prompt
   // Up 4 levels: nodes/ -> graph/ -> dist/ -> Memo_v2/ -> workspace root
-  const promptModule = require('../../../../src/config/response-formatter-prompt');
+  const promptModule = require('../../legacy/config/response-formatter-prompt');
   ResponseFormatterPrompt = promptModule.ResponseFormatterPrompt;
 } catch (error) {
   console.error('[ResponseWriterNode] Failed to load ResponseFormatterPrompt:', error);

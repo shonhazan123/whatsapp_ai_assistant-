@@ -16,11 +16,10 @@
     "sourceMap": true,
     "baseUrl": ".",
     "paths": {
-      "@v1/*": ["../src/*"],
+      "@legacy/*": ["./src/legacy/*"],
       "@/*": ["./src/*"]
     }
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "tests"]
 }
-

@@ -422,4 +422,14 @@
 
 ---
 
+## Standalone Migration ✅
+
+- ✅ Create `Memo_v2/src/legacy/` and copy 33 v1 files (config, core, types, utils, services) with copy commands
+- ✅ Update the three require() calls in `v1-services.ts`, `LLMService.ts`, `ResponseWriterNode.ts` to load from `legacy/`
+- ✅ Tsconfig: remove `@v1/*`, add `@legacy/*`; include `src/**/*` (legacy is under src)
+- ✅ Add npm deps to Memo_v2: `pg`, `googleapis`, `dotenv`, `@types/pg`
+- ✅ Build succeeds; Memo_v2 is deployable without the root v1 codebase
+
+---
+
 _Update this checklist as implementation progresses._

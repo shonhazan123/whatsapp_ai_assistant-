@@ -25,7 +25,7 @@ function getOpenAIService(): any {
 
       // Get OpenAIService
       // Path calculation: From Memo_v2/dist/services/llm/ to workspace root src/services/ai/OpenAIService
-      const openAIModule = require('../../../../src/services/ai/OpenAIService');
+      const openAIModule = require('../../legacy/services/ai/OpenAIService');
       _OpenAIService = new openAIModule.OpenAIService(_logger);
     } catch (error) {
       console.error('[LLMService] Failed to load OpenAIService:', error);

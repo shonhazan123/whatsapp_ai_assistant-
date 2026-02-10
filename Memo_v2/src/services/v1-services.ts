@@ -80,7 +80,7 @@ export function initializeServices(): void {
     // This ensures logger is available when CalendarService/GmailService are parsed
     // (Avoids "Cannot access 'logger' before initialization" TDZ error)
     // ========================================================================
-    require('../../../src/utils/logger');
+    require('../legacy/utils/logger');
     console.log('[V1Services] ✓ Pre-loaded src/utils/logger');
 
     // ========================================================================
@@ -88,7 +88,7 @@ export function initializeServices(): void {
     // ========================================================================
 
     // CalendarService
-    const calendarModule = require('../../../src/services/calendar/CalendarService');
+    const calendarModule = require('../legacy/services/calendar/CalendarService');
     if (calendarModule?.CalendarService) {
       _calendarService = new calendarModule.CalendarService(logger);
       console.log('[V1Services] ✓ CalendarService');
@@ -97,7 +97,7 @@ export function initializeServices(): void {
     }
 
     // GmailService
-    const gmailModule = require('../../../src/services/email/GmailService');
+    const gmailModule = require('../legacy/services/email/GmailService');
     if (gmailModule?.GmailService) {
       _gmailService = new gmailModule.GmailService(logger);
       console.log('[V1Services] ✓ GmailService');
@@ -106,7 +106,7 @@ export function initializeServices(): void {
     }
 
     // TaskService
-    const taskModule = require('../../../src/services/database/TaskService');
+    const taskModule = require('../legacy/services/database/TaskService');
     if (taskModule?.TaskService) {
       _taskService = new taskModule.TaskService(logger);
       console.log('[V1Services] ✓ TaskService');
@@ -115,7 +115,7 @@ export function initializeServices(): void {
     }
 
     // ListService
-    const listModule = require('../../../src/services/database/ListService');
+    const listModule = require('../legacy/services/database/ListService');
     if (listModule?.ListService) {
       _listService = new listModule.ListService(logger);
       console.log('[V1Services] ✓ ListService');
@@ -124,7 +124,7 @@ export function initializeServices(): void {
     }
 
     // SecondBrainService
-    const sbModule = require('../../../src/services/memory/SecondBrainService');
+    const sbModule = require('../legacy/services/memory/SecondBrainService');
     if (sbModule?.SecondBrainService) {
       _secondBrainService = new sbModule.SecondBrainService(logger);
       console.log('[V1Services] ✓ SecondBrainService');
@@ -133,7 +133,7 @@ export function initializeServices(): void {
     }
 
     // UserService
-    const userModule = require('../../../src/services/database/UserService');
+    const userModule = require('../legacy/services/database/UserService');
     if (userModule?.UserService) {
       _userService = new userModule.UserService(logger);
       console.log('[V1Services] ✓ UserService');
