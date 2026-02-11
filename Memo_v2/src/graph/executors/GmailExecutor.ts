@@ -20,7 +20,16 @@ export class GmailExecutor extends BaseExecutor {
     const startTime = Date.now();
 
     try {
-      const adapter = new GmailServiceAdapter(context.userPhone);
+      // Build UserContext from ExecutorContext (need to get full user context from state)
+      const userContext: any = {
+        phone: context.userPhone,
+        timezone: context.timezone,
+        language: context.language,
+        planTier: 'free', // Will be populated from state in future
+        googleConnected: false, // Will be populated from state
+        capabilities: { calendar: false, gmail: true, database: true, secondBrain: true },
+      };
+      const adapter = new GmailServiceAdapter(context.userPhone, userContext);
       const result = await adapter.execute(args as GmailOperationArgs);
 
       return {

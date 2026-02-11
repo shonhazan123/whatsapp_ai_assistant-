@@ -20,7 +20,17 @@ export class CalendarExecutor extends BaseExecutor {
     const startTime = Date.now();
 
     try {
-      const adapter = new CalendarServiceAdapter(context.userPhone);
+      // Build UserContext from ExecutorContext (need to get full user context from state)
+      // For now, create a minimal UserContext - this will be improved when ExecutorContext includes full user
+      const userContext: any = {
+        phone: context.userPhone,
+        timezone: context.timezone,
+        language: context.language,
+        planTier: 'free', // Will be populated from state in future
+        googleConnected: false, // Will be populated from state
+        capabilities: { calendar: true, gmail: false, database: true, secondBrain: true },
+      };
+      const adapter = new CalendarServiceAdapter(context.userPhone, userContext);
       const result = await adapter.execute(args as CalendarOperationArgs);
 
       return {

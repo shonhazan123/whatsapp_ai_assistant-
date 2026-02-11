@@ -6,6 +6,9 @@
  */
 
 import { getGmailService } from '../v1-services.js';
+import { UserService } from '../../legacy/services/database/UserService.js';
+import type { UserContext } from '../../types/index.js';
+import type { RequestUserContext } from '../../legacy/types/UserContext.js';
 
 export interface GmailOperationArgs {
   operation: string;
@@ -38,9 +41,38 @@ export interface GmailOperationResult {
 
 export class GmailServiceAdapter {
   private userPhone: string;
+  private userContext: UserContext;
+  private userService: UserService;
   
-  constructor(userPhone: string) {
+  constructor(userPhone: string, userContext: UserContext) {
     this.userPhone = userPhone;
+    this.userContext = userContext;
+    this.userService = new UserService();
+  }
+
+  /**
+   * Build RequestUserContext from MemoState user context
+   */
+  private async buildRequestContext(): Promise<RequestUserContext> {
+    const userRecord = await this.userService.findByWhatsappNumber(this.userPhone);
+    if (!userRecord) {
+      throw new Error(`User not found: ${this.userPhone}`);
+    }
+
+    const googleTokens = await this.userService.getGoogleTokens(userRecord.id);
+
+    return {
+      user: userRecord,
+      planType: userRecord.plan_type,
+      whatsappNumber: this.userPhone,
+      capabilities: {
+        database: this.userContext.capabilities.database,
+        calendar: this.userContext.capabilities.calendar,
+        gmail: this.userContext.capabilities.gmail,
+      },
+      googleTokens: googleTokens,
+      googleConnected: this.userContext.googleConnected,
+    };
   }
   
   /**
@@ -53,23 +85,26 @@ export class GmailServiceAdapter {
     if (!gmailService) {
       return { success: false, error: 'GmailService not available' };
     }
+
+    // Build context from state
+    const context = await this.buildRequestContext();
     
     try {
       switch (operation) {
         case 'listEmails':
-          return await this.listEmails(gmailService, args);
+          return await this.listEmails(gmailService, context, args);
           
         case 'getEmailById':
-          return await this.getEmailById(gmailService, args);
+          return await this.getEmailById(gmailService, context, args);
           
         case 'sendPreview':
-          return await this.sendPreview(gmailService, args);
+          return await this.sendPreview(gmailService, context, args);
           
         case 'sendConfirm':
-          return await this.sendConfirm(gmailService, args);
+          return await this.sendConfirm(gmailService, context, args);
           
         case 'reply':
-          return await this.reply(gmailService, args);
+          return await this.reply(gmailService, context, args);
           
         default:
           return { success: false, error: `Unknown operation: ${operation}` };
@@ -84,7 +119,7 @@ export class GmailServiceAdapter {
   // OPERATION IMPLEMENTATIONS
   // ========================================================================
   
-  private async listEmails(gmailService: any, args: GmailOperationArgs): Promise<GmailOperationResult> {
+  private async listEmails(gmailService: any, context: RequestUserContext, args: GmailOperationArgs): Promise<GmailOperationResult> {
     // Build query from filters
     const filters = args.filters || {};
     const queryParts: string[] = [];
@@ -97,7 +132,7 @@ export class GmailServiceAdapter {
     if (filters.hasAttachment) queryParts.push('has:attachment');
     if (filters.isUnread) queryParts.push('is:unread');
     
-    const result = await gmailService.listEmails({
+    const result = await gmailService.listEmails(context, {
       query: queryParts.length > 0 ? queryParts.join(' ') : undefined,
       maxResults: filters.maxResults || 10,
     });
@@ -109,12 +144,12 @@ export class GmailServiceAdapter {
     };
   }
   
-  private async getEmailById(gmailService: any, args: GmailOperationArgs): Promise<GmailOperationResult> {
+  private async getEmailById(gmailService: any, context: RequestUserContext, args: GmailOperationArgs): Promise<GmailOperationResult> {
     if (!args.messageId) {
       return { success: false, error: 'Message ID is required' };
     }
     
-    const result = await gmailService.getEmailById(args.messageId, {
+    const result = await gmailService.getEmailById(context, args.messageId, {
       includeBody: true,
       includeHeaders: true,
     });
@@ -126,7 +161,7 @@ export class GmailServiceAdapter {
     };
   }
   
-  private async sendPreview(gmailService: any, args: GmailOperationArgs): Promise<GmailOperationResult> {
+  private async sendPreview(gmailService: any, context: RequestUserContext, args: GmailOperationArgs): Promise<GmailOperationResult> {
     if (!args.to || args.to.length === 0) {
       return { success: false, error: 'Recipients (to) are required' };
     }
@@ -149,12 +184,12 @@ export class GmailServiceAdapter {
     };
   }
   
-  private async sendConfirm(gmailService: any, args: GmailOperationArgs): Promise<GmailOperationResult> {
+  private async sendConfirm(gmailService: any, context: RequestUserContext, args: GmailOperationArgs): Promise<GmailOperationResult> {
     if (!args.to || args.to.length === 0) {
       return { success: false, error: 'Recipients (to) are required' };
     }
     
-    const result = await gmailService.sendEmail({
+    const result = await gmailService.sendEmail(context, {
       to: args.to,
       subject: args.subject || '',
       body: args.body,
@@ -169,12 +204,12 @@ export class GmailServiceAdapter {
     };
   }
   
-  private async reply(gmailService: any, args: GmailOperationArgs): Promise<GmailOperationResult> {
+  private async reply(gmailService: any, context: RequestUserContext, args: GmailOperationArgs): Promise<GmailOperationResult> {
     if (!args.messageId) {
       return { success: false, error: 'Message ID is required for reply' };
     }
     
-    const result = await gmailService.replyToEmail({
+    const result = await gmailService.replyToEmail(context, {
       messageId: args.messageId,
       body: args.body,
       cc: args.cc,

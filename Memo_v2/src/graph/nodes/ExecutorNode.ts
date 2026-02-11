@@ -61,7 +61,8 @@ export class ExecutorNode extends CodeNode {
         stepId,
         step.capability,
         args,
-        userPhone
+        userPhone,
+        state.user
       ).then(execResult => {
         executionResults.set(stepId, execResult);
       });
@@ -86,7 +87,8 @@ export class ExecutorNode extends CodeNode {
     stepId: string,
     capability: string,
     args: Record<string, any>,
-    userPhone: string
+    userPhone: string,
+    userContext: any
   ): Promise<ExecutionResult> {
     const startTime = Date.now();
     
@@ -95,7 +97,7 @@ export class ExecutorNode extends CodeNode {
       
       switch (capability) {
         case 'calendar':
-          const calendarAdapter = new CalendarServiceAdapter(userPhone);
+          const calendarAdapter = new CalendarServiceAdapter(userPhone, userContext);
           result = await calendarAdapter.execute(args as any);
           break;
           
@@ -110,7 +112,7 @@ export class ExecutorNode extends CodeNode {
           break;
           
         case 'gmail':
-          const gmailAdapter = new GmailServiceAdapter(userPhone);
+          const gmailAdapter = new GmailServiceAdapter(userPhone, userContext);
           result = await gmailAdapter.execute(args as any);
           break;
           

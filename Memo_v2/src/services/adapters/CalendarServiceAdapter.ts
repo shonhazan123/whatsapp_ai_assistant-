@@ -6,6 +6,9 @@
  */
 
 import { getCalendarService } from '../v1-services.js';
+import { UserService } from '../../legacy/services/database/UserService.js';
+import type { UserContext } from '../../types/index.js';
+import type { RequestUserContext } from '../../legacy/types/UserContext.js';
 
 export interface CalendarReminders {
   useDefault: boolean;
@@ -65,9 +68,38 @@ export interface CalendarOperationResult {
 
 export class CalendarServiceAdapter {
   private userPhone: string;
+  private userContext: UserContext;
+  private userService: UserService;
 
-  constructor(userPhone: string) {
+  constructor(userPhone: string, userContext: UserContext) {
     this.userPhone = userPhone;
+    this.userContext = userContext;
+    this.userService = new UserService();
+  }
+
+  /**
+   * Build RequestUserContext from MemoState user context
+   */
+  private async buildRequestContext(): Promise<RequestUserContext> {
+    const userRecord = await this.userService.findByWhatsappNumber(this.userPhone);
+    if (!userRecord) {
+      throw new Error(`User not found: ${this.userPhone}`);
+    }
+
+    const googleTokens = await this.userService.getGoogleTokens(userRecord.id);
+
+    return {
+      user: userRecord,
+      planType: userRecord.plan_type,
+      whatsappNumber: this.userPhone,
+      capabilities: {
+        database: this.userContext.capabilities.database,
+        calendar: this.userContext.capabilities.calendar,
+        gmail: this.userContext.capabilities.gmail,
+      },
+      googleTokens: googleTokens,
+      googleConnected: this.userContext.googleConnected,
+    };
   }
 
   /**
@@ -81,37 +113,40 @@ export class CalendarServiceAdapter {
       return { success: false, error: 'CalendarService not available' };
     }
 
+    // Build context from state
+    const context = await this.buildRequestContext();
+
     try {
       switch (operation) {
         case 'create':
-          return await this.createEvent(calendarService, args);
+          return await this.createEvent(calendarService, context, args);
 
         case 'createMultiple':
-          return await this.createMultipleEvents(calendarService, args);
+          return await this.createMultipleEvents(calendarService, context, args);
 
         case 'createRecurring':
-          return await this.createRecurringEvent(calendarService, args);
+          return await this.createRecurringEvent(calendarService, context, args);
 
         case 'get':
-          return await this.getEvent(calendarService, args);
+          return await this.getEvent(calendarService, context, args);
 
         case 'getEvents':
-          return await this.getEvents(calendarService, args);
+          return await this.getEvents(calendarService, context, args);
 
         case 'update':
-          return await this.updateEvent(calendarService, args);
+          return await this.updateEvent(calendarService, context, args);
 
         case 'delete':
-          return await this.deleteEvent(calendarService, args);
+          return await this.deleteEvent(calendarService, context, args);
 
         case 'deleteByWindow':
-          return await this.deleteByWindow(calendarService, args);
+          return await this.deleteByWindow(calendarService, context, args);
 
         case 'updateByWindow':
-          return await this.updateByWindow(calendarService, args);
+          return await this.updateByWindow(calendarService, context, args);
 
         case 'checkConflicts':
-          return await this.checkConflicts(calendarService, args);
+          return await this.checkConflicts(calendarService, context, args);
 
         default:
           return { success: false, error: `Unknown operation: ${operation}` };
@@ -126,7 +161,7 @@ export class CalendarServiceAdapter {
   // OPERATION IMPLEMENTATIONS
   // ========================================================================
 
-  private async createEvent(calendarService: any, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
+  private async createEvent(calendarService: any, context: RequestUserContext, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
     // Build reminders if specified
     let reminders: CalendarReminders | undefined;
     if (args.reminderMinutesBefore !== undefined) {
@@ -136,7 +171,7 @@ export class CalendarServiceAdapter {
       };
     }
 
-    const result = await calendarService.createEvent({
+    const result = await calendarService.createEvent(context, {
       summary: args.summary || '',
       start: args.start || '',
       end: args.end || '',
@@ -155,7 +190,7 @@ export class CalendarServiceAdapter {
     };
   }
 
-  private async createMultipleEvents(calendarService: any, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
+  private async createMultipleEvents(calendarService: any, context: RequestUserContext, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
     const events = (args.events || []).map((e: any) => ({
       summary: e.summary,
       start: e.start,
@@ -166,7 +201,7 @@ export class CalendarServiceAdapter {
       allDay: e.allDay,
     }));
 
-    const result = await calendarService.createMultipleEvents({ events });
+    const result = await calendarService.createMultipleEvents(context, { events });
 
     return {
       success: result.success,
@@ -175,7 +210,7 @@ export class CalendarServiceAdapter {
     };
   }
 
-  private async createRecurringEvent(calendarService: any, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
+  private async createRecurringEvent(calendarService: any, context: RequestUserContext, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
     // Build reminders if specified
     let reminders: CalendarReminders | undefined;
     if (args.reminderMinutesBefore !== undefined) {
@@ -191,7 +226,7 @@ export class CalendarServiceAdapter {
       recurrence = 'monthly';
     }
 
-    const result = await calendarService.createRecurringEvent({
+    const result = await calendarService.createRecurringEvent(context, {
       summary: args.summary || '',
       startTime: args.startTime || args.start || '',
       endTime: args.endTime || args.end || '',
@@ -218,7 +253,7 @@ export class CalendarServiceAdapter {
     };
   }
 
-  private async getEvent(calendarService: any, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
+  private async getEvent(calendarService: any, context: RequestUserContext, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
     // Get events in a time range and filter by summary if provided
     const timeMin = args.timeMin || new Date().toISOString();
     const timeMax = args.timeMax || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
@@ -246,7 +281,7 @@ export class CalendarServiceAdapter {
     };
   }
 
-  private async getEvents(calendarService: any, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
+  private async getEvents(calendarService: any, context: RequestUserContext, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
     const result = await calendarService.getEvents({
       timeMin: args.timeMin || new Date().toISOString(),
       timeMax: args.timeMax || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
@@ -272,13 +307,13 @@ export class CalendarServiceAdapter {
     };
   }
 
-  private async updateEvent(calendarService: any, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
+  private async updateEvent(calendarService: any, context: RequestUserContext, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
     // If using searchCriteria, first find the event
     let eventId = args.eventId;
     const isRecurringSeries = args.isRecurringSeries || false;
 
     if (!eventId && args.searchCriteria?.summary) {
-      const searchResult = await this.getEvent(calendarService, {
+      const searchResult = await this.getEvent(calendarService, context, {
         operation: 'get',
         summary: args.searchCriteria.summary,
         timeMin: args.searchCriteria.timeMin,
@@ -301,7 +336,7 @@ export class CalendarServiceAdapter {
     // Check if we should update the entire recurring series
     if (isRecurringSeries) {
       console.log(`[CalendarServiceAdapter] Updating recurring series: ${eventId}`);
-      const result = await calendarService.updateRecurringSeries(eventId, updateFields);
+      const result = await calendarService.updateRecurringSeries(context, eventId, updateFields);
       return {
         success: result.success,
         data: {
@@ -313,7 +348,7 @@ export class CalendarServiceAdapter {
     }
 
     // Update single event (or single instance of recurring)
-    const result = await calendarService.updateEvent({
+        const result = await calendarService.updateEvent(context, {
       eventId,
       summary: updateFields.summary,
       start: updateFields.start,
@@ -329,14 +364,14 @@ export class CalendarServiceAdapter {
     };
   }
 
-  private async deleteEvent(calendarService: any, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
+  private async deleteEvent(calendarService: any, context: RequestUserContext, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
     let eventId = args.eventId;
     let fetchedEvent: any = null;
     const isRecurringSeries = args.isRecurringSeries || false;
 
     // If no eventId but have summary, find the event first
     if (!eventId && args.summary) {
-      const searchResult = await this.getEvent(calendarService, {
+      const searchResult = await this.getEvent(calendarService, context, {
         operation: 'get',
         summary: args.summary,
         timeMin: args.timeMin,
@@ -358,7 +393,7 @@ export class CalendarServiceAdapter {
     // Check if we should delete the entire recurring series
     if (isRecurringSeries) {
       console.log(`[CalendarServiceAdapter] Deleting recurring series: ${eventId}`);
-      const result = await calendarService.deleteRecurringSeries(eventId);
+      const result = await calendarService.deleteRecurringSeries(context, eventId);
       return {
         success: result.success,
         data: {
@@ -391,7 +426,7 @@ export class CalendarServiceAdapter {
    * Delete all events in a time window
    * Bulk operation with resolved eventIds from EntityResolver
    */
-  private async deleteByWindow(calendarService: any, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
+  private async deleteByWindow(calendarService: any, context: RequestUserContext, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
     const eventIds = args.eventIds || [];
     const originalEvents = args.originalEvents || [];
 
@@ -415,7 +450,7 @@ export class CalendarServiceAdapter {
 
     for (const eventId of eventIds) {
       try {
-        const result = await calendarService.deleteEvent(eventId);
+        const result = await calendarService.deleteEvent(context, eventId);
         if (result.success) {
           deleted.push(eventId);
         } else {
@@ -459,7 +494,7 @@ export class CalendarServiceAdapter {
    * Update all events in a time window
    * Bulk operation with resolved eventIds from EntityResolver
    */
-  private async updateByWindow(calendarService: any, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
+  private async updateByWindow(calendarService: any, context: RequestUserContext, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
     const eventIds = args.eventIds || [];
     const updateFields = args.updateFields || {};
     const originalEvents = args.originalEvents || [];
@@ -481,7 +516,7 @@ export class CalendarServiceAdapter {
         // Calculate new start/end based on original event duration
         const calculatedUpdate = this.calculateUpdatedTimes(originalEvent, updateFields);
 
-        const result = await calendarService.updateEvent({
+        const result = await calendarService.updateEvent(context, {
           eventId,
           ...calculatedUpdate,
         });
@@ -545,8 +580,8 @@ export class CalendarServiceAdapter {
     return updateFields;
   }
 
-  private async checkConflicts(calendarService: any, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
-    const result = await calendarService.checkConflicts(
+  private async checkConflicts(calendarService: any, context: RequestUserContext, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
+    const result = await calendarService.checkConflicts(context,
       args.timeMin || args.start || '',
       args.timeMax || args.end || ''
     );
