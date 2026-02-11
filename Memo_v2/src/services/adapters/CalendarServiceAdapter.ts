@@ -6,8 +6,7 @@
  */
 
 import { getCalendarService } from '../v1-services.js';
-import { UserService } from '../../legacy/services/database/UserService.js';
-import type { UserContext } from '../../types/index.js';
+import type { AuthContext } from '../../types/index.js';
 import type { RequestUserContext } from '../../legacy/types/UserContext.js';
 
 export interface CalendarReminders {
@@ -67,38 +66,28 @@ export interface CalendarOperationResult {
 }
 
 export class CalendarServiceAdapter {
-  private userPhone: string;
-  private userContext: UserContext;
-  private userService: UserService;
+  private authContext: AuthContext;
 
-  constructor(userPhone: string, userContext: UserContext) {
-    this.userPhone = userPhone;
-    this.userContext = userContext;
-    this.userService = new UserService();
+  constructor(authContext: AuthContext) {
+    this.authContext = authContext;
   }
 
   /**
-   * Build RequestUserContext from MemoState user context
+   * Build RequestUserContext directly from AuthContext (NO DB calls).
+   * AuthContext was already hydrated by ContextAssemblyNode at graph start.
    */
-  private async buildRequestContext(): Promise<RequestUserContext> {
-    const userRecord = await this.userService.findByWhatsappNumber(this.userPhone);
-    if (!userRecord) {
-      throw new Error(`User not found: ${this.userPhone}`);
-    }
-
-    const googleTokens = await this.userService.getGoogleTokens(userRecord.id);
-
+  private buildRequestContext(): RequestUserContext {
     return {
-      user: userRecord,
-      planType: userRecord.plan_type,
-      whatsappNumber: this.userPhone,
+      user: this.authContext.userRecord,
+      planType: this.authContext.planTier,
+      whatsappNumber: this.authContext.userRecord.whatsapp_number,
       capabilities: {
-        database: this.userContext.capabilities.database,
-        calendar: this.userContext.capabilities.calendar,
-        gmail: this.userContext.capabilities.gmail,
+        database: this.authContext.capabilities.database,
+        calendar: this.authContext.capabilities.calendar,
+        gmail: this.authContext.capabilities.gmail,
       },
-      googleTokens: googleTokens,
-      googleConnected: this.userContext.googleConnected,
+      googleTokens: this.authContext.googleTokens,
+      googleConnected: this.authContext.googleConnected,
     };
   }
 
@@ -113,8 +102,8 @@ export class CalendarServiceAdapter {
       return { success: false, error: 'CalendarService not available' };
     }
 
-    // Build context from state
-    const context = await this.buildRequestContext();
+    // Build context from state (no DB calls — uses AuthContext from shared state)
+    const context = this.buildRequestContext();
 
     try {
       switch (operation) {

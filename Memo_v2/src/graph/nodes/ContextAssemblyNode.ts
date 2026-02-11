@@ -12,9 +12,10 @@
  * ✅ Deterministic
  */
 
+import { GoogleTokenManager } from '../../legacy/services/auth/GoogleTokenManager.js';
 import { getMemoryService } from '../../services/memory/index.js';
 import { getUserService } from '../../services/v1-services.js';
-import type { TimeContext, TriggerInput, UserContext } from '../../types/index.js';
+import type { AuthContext, TimeContext, TriggerInput, UserContext } from '../../types/index.js';
 import type { MemoState } from '../state/MemoState.js';
 import { createInitialState } from '../state/MemoState.js';
 import { CodeNode } from './BaseNode.js';
@@ -30,31 +31,30 @@ export class ContextAssemblyNode extends CodeNode {
   }
 
   protected async process(state: MemoState): Promise<Partial<MemoState>> {
-    // 1. Get user profile
-    const user = await this.getUserProfile(this.input.userPhone);
+    // 1. Hydrate full AuthContext (user record + Google tokens + capabilities)
+    //    This is the SINGLE source of truth for user auth data in the graph.
+    const authContext = await this.hydrateAuthContext(this.input.userPhone);
 
-    // 2. CRITICAL: Add current user message to memory FIRST (before reading)
+    // 2. Derive lightweight UserContext from AuthContext (for prompts / planner)
+    const language = this.detectLanguage(this.input.message);
+    const user = this.deriveUserContext(authContext, language);
+
+    // 3. CRITICAL: Add current user message to memory FIRST (before reading)
     // This matches V1 behavior where user message is added before processing
-    // This ensures the user message is available for the current request context
     this.addUserMessageToMemory(this.input);
 
-    // 3. Get recent messages (now includes the current user message)
+    // 4. Get recent messages (now includes the current user message)
     const recentMessages = this.getRecentMessages(this.input.userPhone);
 
-    // 4. Get long-term memory summary (optional)
+    // 5. Get long-term memory summary (optional)
     const longTermSummary = await this.getLongTermMemorySummary(this.input.userPhone);
 
-    // 5. Build time context
+    // 6. Build time context
     const now = this.buildTimeContext();
 
-    // 6. Detect language
-    const language = this.detectLanguage(this.input.message);
-
     return createInitialState({
-      user: {
-        ...user,
-        language,
-      },
+      user,
+      authContext,
       input: {
         message: this.input.message,
         triggerType: this.input.triggerType,
@@ -71,68 +71,66 @@ export class ContextAssemblyNode extends CodeNode {
   }
 
   // ========================================================================
-  // Helper methods (integrated with V1 services)
+  // Auth Context Hydration (single DB fetch for the entire graph)
   // ========================================================================
 
-  private async getUserProfile(phone: string): Promise<UserContext> {
+  /**
+   * Hydrate the full AuthContext from DB.
+   * Fetches user record + Google tokens ONCE, refreshes tokens if needed,
+   * and computes capabilities from scopes + plan tier.
+   */
+  private async hydrateAuthContext(phone: string): Promise<AuthContext> {
     try {
       const userService = getUserService();
       if (!userService) {
-        return this.getDefaultUserContext(phone);
+        return this.getDefaultAuthContext(phone);
       }
 
-      const user = await userService.findByWhatsappNumber(phone);
-
-      if (!user) {
-        return this.getDefaultUserContext(phone);
+      const userRecord = await userService.findByWhatsappNumber(phone);
+      if (!userRecord) {
+        return this.getDefaultAuthContext(phone);
       }
 
-      // CRITICAL: Google tokens are in a SEPARATE table (user_google_tokens)
-      // Must fetch them explicitly using getGoogleTokens(userId)
+      // Fetch Google tokens (separate table)
+      let googleTokens = null;
       let googleConnected = false;
       let hasCalendar = false;
       let hasGmail = false;
 
       try {
-        const googleTokens = await userService.getGoogleTokens(user.id);
+        const rawTokens = await userService.getGoogleTokens(userRecord.id);
 
-        if (googleTokens?.access_token && googleTokens?.refresh_token) {
-          googleConnected = true;
+        if (rawTokens?.access_token && rawTokens?.refresh_token) {
+          // Refresh tokens proactively if they are expired / about to expire
+          const tokenManager = new GoogleTokenManager(userService);
+          const tokenResult = await tokenManager.ensureFreshTokens(userRecord, rawTokens);
 
-          // Check token expiry - if expired more than buffer, mark as needs refresh
-          // but still consider connected (will be refreshed on actual API call)
-          const expiresAt = googleTokens.expires_at ? new Date(googleTokens.expires_at).getTime() : null;
-          const isExpired = expiresAt ? expiresAt < Date.now() : false;
+          googleTokens = tokenResult.tokens;
+          googleConnected = tokenResult.googleConnected;
 
-          // If expired but has refresh token, still consider connected
-          // The actual service will refresh when needed
-          if (!isExpired || googleTokens.refresh_token) {
-            googleConnected = true;
-          }
+          if (googleConnected && googleTokens) {
+            // Determine capabilities from granted scopes
+            const scopes = googleTokens.scope || [];
+            hasCalendar = scopes.some((s: string) => s.includes('calendar'));
+            hasGmail = scopes.some((s: string) => s.includes('gmail'));
 
-          // Check scopes to determine specific capabilities
-          const scopes = googleTokens.scope || [];
-          hasCalendar = scopes.some((s: string) => s.includes('calendar'));
-          hasGmail = scopes.some((s: string) => s.includes('gmail'));
-
-          // If no scopes stored, assume full access based on plan
-          if (scopes.length === 0 && googleConnected) {
-            hasCalendar = user.plan_type === 'standard' || user.plan_type === 'pro';
-            hasGmail = user.plan_type === 'pro';
+            // If no scopes stored, fall back to plan-based defaults
+            if (scopes.length === 0) {
+              hasCalendar = userRecord.plan_type === 'standard' || userRecord.plan_type === 'pro';
+              hasGmail = userRecord.plan_type === 'pro';
+            }
           }
         }
 
-        console.log(`[ContextAssemblyNode] User ${user.id}: googleConnected=${googleConnected}, calendar=${hasCalendar}, gmail=${hasGmail}`);
+        console.log(`[ContextAssemblyNode] User ${userRecord.id}: googleConnected=${googleConnected}, calendar=${hasCalendar}, gmail=${hasGmail}`);
       } catch (tokenError) {
-        console.warn('[ContextAssemblyNode] Error fetching Google tokens:', tokenError);
-        // Continue with googleConnected = false
+        console.warn('[ContextAssemblyNode] Error fetching/refreshing Google tokens:', tokenError);
       }
 
       return {
-        phone: user.whatsapp_number,
-        timezone: user.timezone || 'Asia/Jerusalem',
-        language: 'he', // Will be overridden by detectLanguage()
-        planTier: user.plan_type || 'free',
+        userRecord,
+        planTier: userRecord.plan_type || 'free',
+        googleTokens,
         googleConnected,
         capabilities: {
           calendar: hasCalendar,
@@ -140,26 +138,56 @@ export class ContextAssemblyNode extends CodeNode {
           database: true,
           secondBrain: true,
         },
+        hydratedAt: Date.now(),
       };
     } catch (error) {
-      console.error('[ContextAssemblyNode] Error getting user profile:', error);
-      return this.getDefaultUserContext(phone);
+      console.error('[ContextAssemblyNode] Error hydrating auth context:', error);
+      return this.getDefaultAuthContext(phone);
     }
   }
 
-  private getDefaultUserContext(phone: string): UserContext {
+  /**
+   * Derive the lightweight UserContext (used by planner, prompts, response nodes)
+   * from the full AuthContext.
+   */
+  private deriveUserContext(auth: AuthContext, language: 'he' | 'en' | 'other'): UserContext {
     return {
-      phone,
-      timezone: 'Asia/Jerusalem',
-      language: 'he',
+      phone: auth.userRecord.whatsapp_number,
+      timezone: auth.userRecord.timezone || 'Asia/Jerusalem',
+      language,
+      planTier: auth.planTier,
+      googleConnected: auth.googleConnected,
+      capabilities: { ...auth.capabilities },
+    };
+  }
+
+  /**
+   * Default AuthContext when user is not found or services are unavailable.
+   */
+  private getDefaultAuthContext(phone: string): AuthContext {
+    return {
+      userRecord: {
+        id: '',
+        whatsapp_number: phone,
+        plan_type: 'free',
+        timezone: 'Asia/Jerusalem',
+        settings: {},
+        google_email: null,
+        onboarding_complete: false,
+        onboarding_last_prompt_at: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
       planTier: 'free',
+      googleTokens: null,
       googleConnected: false,
       capabilities: {
         calendar: false,
         gmail: false,
         database: true,
-        secondBrain: true
+        secondBrain: true,
       },
+      hydratedAt: Date.now(),
     };
   }
 

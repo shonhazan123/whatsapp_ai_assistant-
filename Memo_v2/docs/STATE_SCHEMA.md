@@ -13,11 +13,19 @@
  */
 export interface MemoState {
 	// ============================================
-	// USER CONTEXT
-	// Populated by: ContextAssemblyNode
+	// USER CONTEXT (lightweight — for prompts, planner, response)
+	// Populated by: ContextAssemblyNode (derived from AuthContext)
 	// Read by: All nodes
 	// ============================================
 	user: UserContext;
+
+	// ============================================
+	// AUTH CONTEXT (full hydrated — for executors & adapters)
+	// Populated by: ContextAssemblyNode (single DB fetch)
+	// Read by: ExecutorNode, CalendarServiceAdapter, GmailServiceAdapter
+	// Contains: user record, Google tokens, capabilities
+	// ============================================
+	authContext?: AuthContext;
 
 	// ============================================
 	// INPUT
@@ -133,6 +141,53 @@ export interface CapabilityAccess {
 	secondBrain: boolean;
 }
 ```
+
+---
+
+## Auth Context
+
+> **State-first pattern**: Hydrated ONCE by `ContextAssemblyNode`, then passed through
+> LangGraph shared state to all downstream nodes. Eliminates redundant DB fetches
+> that previously occurred in every service adapter.
+
+```typescript
+import type { UserRecord, UserGoogleToken, UserPlanType } from './legacy/services/database/UserService';
+
+/**
+ * Full hydrated user authentication & authorization context.
+ * Contains everything executors and adapters need to call Google APIs.
+ */
+export interface AuthContext {
+	/** Full DB user record (users table) */
+	userRecord: UserRecord;
+
+	/** Plan tier derived from user record */
+	planTier: UserPlanType; // 'free' | 'standard' | 'pro'
+
+	/** Google OAuth tokens (null if not connected) */
+	googleTokens: UserGoogleToken | null;
+
+	/** Whether Google account is connected with valid tokens */
+	googleConnected: boolean;
+
+	/** Pre-computed capability flags (from scopes + plan) */
+	capabilities: {
+		calendar: boolean;
+		gmail: boolean;
+		database: boolean;
+		secondBrain: boolean;
+	};
+
+	/** Timestamp (ms) when this context was hydrated */
+	hydratedAt: number;
+}
+```
+
+### Lifecycle
+
+1. **Created**: `ContextAssemblyNode` fetches user record + Google tokens, refreshes tokens via `GoogleTokenManager`, stores result in `state.authContext`.
+2. **Read**: `ExecutorNode` reads `state.authContext` and passes to `CalendarServiceAdapter` / `GmailServiceAdapter` constructors.
+3. **Consumed**: Adapters call `buildRequestContext()` to convert `AuthContext` into V1-compatible `RequestUserContext` with zero DB calls.
 
 ---
 

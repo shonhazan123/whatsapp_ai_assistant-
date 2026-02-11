@@ -5,7 +5,7 @@
  * Processes all resolver results and executes them in parallel where possible.
  */
 
-import type { ExecutionResult } from '../../types/index.js';
+import type { AuthContext, ExecutionResult } from '../../types/index.js';
 import type { MemoState } from '../state/MemoState.js';
 import { CodeNode } from './BaseNode.js';
 
@@ -27,8 +27,9 @@ export class ExecutorNode extends CodeNode {
     const executorArgs = state.executorArgs; // Resolved args from EntityResolutionNode
     const plan = state.plannerOutput?.plan || [];
     const userPhone = state.user.phone;
+    const authContext = state.authContext; // Full hydrated auth context (tokens, user record)
     
-    console.log(`[ExecutorNode] Executing - resolverResults: ${resolverResults.size}, executorArgs: ${executorArgs?.size || 0}`);
+    console.log(`[ExecutorNode] Executing - resolverResults: ${resolverResults.size}, executorArgs: ${executorArgs?.size || 0}, authContext: ${authContext ? 'present' : 'missing'}`);
     
     const executionResults = new Map<string, ExecutionResult>();
     
@@ -62,7 +63,7 @@ export class ExecutorNode extends CodeNode {
         step.capability,
         args,
         userPhone,
-        state.user
+        authContext
       ).then(execResult => {
         executionResults.set(stepId, execResult);
       });
@@ -81,14 +82,15 @@ export class ExecutorNode extends CodeNode {
   }
   
   /**
-   * Execute a single step using the appropriate adapter
+   * Execute a single step using the appropriate adapter.
+   * Uses AuthContext from shared state (no redundant DB fetches).
    */
   private async executeStep(
     stepId: string,
     capability: string,
     args: Record<string, any>,
     userPhone: string,
-    userContext: any
+    authContext?: AuthContext
   ): Promise<ExecutionResult> {
     const startTime = Date.now();
     
@@ -97,7 +99,10 @@ export class ExecutorNode extends CodeNode {
       
       switch (capability) {
         case 'calendar':
-          const calendarAdapter = new CalendarServiceAdapter(userPhone, userContext);
+          if (!authContext) {
+            return { stepId, success: false, error: 'AuthContext not available for calendar operation', durationMs: Date.now() - startTime };
+          }
+          const calendarAdapter = new CalendarServiceAdapter(authContext);
           result = await calendarAdapter.execute(args as any);
           break;
           
@@ -112,7 +117,10 @@ export class ExecutorNode extends CodeNode {
           break;
           
         case 'gmail':
-          const gmailAdapter = new GmailServiceAdapter(userPhone, userContext);
+          if (!authContext) {
+            return { stepId, success: false, error: 'AuthContext not available for gmail operation', durationMs: Date.now() - startTime };
+          }
+          const gmailAdapter = new GmailServiceAdapter(authContext);
           result = await gmailAdapter.execute(args as any);
           break;
           

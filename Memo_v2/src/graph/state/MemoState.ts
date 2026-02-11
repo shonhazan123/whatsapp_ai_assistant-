@@ -9,6 +9,7 @@
 
 import { Annotation } from '@langchain/langgraph';
 import type {
+  AuthContext,
   ConversationMessage,
   DisambiguationContext,
   ExecutionResult,
@@ -88,9 +89,17 @@ const defaultMetadata: ExecutionMetadata = {
  * MemoStateAnnotation - LangGraph Annotation-based state definition
  */
 export const MemoStateAnnotation = Annotation.Root({
-  // === USER CONTEXT ===
+  // === USER CONTEXT (lightweight — for prompts, planner, response nodes) ===
   user: Annotation<UserContext>({
     default: () => ({ ...defaultUser }),
+    reducer: (_, update) => update, // Last-write-wins
+  }),
+
+  // === AUTH CONTEXT (full hydrated auth — for executors & adapters) ===
+  // Populated once by ContextAssemblyNode, includes user record, tokens, capabilities.
+  // Eliminates redundant DB fetches in service adapters.
+  authContext: Annotation<AuthContext | undefined>({
+    default: () => undefined,
     reducer: (_, update) => update, // Last-write-wins
   }),
 
@@ -274,6 +283,7 @@ export type MemoState = typeof MemoStateAnnotation.State;
 export function createInitialState(partial: Partial<MemoState> = {}): MemoState {
   return {
     user: partial.user || { ...defaultUser },
+    authContext: partial.authContext,
     input: partial.input || { ...defaultInput },
     now: partial.now || {
       ...defaultNow,

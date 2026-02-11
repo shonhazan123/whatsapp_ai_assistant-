@@ -2,6 +2,7 @@
  * CalendarExecutor
  * 
  * Executes calendar operations using CalendarServiceAdapter.
+ * Uses AuthContext from LangGraph shared state (no redundant DB fetches).
  */
 
 import { CalendarServiceAdapter, type CalendarOperationArgs } from '../../services/adapters/CalendarServiceAdapter.js';
@@ -20,17 +21,16 @@ export class CalendarExecutor extends BaseExecutor {
     const startTime = Date.now();
 
     try {
-      // Build UserContext from ExecutorContext (need to get full user context from state)
-      // For now, create a minimal UserContext - this will be improved when ExecutorContext includes full user
-      const userContext: any = {
-        phone: context.userPhone,
-        timezone: context.timezone,
-        language: context.language,
-        planTier: 'free', // Will be populated from state in future
-        googleConnected: false, // Will be populated from state
-        capabilities: { calendar: true, gmail: false, database: true, secondBrain: true },
-      };
-      const adapter = new CalendarServiceAdapter(context.userPhone, userContext);
+      if (!context.authContext) {
+        return {
+          stepId,
+          success: false,
+          error: 'AuthContext not available — cannot execute calendar operation',
+          durationMs: Date.now() - startTime,
+        };
+      }
+
+      const adapter = new CalendarServiceAdapter(context.authContext);
       const result = await adapter.execute(args as CalendarOperationArgs);
 
       return {
