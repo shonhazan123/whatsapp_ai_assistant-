@@ -50,20 +50,27 @@ export class DebugForwarderService {
 
     try {
       const url = `${this.debugInstanceUrl}/api/debug/process`;
-      logger.info(`📤 Forwarding request to DEBUG instance: ${url}`);
-      logger.debug(`Request data: ${JSON.stringify(request)}`);
+      logger.info(`[RAILWAY] 📤 Forwarding to DEBUG: ${url}`);
+      logger.info(`[RAILWAY] Request payload: ${JSON.stringify(request)}`);
 
       const response = await axios.post<ForwardResponse>(url, request, {
         timeout: 30000, // 30 second timeout
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'ngrok-skip-browser-warning': 'true' // Bypass ngrok free tier interstitial
         }
       });
 
-      logger.info(`✅ Received response from DEBUG instance`);
+      logger.info(`[RAILWAY] ✅ Response status: ${response.status}`);
+      logger.info(`[RAILWAY] Response body: ${JSON.stringify(response.data)}`);
       return response.data;
     } catch (error: any) {
-      logger.error(`❌ Failed to forward request to DEBUG instance:`, error.message);
+      logger.error(`[RAILWAY] ❌ Forward failed: ${error.message}`);
+      if (error.response) {
+        logger.error(`[RAILWAY] Response status: ${error.response.status}`);
+        logger.error(`[RAILWAY] Response body: ${JSON.stringify(error.response.data)}`);
+      }
+      if (error.stack) logger.error(`[RAILWAY] Stack: ${error.stack}`);
       
       if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT') {
         return {

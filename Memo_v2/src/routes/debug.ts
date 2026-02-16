@@ -11,6 +11,9 @@ export const debugRouter = express.Router();
  * Only accessible when ENVIRONMENT is DEBUG
  */
 debugRouter.post('/process', async (req: Request, res: Response) => {
+  // Immediate log - confirms request reached this server (use console to avoid any logger buffering)
+  console.log(`\n>>> [DEBUG ROUTE] POST /api/debug/process received at ${new Date().toISOString()} <<<\n`);
+
   if (ENVIRONMENT !== 'DEBUG') {
     logger.warn('⚠️  /api/debug/process called but ENVIRONMENT is not DEBUG');
     return res.status(403).json({
@@ -31,15 +34,17 @@ debugRouter.post('/process', async (req: Request, res: Response) => {
     } = req.body;
 
     if (!messageText || !userPhone) {
+      logger.error(`[DEBUG] Missing required fields: messageText=${!!messageText}, userPhone=${!!userPhone}`);
       return res.status(400).json({
         success: false,
         error: 'messageText and userPhone are required'
       });
     }
 
-    logger.info(`📥 Received forwarded request from PRODUCTION for user: ${userPhone}`);
+    logger.info(`[DEBUG] 📥 Received from PRODUCTION: user=${userPhone} | msg="${messageText}" | type=${messageType}`);
 
     // Construct WhatsApp message format from forwarded request
+    logger.info(`[DEBUG] Step 1: Constructing whatsappMessage...`);
     const whatsappMessage: WhatsAppMessage = {
       from: userPhone,
       id: messageId || whatsappMessageId || `debug_${Date.now()}`,
@@ -52,7 +57,9 @@ debugRouter.post('/process', async (req: Request, res: Response) => {
     };
 
     // Process using existing handleIncomingMessage function
+    logger.info(`[DEBUG] Step 2: Calling handleIncomingMessage...`);
     await handleIncomingMessage(whatsappMessage);
+    logger.info(`[DEBUG] Step 3: handleIncomingMessage completed successfully`);
 
     // Note: handleIncomingMessage sends the response to WhatsApp directly
     // We return success to PRODUCTION
@@ -61,9 +68,9 @@ debugRouter.post('/process', async (req: Request, res: Response) => {
       responseText: 'Message processed successfully'
     });
   } catch (error: any) {
-    logger.error('Error processing forwarded request:', error?.message ?? error);
-    if (error?.stack) console.error(error.stack);
-    if (error?.response?.data) logger.error('API Error response:', error.response.data);
+    logger.error(`[DEBUG] ❌ Error in forwarded request: ${error?.message ?? error}`);
+    if (error?.stack) console.error(`[DEBUG] Stack trace:\n`, error.stack);
+    if (error?.response?.data) logger.error('[DEBUG] API Error response:', error.response.data);
     res.status(500).json({
       success: false,
       error: error.message || 'Internal server error',

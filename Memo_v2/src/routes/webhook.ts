@@ -114,7 +114,7 @@ export async function handleIncomingMessage(
 			debugForwarder &&
 			debugForwarder.shouldForwardToDebug(userPhone)
 		) {
-			logger.info(`🔄 Forwarding message from ${userPhone} to DEBUG instance`);
+			logger.info(`[RAILWAY] 🔄 Forwarding message from ${userPhone} to DEBUG instance`);
 
 			// Extract message text for forwarding
 			let messageText = "";
@@ -127,8 +127,10 @@ export async function handleIncomingMessage(
 				messageText = message.image.caption || "[Image message]";
 			}
 
+			logger.info(`[RAILWAY] Extracted messageText: "${messageText}" | type: ${message.type} | messageId: ${message.id}`);
+
 			try {
-				const forwardResponse = await debugForwarder.forwardToDebug({
+				const forwardPayload = {
 					messageText,
 					userPhone,
 					messageId: message.id || "",
@@ -143,17 +145,18 @@ export async function handleIncomingMessage(
 					audioId: message.audio?.id,
 					imageId: message.image?.id,
 					imageCaption: message.image?.caption,
-				});
+				};
+				const forwardResponse = await debugForwarder.forwardToDebug(forwardPayload);
 
 				if (forwardResponse.success) {
 					logger.info(
-						`✅ Successfully forwarded to DEBUG and received response`,
+						`[RAILWAY] ✅ Successfully forwarded to DEBUG and received response`,
 					);
 					// Response is already sent to WhatsApp by DEBUG instance
 					return;
 				} else {
 					logger.error(
-						`❌ Failed to forward to DEBUG: ${forwardResponse.error}`,
+						`[RAILWAY] ❌ DEBUG returned failure: ${forwardResponse.error} | responseText: ${forwardResponse.responseText}`,
 					);
 					await sendWhatsAppMessage(
 						userPhone,
@@ -163,7 +166,7 @@ export async function handleIncomingMessage(
 					return;
 				}
 			} catch (error: any) {
-				logger.error(`❌ Error forwarding to DEBUG:`, error);
+				logger.error(`[RAILWAY] ❌ Exception while forwarding:`, error?.message ?? error);
 				await sendWhatsAppMessage(
 					userPhone,
 					"Debug service is currently unavailable. Please try again later.",
@@ -284,19 +287,20 @@ export async function handleIncomingMessage(
 		}
 
 		// Get or create user record
+		logger.info(`[FLOW] Step: findOrCreateUser for ${userPhone}`);
 		const userRecord = await userService.findOrCreateByWhatsappNumber(userPhone);
 
-		logger.info(`🤖 AI Processing: "${messageText}"`);
-
+		logger.info(`[FLOW] Step: invokeMemoGraph - "${messageText}"`);
 		// Invoke graph directly (no RequestContext wrapper needed - graph uses MemoState)
 		const response = await invokeMemoGraphSimple(userPhone, messageText, {
 			whatsappMessageId: message.id,
 			replyToMessageId: replyToMessageId,
 			triggerType: "user",
 		});
-		logger.info(`💡 AI Response: "${response}"`);
+		logger.info(`[FLOW] Step: AI response received (${response?.length ?? 0} chars)`);
 
 		// Send agent response back to user
+		logger.info(`[FLOW] Step: sendWhatsAppMessage to ${userPhone}`);
 		await sendWhatsAppMessage(userPhone, response);
 
 		const duration = Date.now() - startTime;
