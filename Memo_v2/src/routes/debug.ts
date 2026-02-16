@@ -11,11 +11,6 @@ export const debugRouter = express.Router();
  * Only accessible when ENVIRONMENT is DEBUG
  */
 debugRouter.post('/process', async (req: Request, res: Response) => {
-  // [TRACE] First line - request hit the route handler (force flush with \n)
-  const entryTs = new Date().toISOString();
-  process.stdout.write(`\n[TRACE] ${entryTs} >>> DEBUG ROUTE HANDLER ENTERED <<<\n`);
-  logger.info(`[TRACE] DEBUG ROUTE /process handler entered`);
-
   if (ENVIRONMENT !== 'DEBUG') {
     logger.warn('⚠️  /api/debug/process called but ENVIRONMENT is not DEBUG');
     return res.status(403).json({
@@ -25,7 +20,6 @@ debugRouter.post('/process', async (req: Request, res: Response) => {
   }
 
   try {
-    process.stdout.write(`[TRACE] ${new Date().toISOString()} Extracting req.body...\n`);
     const {
       messageText,
       userPhone,
@@ -36,20 +30,16 @@ debugRouter.post('/process', async (req: Request, res: Response) => {
       ...otherFields
     } = req.body;
 
-    process.stdout.write(`[TRACE] ${new Date().toISOString()} Extracted: messageText=${!!messageText} userPhone=${userPhone}\n`);
-
     if (!messageText || !userPhone) {
-      logger.error(`[DEBUG] Missing required fields: messageText=${!!messageText}, userPhone=${!!userPhone}`);
       return res.status(400).json({
         success: false,
         error: 'messageText and userPhone are required'
       });
     }
 
-    logger.info(`[DEBUG] 📥 Received from PRODUCTION: user=${userPhone} | msg="${messageText}" | type=${messageType}`);
+    logger.info(`📥 Received forwarded request from PRODUCTION for user: ${userPhone}`);
 
     // Construct WhatsApp message format from forwarded request
-    logger.info(`[DEBUG] Step 1: Constructing whatsappMessage...`);
     const whatsappMessage: WhatsAppMessage = {
       from: userPhone,
       id: messageId || whatsappMessageId || `debug_${Date.now()}`,
@@ -62,11 +52,7 @@ debugRouter.post('/process', async (req: Request, res: Response) => {
     };
 
     // Process using existing handleIncomingMessage function
-    process.stdout.write(`[TRACE] ${new Date().toISOString()} Calling handleIncomingMessage...\n`);
-    logger.info(`[DEBUG] Step 2: Calling handleIncomingMessage...`);
     await handleIncomingMessage(whatsappMessage);
-    process.stdout.write(`[TRACE] ${new Date().toISOString()} handleIncomingMessage DONE - sending 200\n`);
-    logger.info(`[DEBUG] Step 3: handleIncomingMessage completed successfully`);
 
     // Note: handleIncomingMessage sends the response to WhatsApp directly
     // We return success to PRODUCTION
@@ -75,13 +61,7 @@ debugRouter.post('/process', async (req: Request, res: Response) => {
       responseText: 'Message processed successfully'
     });
   } catch (error: any) {
-    process.stdout.write(`[TRACE] ${new Date().toISOString()} >>> DEBUG ROUTE CAUGHT ERROR <<<\n`);
-    logger.error(`[DEBUG] ❌ Error in forwarded request: ${error?.message ?? error}`);
-    if (error?.stack) {
-      process.stdout.write(`[TRACE] Stack: ${error.stack}\n`);
-      console.error(`[DEBUG] Stack trace:\n`, error.stack);
-    }
-    if (error?.response?.data) logger.error('[DEBUG] API Error response:', error.response.data);
+    logger.error('Error processing forwarded request:', error);
     res.status(500).json({
       success: false,
       error: error.message || 'Internal server error',

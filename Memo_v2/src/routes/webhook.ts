@@ -98,7 +98,6 @@ export async function handleIncomingMessage(
 	message: WhatsAppMessage,
 ): Promise<void> {
 	const startTime = Date.now();
-	process.stdout.write(`[TRACE] ${new Date().toISOString()} handleIncomingMessage ENTERED\n`);
 	logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 	logger.info("📨 NEW MESSAGE RECEIVED");
 	logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -106,7 +105,6 @@ export async function handleIncomingMessage(
 	let performanceRequestId: string | undefined;
 
 	try {
-		process.stdout.write(`[TRACE] ${new Date().toISOString()} handleIncomingMessage: normalizing phone\n`);
 		const rawNumber = message.from;
 		const userPhone = normalizeWhatsAppNumber(rawNumber);
 
@@ -116,7 +114,7 @@ export async function handleIncomingMessage(
 			debugForwarder &&
 			debugForwarder.shouldForwardToDebug(userPhone)
 		) {
-			logger.info(`[RAILWAY] 🔄 Forwarding message from ${userPhone} to DEBUG instance`);
+			logger.info(`🔄 Forwarding message from ${userPhone} to DEBUG instance`);
 
 			// Extract message text for forwarding
 			let messageText = "";
@@ -129,10 +127,8 @@ export async function handleIncomingMessage(
 				messageText = message.image.caption || "[Image message]";
 			}
 
-			logger.info(`[RAILWAY] Extracted messageText: "${messageText}" | type: ${message.type} | messageId: ${message.id}`);
-
 			try {
-				const forwardPayload = {
+				const forwardResponse = await debugForwarder.forwardToDebug({
 					messageText,
 					userPhone,
 					messageId: message.id || "",
@@ -147,18 +143,17 @@ export async function handleIncomingMessage(
 					audioId: message.audio?.id,
 					imageId: message.image?.id,
 					imageCaption: message.image?.caption,
-				};
-				const forwardResponse = await debugForwarder.forwardToDebug(forwardPayload);
+				});
 
 				if (forwardResponse.success) {
 					logger.info(
-						`[RAILWAY] ✅ Successfully forwarded to DEBUG and received response`,
+						`✅ Successfully forwarded to DEBUG and received response`,
 					);
 					// Response is already sent to WhatsApp by DEBUG instance
 					return;
 				} else {
 					logger.error(
-						`[RAILWAY] ❌ DEBUG returned failure: ${forwardResponse.error} | responseText: ${forwardResponse.responseText}`,
+						`❌ Failed to forward to DEBUG: ${forwardResponse.error}`,
 					);
 					await sendWhatsAppMessage(
 						userPhone,
@@ -168,7 +163,7 @@ export async function handleIncomingMessage(
 					return;
 				}
 			} catch (error: any) {
-				logger.error(`[RAILWAY] ❌ Exception while forwarding:`, error?.message ?? error);
+				logger.error(`❌ Error forwarding to DEBUG:`, error);
 				await sendWhatsAppMessage(
 					userPhone,
 					"Debug service is currently unavailable. Please try again later.",
@@ -179,14 +174,11 @@ export async function handleIncomingMessage(
 
 		let messageText = "";
 
-		process.stdout.write(`[TRACE] ${new Date().toISOString()} handleIncomingMessage: past forward check, processing locally\n`);
-
 		// Mark message ID as processed (before any async operations)
 		if (message.id) {
 			messageIdCache.add(message.id);
 		}
 
-		process.stdout.write(`[TRACE] ${new Date().toISOString()} handleIncomingMessage: sending typing indicator\n`);
 		await sendTypingIndicator(userPhone, message.id);
 		// Start performance tracking
 		performanceRequestId = performanceTracker.startRequest(userPhone);
@@ -202,11 +194,9 @@ export async function handleIncomingMessage(
 		}
 
 		// Step 2: Handle different message types
-		process.stdout.write(`[TRACE] ${new Date().toISOString()} handleIncomingMessage: extracting message content type=${message.type}\n`);
 		logger.debug("Step 2: Processing message content...");
 		if (message.type === "text" && message.text) {
 			messageText = message.text.body;
-			process.stdout.write(`[TRACE] ${new Date().toISOString()} handleIncomingMessage: text extracted len=${messageText?.length}\n`);
 			logger.info(`💬 Message: "${messageText}"`);
 		} else if (message.type === "audio" && message.audio) {
 			logger.info("🎤 Processing audio message");
@@ -294,27 +284,20 @@ export async function handleIncomingMessage(
 		}
 
 		// Get or create user record
-		process.stdout.write(`[TRACE] ${new Date().toISOString()} handleIncomingMessage: findOrCreateUser\n`);
-		logger.info(`[FLOW] Step: findOrCreateUser for ${userPhone}`);
 		const userRecord = await userService.findOrCreateByWhatsappNumber(userPhone);
-		process.stdout.write(`[TRACE] ${new Date().toISOString()} handleIncomingMessage: findOrCreateUser DONE\n`);
 
-		process.stdout.write(`[TRACE] ${new Date().toISOString()} handleIncomingMessage: invokeMemoGraph\n`);
-		logger.info(`[FLOW] Step: invokeMemoGraph - "${messageText}"`);
+		logger.info(`🤖 AI Processing: "${messageText}"`);
+
 		// Invoke graph directly (no RequestContext wrapper needed - graph uses MemoState)
 		const response = await invokeMemoGraphSimple(userPhone, messageText, {
 			whatsappMessageId: message.id,
 			replyToMessageId: replyToMessageId,
 			triggerType: "user",
 		});
-		process.stdout.write(`[TRACE] ${new Date().toISOString()} handleIncomingMessage: invokeMemoGraph DONE\n`);
-		logger.info(`[FLOW] Step: AI response received (${response?.length ?? 0} chars)`);
+		logger.info(`💡 AI Response: "${response}"`);
 
 		// Send agent response back to user
-		process.stdout.write(`[TRACE] ${new Date().toISOString()} handleIncomingMessage: sendWhatsAppMessage\n`);
-		logger.info(`[FLOW] Step: sendWhatsAppMessage to ${userPhone}`);
 		await sendWhatsAppMessage(userPhone, response);
-		process.stdout.write(`[TRACE] ${new Date().toISOString()} handleIncomingMessage: sendWhatsAppMessage DONE\n`);
 
 		const duration = Date.now() - startTime;
 		logger.info(`✅ Message handled successfully in ${duration}ms`);
@@ -346,15 +329,9 @@ export async function handleIncomingMessage(
 		}
 
 		logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-	} catch (error: any) {
+	} catch (error) {
 		const duration = Date.now() - startTime;
-		process.stdout.write(`[TRACE] ${new Date().toISOString()} handleIncomingMessage CAUGHT ERROR after ${duration}ms\n`);
-		logger.error(`❌ Error handling message after ${duration}ms:`, error?.message ?? error);
-		if (error?.stack) {
-			process.stdout.write(`[TRACE] Stack: ${error.stack}\n`);
-			console.error(error.stack);
-		}
-		if (error?.response?.data) logger.error('API Error response:', error.response.data);
+		logger.error(`❌ Error handling message after ${duration}ms:`, error);
 
 		// End performance tracking FIRST (needs requestCalls for cost calculation)
 		if (performanceRequestId) {
