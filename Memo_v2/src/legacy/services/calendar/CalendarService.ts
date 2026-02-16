@@ -87,13 +87,7 @@ export class CalendarService {
     this.userService = new UserService(logger);
   }
 
-  private getRequestContext(): RequestUserContext {
-    const context = RequestContext.get();
-    if (!context) {
-      throw new Error('Request context is not available for calendar operation.');
-    }
-    return context;
-  }
+  // getRequestContext() removed - context is now passed as parameter to all methods
 
   /**
    * Detects if a date string is in date-only format (YYYY-MM-DD) vs datetime format
@@ -147,17 +141,15 @@ export class CalendarService {
     return oauthClient;
   }
 
-  private buildCalendar(): calendar_v3.Calendar {
-    const context = this.getRequestContext();
+  private buildCalendar(context: RequestUserContext): calendar_v3.Calendar {
     const oauthClient = this.buildOAuthClient(context);
     return google.calendar({ version: 'v3', auth: oauthClient });
   }
 
-  private resolveCalendarId(requestedId?: string): string {
+  private resolveCalendarId(context: RequestUserContext, requestedId?: string): string {
     if (requestedId) {
       return requestedId;
     }
-    const context = this.getRequestContext();
     return context.user.google_email || 'primary';
   }
 
@@ -178,7 +170,7 @@ export class CalendarService {
     context.googleTokens = updatedTokens;
   }
 
-  async createEvent(request: CreateEventRequest): Promise<IResponse> {
+  async createEvent(context: RequestUserContext, request: CreateEventRequest): Promise<IResponse> {
     try {
       this.logger.info(`📅 Creating calendar event: "${request.summary}"`);
       const timeZone = request.timeZone || process.env.DEFAULT_TIMEZONE || 'Asia/Jerusalem';
@@ -221,8 +213,8 @@ export class CalendarService {
         this.logger.info(`📧 Adding ${request.attendees.length} attendees: ${request.attendees.join(', ')}`);
       }
 
-      const calendarClient = this.buildCalendar();
-      const calendarId = this.resolveCalendarId();
+      const calendarClient = this.buildCalendar(context);
+      const calendarId = this.resolveCalendarId(context);
 
       const response = await calendarClient.events.insert({
         calendarId,
@@ -252,7 +244,7 @@ export class CalendarService {
     }
   }
 
-  async createMultipleEvents(request: BulkEventRequest): Promise<IResponse> {
+  async createMultipleEvents(context: RequestUserContext, request: BulkEventRequest): Promise<IResponse> {
     try {
       this.logger.info(`📅 Creating ${request.events.length} calendar events`);
 
@@ -264,7 +256,7 @@ export class CalendarService {
         const eventRequest = request.events[i];
 
         try {
-          const result = await this.createEvent(eventRequest);
+          const result = await this.createEvent(context, eventRequest);
 
           if (result.success) {
             results.push(result.data);
@@ -302,12 +294,12 @@ export class CalendarService {
     }
   }
 
-  async getEvents(request: GetEventsRequest): Promise<IResponse> {
+  async getEvents(context: RequestUserContext, request: GetEventsRequest): Promise<IResponse> {
     try {
       this.logger.info(`📅 Getting calendar events from ${request.timeMin} to ${request.timeMax}`);
 
-      const calendarClient = this.buildCalendar();
-      const calendarId = this.resolveCalendarId(request.calendarId);
+      const calendarClient = this.buildCalendar(context);
+      const calendarId = this.resolveCalendarId(context, request.calendarId);
 
       const response = await calendarClient.events.list({
         calendarId,
@@ -346,7 +338,7 @@ export class CalendarService {
     }
   }
 
-  async updateEvent(request: UpdateEventRequest): Promise<IResponse> {
+  async updateEvent(context: RequestUserContext, request: UpdateEventRequest): Promise<IResponse> {
     try {
       this.logger.info(`📅 Updating calendar event: ${request.eventId}`);
 
@@ -379,8 +371,8 @@ export class CalendarService {
         updates.reminders = request.reminders;
       }
 
-      const calendarClient = this.buildCalendar();
-      const calendarId = this.resolveCalendarId(request.calendarId);
+      const calendarClient = this.buildCalendar(context);
+      const calendarId = this.resolveCalendarId(context, request.calendarId);
 
       try {
         const response = await calendarClient.events.patch({
@@ -439,12 +431,12 @@ export class CalendarService {
     }
   }
 
-  async deleteEvent(eventId: string): Promise<IResponse> {
+  async deleteEvent(context: RequestUserContext, eventId: string): Promise<IResponse> {
     try {
       this.logger.info(`📅 Deleting calendar event: ${eventId}`);
 
-      const calendarClient = this.buildCalendar();
-      const calendarId = this.resolveCalendarId();
+      const calendarClient = this.buildCalendar(context);
+      const calendarId = this.resolveCalendarId(context);
 
       await calendarClient.events.delete({
         calendarId,
@@ -470,12 +462,12 @@ export class CalendarService {
    * Delete an entire recurring event series
    * Deleting the master event removes all instances
    */
-  async deleteRecurringSeries(recurringEventId: string): Promise<IResponse> {
+  async deleteRecurringSeries(context: RequestUserContext, recurringEventId: string): Promise<IResponse> {
     try {
       this.logger.info(`📅 Deleting recurring series: ${recurringEventId}`);
 
-      const calendarClient = this.buildCalendar();
-      const calendarId = this.resolveCalendarId();
+      const calendarClient = this.buildCalendar(context);
+      const calendarId = this.resolveCalendarId(context);
 
       // Get the master event info before deletion for response
       let eventSummary = 'Recurring Event';
@@ -519,12 +511,12 @@ export class CalendarService {
    * Update an entire recurring event series
    * Updating the master event updates all future instances
    */
-  async updateRecurringSeries(recurringEventId: string, updates: Partial<UpdateEventRequest>): Promise<IResponse> {
+  async updateRecurringSeries(context: RequestUserContext, recurringEventId: string, updates: Partial<UpdateEventRequest>): Promise<IResponse> {
     try {
       this.logger.info(`📅 Updating recurring series: ${recurringEventId}`);
 
-      const calendarClient = this.buildCalendar();
-      const calendarId = this.resolveCalendarId();
+      const calendarClient = this.buildCalendar(context);
+      const calendarId = this.resolveCalendarId(context);
       const timeZone = updates.timeZone || process.env.DEFAULT_TIMEZONE || 'Asia/Jerusalem';
 
       // Build update payload
@@ -582,12 +574,12 @@ export class CalendarService {
     }
   }
 
-  async getEventById(eventId: string): Promise<IResponse> {
+  async getEventById(context: RequestUserContext, eventId: string): Promise<IResponse> {
     try {
       this.logger.info(`📅 Getting calendar event: ${eventId}`);
 
-      const calendarClient = this.buildCalendar();
-      const calendarId = this.resolveCalendarId();
+      const calendarClient = this.buildCalendar(context);
+      const calendarId = this.resolveCalendarId(context);
 
       const response = await calendarClient.events.get({
         calendarId,
@@ -624,7 +616,7 @@ export class CalendarService {
    * Create a single recurring event with multiple days
    * Uses Google Calendar's built-in RRULE support
    */
-  async createRecurringEvent(request: RecurringEventRequest): Promise<IResponse> {
+  async createRecurringEvent(context: RequestUserContext, request: RecurringEventRequest): Promise<IResponse> {
     try {
       this.logger.info(`📅 Creating recurring event: ${request.summary} on ${request.days.join(', ')} (${request.recurrence})`);
 
@@ -775,8 +767,8 @@ export class CalendarService {
 
       this.logger.info(`Creating recurring event with RRULE: ${rrule}`);
 
-      const calendarClient = this.buildCalendar();
-      const calendarId = this.resolveCalendarId();
+      const calendarClient = this.buildCalendar(context);
+      const calendarId = this.resolveCalendarId(context);
       const response = await calendarClient.events.insert({
         calendarId,
         requestBody: event
@@ -809,12 +801,12 @@ export class CalendarService {
    * Get recurring event instances
    * Returns all occurrences of a recurring event
    */
-  async getRecurringEventInstances(recurringEventId: string): Promise<IResponse> {
+  async getRecurringEventInstances(context: RequestUserContext, recurringEventId: string): Promise<IResponse> {
     try {
       this.logger.info(`📅 Getting instances of recurring event: ${recurringEventId}`);
 
-      const calendarClient = this.buildCalendar();
-      const calendarId = this.resolveCalendarId();
+      const calendarClient = this.buildCalendar(context);
+      const calendarId = this.resolveCalendarId(context);
 
       const response = await calendarClient.events.instances({
         calendarId,
@@ -848,13 +840,13 @@ export class CalendarService {
    * Truncate a recurring event series (end future occurrences but keep past ones)
    * This is useful when you want to stop a recurring event from continuing
    */
-  async truncateRecurringEvent(eventId: string, until: string): Promise<IResponse> {
+  async truncateRecurringEvent(context: RequestUserContext, eventId: string, until: string): Promise<IResponse> {
     try {
       this.logger.info(`📅 Truncating recurring event: ${eventId} until ${until}`);
 
       // Get the current event
-      const calendarClient = this.buildCalendar();
-      const calendarId = this.resolveCalendarId();
+      const calendarClient = this.buildCalendar(context);
+      const calendarId = this.resolveCalendarId(context);
 
       const eventResponse = await calendarClient.events.get({
         calendarId,
@@ -909,12 +901,12 @@ export class CalendarService {
   /**
    * Check for conflicts in calendar
    */
-  async checkConflicts(timeMin: string, timeMax: string): Promise<IResponse> {
+  async checkConflicts(context: RequestUserContext, timeMin: string, timeMax: string): Promise<IResponse> {
     try {
       this.logger.info(`🔍 Checking for conflicts between ${timeMin} and ${timeMax}`);
 
-      const calendarClient = this.buildCalendar();
-      const calendarId = this.resolveCalendarId();
+      const calendarClient = this.buildCalendar(context);
+      const calendarId = this.resolveCalendarId(context);
 
       const response = await calendarClient.events.list({
         calendarId,

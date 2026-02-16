@@ -5,7 +5,7 @@
  * Executors take resolver outputs and call the appropriate service adapters.
  */
 
-import type { ExecutionResult } from '../../types/index.js';
+import type { AuthContext, ExecutionResult } from '../../types/index.js';
 import type { MemoState } from '../state/MemoState.js';
 
 // ============================================================================
@@ -16,6 +16,8 @@ export interface ExecutorContext {
   userPhone: string;
   timezone: string;
   language: 'he' | 'en' | 'other';
+  /** Full hydrated auth context from MemoState (includes tokens, user record, capabilities) */
+  authContext?: AuthContext;
 }
 
 // ============================================================================
@@ -46,6 +48,7 @@ export abstract class BaseExecutor {
         userPhone: state.user.phone,
         timezone: state.user.timezone,
         language: state.user.language,
+        authContext: state.authContext,
       };
       
       // Find resolver results for this capability
@@ -56,7 +59,7 @@ export abstract class BaseExecutor {
         if (executionResults.has(stepId)) continue;
         
         // Skip if not for this capability
-        const step = state.plannerOutput?.plan.find(s => s.id === stepId);
+        const step = state.plannerOutput?.plan.find((s: { id: string }) => s.id === stepId);
         if (!step || step.capability !== this.capability) continue;
         
         // Skip if resolver didn't produce execute result

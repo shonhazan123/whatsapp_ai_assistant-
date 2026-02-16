@@ -2,6 +2,7 @@
  * GmailExecutor
  * 
  * Executes Gmail operations using GmailServiceAdapter.
+ * Uses AuthContext from LangGraph shared state (no redundant DB fetches).
  */
 
 import { GmailServiceAdapter, type GmailOperationArgs } from '../../services/adapters/GmailServiceAdapter.js';
@@ -20,7 +21,16 @@ export class GmailExecutor extends BaseExecutor {
     const startTime = Date.now();
 
     try {
-      const adapter = new GmailServiceAdapter(context.userPhone);
+      if (!context.authContext) {
+        return {
+          stepId,
+          success: false,
+          error: 'AuthContext not available — cannot execute Gmail operation',
+          durationMs: Date.now() - startTime,
+        };
+      }
+
+      const adapter = new GmailServiceAdapter(context.authContext);
       const result = await adapter.execute(args as GmailOperationArgs);
 
       return {

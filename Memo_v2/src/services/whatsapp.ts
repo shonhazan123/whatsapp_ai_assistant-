@@ -94,59 +94,55 @@ export async function sendWhatsAppMessage(
 	}
 }
 
-export async function sendTypingIndicator(
-	to: string,
-	messageId: string,
-): Promise<void> {
+export async function sendTypingIndicator(to: string, messageId: string): Promise<void> {
 	try {
-		// Note: This combines marking as read with a typing indicator
-		// Based on user's working n8n implementation
-		await axios.post(
-			`${WHATSAPP_API_URL}/${PHONE_NUMBER_ID}/messages`,
-			{
-				messaging_product: "whatsapp",
-				status: "read",
-				message_id: messageId,
-				typing_indicator: {
-					type: "text",
-				},
-			},
-			{
-				headers: {
-					Authorization: `Bearer ${ACCESS_TOKEN}`,
-					"Content-Type": "application/json",
-				},
-			},
-		);
-		logger.info(
-			`Typing indicator and read status sent for message ${messageId}`,
-		);
+	  // Note: This combines marking as read with a typing indicator
+	  // Based on user's working n8n implementation
+	  await axios.post(
+		`${WHATSAPP_API_URL}/${PHONE_NUMBER_ID}/messages`,
+		{
+		  messaging_product: 'whatsapp',
+		  status: 'read',
+		  message_id: messageId,
+		  typing_indicator: {
+			type: 'text'
+		  }
+		},
+		{
+		  headers: {
+			'Authorization': `Bearer ${ACCESS_TOKEN}`,
+			'Content-Type': 'application/json'
+		  }
+		}
+	  );
+	  logger.info(`Typing indicator and read status sent for message ${messageId}`);
 	} catch (error) {
-		logger.error("Error sending typing indicator:", error);
+	  logger.error('Error sending typing indicator:', error);
 	}
 }
+
 
 export async function markMessageAsRead(messageId: string): Promise<void> {
 	try {
-		await axios.post(
-			`${WHATSAPP_API_URL}/${PHONE_NUMBER_ID}/messages`,
-			{
-				messaging_product: "whatsapp",
-				status: "read",
-				message_id: messageId,
-			},
-			{
-				headers: {
-					Authorization: `Bearer ${ACCESS_TOKEN}`,
-					"Content-Type": "application/json",
-				},
-			},
-		);
+	  await axios.post(
+		`${WHATSAPP_API_URL}/${PHONE_NUMBER_ID}/messages`,
+		{
+		  messaging_product: 'whatsapp',
+		  status: 'read',
+		  message_id: messageId
+		},
+		{
+		  headers: {
+			'Authorization': `Bearer ${ACCESS_TOKEN}`,
+			'Content-Type': 'application/json'
+		  }
+		}
+	  );
 	} catch (error) {
-		logger.error("Error marking message as read:", error);
+	  logger.error('Error marking message as read:', error);
 	}
-}
-
+  }
+  
 export async function downloadWhatsAppMedia(
 	mediaId: string,
 	retries: number = 3,

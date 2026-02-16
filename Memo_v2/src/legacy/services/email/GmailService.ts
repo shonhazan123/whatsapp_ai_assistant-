@@ -121,13 +121,7 @@ export class GmailService {
     this.userService = new UserService(logger);
   }
 
-  private getRequestContext(): RequestUserContext {
-    const context = RequestContext.get();
-    if (!context) {
-      throw new Error('Request context is not available for Gmail operation.');
-    }
-    return context;
-  }
+  // getRequestContext() removed - context is now passed as parameter to all methods
 
   private buildOAuthClient(context: RequestUserContext) {
     if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
@@ -173,8 +167,7 @@ export class GmailService {
     return oauthClient;
   }
 
-  private buildGmail(): gmail_v1.Gmail {
-    const context = this.getRequestContext();
+  private buildGmail(context: RequestUserContext): gmail_v1.Gmail {
     const oauthClient = this.buildOAuthClient(context);
     return google.gmail({ version: 'v1', auth: oauthClient });
   }
@@ -196,14 +189,14 @@ export class GmailService {
     context.googleTokens = updatedTokens;
   }
 
-  async listEmails(options: EmailListOptions = {}): Promise<IResponse> {
+  async listEmails(context: RequestUserContext, options: EmailListOptions = {}): Promise<IResponse> {
     try {
       const { maxResults = 10, pageToken, includeBody = false, includeHeaders = false } = options;
       const query = options.query ?? this.buildSearchQuery(options);
 
       this.logger.info(`📧 Listing emails with query: ${query || 'all'} | maxResults=${maxResults}`);
 
-      const gmailClient = this.buildGmail();
+      const gmailClient = this.buildGmail(context);
 
       const response = await gmailClient.users.messages.list({
         userId: 'me',
@@ -255,9 +248,9 @@ export class GmailService {
     }
   }
 
-  async getLatestEmail(options: EmailListOptions = {}): Promise<IResponse> {
+  async getLatestEmail(context: RequestUserContext, options: EmailListOptions = {}): Promise<IResponse> {
     try {
-      const listResponse = await this.listEmails({
+      const listResponse = await this.listEmails(context, {
         ...options,
         maxResults: 1,
         includeBody: true,
@@ -293,16 +286,16 @@ export class GmailService {
     }
   }
 
-  async getEmails(request: GetEmailsRequest = {}): Promise<IResponse> {
-    return this.listEmails({
+  async getEmails(context: RequestUserContext, request: GetEmailsRequest = {}): Promise<IResponse> {
+    return this.listEmails(context, {
       query: request.query,
       maxResults: request.maxResults,
       pageToken: request.pageToken
     });
   }
 
-  async getUnreadEmails(maxResults: number = 10): Promise<IResponse> {
-    return this.listEmails({
+  async getUnreadEmails(context: RequestUserContext, maxResults: number = 10): Promise<IResponse> {
+    return this.listEmails(context, {
       query: 'is:unread',
       maxResults,
       includeBody: true,
@@ -310,8 +303,8 @@ export class GmailService {
     });
   }
 
-  async searchEmails(query: string, maxResults: number = 10): Promise<IResponse> {
-    return this.listEmails({
+  async searchEmails(context: RequestUserContext, query: string, maxResults: number = 10): Promise<IResponse> {
+    return this.listEmails(context, {
       query,
       maxResults,
       includeBody: true,
@@ -319,11 +312,11 @@ export class GmailService {
     });
   }
 
-  async getEmailById(messageId: string, options: { includeBody?: boolean; includeHeaders?: boolean } = {}): Promise<IResponse> {
+  async getEmailById(context: RequestUserContext, messageId: string, options: { includeBody?: boolean; includeHeaders?: boolean } = {}): Promise<IResponse> {
     try {
       this.logger.info(`📧 Fetching email by id: ${messageId}`);
 
-      const gmailClient = this.buildGmail();
+      const gmailClient = this.buildGmail(context);
 
       const email = await this.fetchAndParseMessage(gmailClient, messageId, {
         includeBody: options.includeBody ?? true,
@@ -350,11 +343,11 @@ export class GmailService {
     }
   }
 
-  async getThreadMessages(threadId: string, options: ThreadMessagesOptions = {}): Promise<IResponse> {
+  async getThreadMessages(context: RequestUserContext, threadId: string, options: ThreadMessagesOptions = {}): Promise<IResponse> {
     try {
       this.logger.info(`📧 Fetching thread messages for thread: ${threadId}`);
 
-      const gmailClient = this.buildGmail();
+      const gmailClient = this.buildGmail(context);
 
       const response = await gmailClient.users.threads.get({
         userId: 'me',
@@ -400,7 +393,7 @@ export class GmailService {
     }
   }
 
-  async sendEmail(request: SendEmailRequest, options: SendEmailOptions = {}): Promise<IResponse> {
+  async sendEmail(context: RequestUserContext, request: SendEmailRequest, options: SendEmailOptions = {}): Promise<IResponse> {
     try {
       const { previewOnly = false } = options;
 
@@ -448,7 +441,7 @@ export class GmailService {
         };
       }
 
-      const gmailClient = this.buildGmail();
+      const gmailClient = this.buildGmail(context);
 
       const response = await gmailClient.users.messages.send({
         userId: 'me',
@@ -481,13 +474,13 @@ export class GmailService {
     }
   }
 
-  async replyToEmail(request: ReplyEmailRequest, options: ReplyEmailOptions = {}): Promise<IResponse> {
+  async replyToEmail(context: RequestUserContext, request: ReplyEmailRequest, options: ReplyEmailOptions = {}): Promise<IResponse> {
     try {
       const { previewOnly = false } = options;
 
       this.logger.info(`📧 Preparing reply for message: ${request.messageId}`);
 
-      const gmailClient = this.buildGmail();
+      const gmailClient = this.buildGmail(context);
 
       const original = await gmailClient.users.messages.get({
         userId: 'me',
@@ -530,7 +523,7 @@ export class GmailService {
         references
       };
 
-      return this.sendEmail(sendRequest, { previewOnly });
+      return this.sendEmail(context, sendRequest, { previewOnly });
     } catch (error) {
       this.logger.error('Error preparing reply email:', error);
       return {
@@ -540,11 +533,11 @@ export class GmailService {
     }
   }
 
-  async markAsRead(messageId: string): Promise<IResponse> {
+  async markAsRead(context: RequestUserContext, messageId: string): Promise<IResponse> {
     try {
       this.logger.info(`📧 Marking email as read: ${messageId}`);
 
-      const gmailClient = this.buildGmail();
+      const gmailClient = this.buildGmail(context);
 
       await gmailClient.users.messages.modify({
         userId: 'me',
@@ -569,11 +562,11 @@ export class GmailService {
     }
   }
 
-  async markAsUnread(messageId: string): Promise<IResponse> {
+  async markAsUnread(context: RequestUserContext, messageId: string): Promise<IResponse> {
     try {
       this.logger.info(`📧 Marking email as unread: ${messageId}`);
 
-      const gmailClient = this.buildGmail();
+      const gmailClient = this.buildGmail(context);
 
       await gmailClient.users.messages.modify({
         userId: 'me',

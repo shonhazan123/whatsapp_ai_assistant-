@@ -12,7 +12,7 @@ export interface UserContext {
 	phone: string;
 	timezone: string;
 	language: "he" | "en" | "other";
-	planTier: "free" | "pro" | "enterprise";
+	planTier: "free" | "standard" | "pro";
 	googleConnected: boolean;
 	capabilities: {
 		calendar: boolean;
@@ -454,6 +454,47 @@ export interface StateRefs {
 	selectedContactId?: string;
 	emails?: any[];
 	selectedEmailId?: string;
+}
+
+// ============================================================================
+// AUTH CONTEXT (State-first user auth, hydrated once at graph start)
+// ============================================================================
+
+import type {
+	UserRecord,
+	UserGoogleToken,
+	UserPlanType,
+} from "../legacy/services/database/UserService.js";
+
+// Re-export for convenience
+export type { UserRecord, UserGoogleToken, UserPlanType };
+
+/**
+ * AuthContext - Full hydrated user authentication & authorization context.
+ *
+ * Populated ONCE by ContextAssemblyNode at graph start, then passed through
+ * LangGraph shared state to all downstream nodes (executors, adapters).
+ *
+ * Eliminates redundant DB fetches that previously happened in every adapter.
+ */
+export interface AuthContext {
+	/** Full DB user record (users table) */
+	userRecord: UserRecord;
+	/** Plan tier derived from user record */
+	planTier: UserPlanType;
+	/** Google OAuth tokens (null if not connected) */
+	googleTokens: UserGoogleToken | null;
+	/** Whether Google account is connected with valid tokens */
+	googleConnected: boolean;
+	/** Pre-computed capability flags (from scopes + plan) */
+	capabilities: {
+		calendar: boolean;
+		gmail: boolean;
+		database: boolean;
+		secondBrain: boolean;
+	};
+	/** Timestamp (ms) when this context was hydrated — for staleness checks */
+	hydratedAt: number;
 }
 
 // ============================================================================
