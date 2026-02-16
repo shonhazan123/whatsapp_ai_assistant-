@@ -172,6 +172,22 @@ export async function handleIncomingMessage(
 			}
 		}
 
+		// Check if user is registered before processing
+		const existingUser = await userService.findByWhatsappNumber(userPhone);
+		if (!existingUser) {
+			logger.info(`🚫 Unregistered user: ${userPhone} — sending signup message`);
+			if (message.id) {
+				messageIdCache.add(message.id);
+			}
+			const signupMessage =
+				"היי תודה ששלחתם הודעה (: אני לא מכירה אתכם עדיין אבל אשמח לשנות את זה !\n" +
+				"אני דונה ואני יכולה להיות המזכירה האישית שלך גם !\n" +
+				"כל מה שצריך לעשות זה להירשם כאן ואני מוכנה להיות לשירותך !\n" +
+				"https://www.donnai.io/signup";
+			await sendWhatsAppMessage(userPhone, signupMessage);
+			return;
+		}
+
 		let messageText = "";
 
 		// Mark message ID as processed (before any async operations)
