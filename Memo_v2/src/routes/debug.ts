@@ -61,7 +61,9 @@ debugRouter.post('/process', async (req: Request, res: Response) => {
       responseText: 'Message processed successfully'
     });
   } catch (error: any) {
-    logger.error('Error processing forwarded request:', error);
+    logger.error('Error processing forwarded request:', error?.message ?? error);
+    if (error?.stack) console.error(error.stack);
+    if (error?.response?.data) logger.error('API Error response:', error.response.data);
     res.status(500).json({
       success: false,
       error: error.message || 'Internal server error',

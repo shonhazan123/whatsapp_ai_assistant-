@@ -329,9 +329,11 @@ export async function handleIncomingMessage(
 		}
 
 		logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-	} catch (error) {
+	} catch (error: any) {
 		const duration = Date.now() - startTime;
-		logger.error(`❌ Error handling message after ${duration}ms:`, error);
+		logger.error(`❌ Error handling message after ${duration}ms:`, error?.message ?? error);
+		if (error?.stack) console.error(error.stack);
+		if (error?.response?.data) logger.error('API Error response:', error.response.data);
 
 		// End performance tracking FIRST (needs requestCalls for cost calculation)
 		if (performanceRequestId) {
