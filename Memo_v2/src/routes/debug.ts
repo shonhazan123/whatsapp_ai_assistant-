@@ -11,8 +11,10 @@ export const debugRouter = express.Router();
  * Only accessible when ENVIRONMENT is DEBUG
  */
 debugRouter.post('/process', async (req: Request, res: Response) => {
-  // Immediate log - confirms request reached this server (use console to avoid any logger buffering)
-  console.log(`\n>>> [DEBUG ROUTE] POST /api/debug/process received at ${new Date().toISOString()} <<<\n`);
+  // [TRACE] First line - request hit the route handler (force flush with \n)
+  const entryTs = new Date().toISOString();
+  process.stdout.write(`\n[TRACE] ${entryTs} >>> DEBUG ROUTE HANDLER ENTERED <<<\n`);
+  logger.info(`[TRACE] DEBUG ROUTE /process handler entered`);
 
   if (ENVIRONMENT !== 'DEBUG') {
     logger.warn('⚠️  /api/debug/process called but ENVIRONMENT is not DEBUG');
@@ -23,6 +25,7 @@ debugRouter.post('/process', async (req: Request, res: Response) => {
   }
 
   try {
+    process.stdout.write(`[TRACE] ${new Date().toISOString()} Extracting req.body...\n`);
     const {
       messageText,
       userPhone,
@@ -32,6 +35,8 @@ debugRouter.post('/process', async (req: Request, res: Response) => {
       whatsappMessageId,
       ...otherFields
     } = req.body;
+
+    process.stdout.write(`[TRACE] ${new Date().toISOString()} Extracted: messageText=${!!messageText} userPhone=${userPhone}\n`);
 
     if (!messageText || !userPhone) {
       logger.error(`[DEBUG] Missing required fields: messageText=${!!messageText}, userPhone=${!!userPhone}`);
@@ -57,8 +62,10 @@ debugRouter.post('/process', async (req: Request, res: Response) => {
     };
 
     // Process using existing handleIncomingMessage function
+    process.stdout.write(`[TRACE] ${new Date().toISOString()} Calling handleIncomingMessage...\n`);
     logger.info(`[DEBUG] Step 2: Calling handleIncomingMessage...`);
     await handleIncomingMessage(whatsappMessage);
+    process.stdout.write(`[TRACE] ${new Date().toISOString()} handleIncomingMessage DONE - sending 200\n`);
     logger.info(`[DEBUG] Step 3: handleIncomingMessage completed successfully`);
 
     // Note: handleIncomingMessage sends the response to WhatsApp directly
@@ -68,8 +75,12 @@ debugRouter.post('/process', async (req: Request, res: Response) => {
       responseText: 'Message processed successfully'
     });
   } catch (error: any) {
+    process.stdout.write(`[TRACE] ${new Date().toISOString()} >>> DEBUG ROUTE CAUGHT ERROR <<<\n`);
     logger.error(`[DEBUG] ❌ Error in forwarded request: ${error?.message ?? error}`);
-    if (error?.stack) console.error(`[DEBUG] Stack trace:\n`, error.stack);
+    if (error?.stack) {
+      process.stdout.write(`[TRACE] Stack: ${error.stack}\n`);
+      console.error(`[DEBUG] Stack trace:\n`, error.stack);
+    }
     if (error?.response?.data) logger.error('[DEBUG] API Error response:', error.response.data);
     res.status(500).json({
       success: false,
