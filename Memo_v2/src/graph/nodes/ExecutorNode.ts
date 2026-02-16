@@ -104,6 +104,13 @@ export class ExecutorNode extends CodeNode {
           }
           const calendarAdapter = new CalendarServiceAdapter(authContext);
           result = await calendarAdapter.execute(args as any);
+          // Strip links for list operations so response doesn't show them (messy for "what are my events")
+          if ((args.operation === 'getEvents' || args.operation === 'get') && result.data) {
+            result = {
+              ...result,
+              data: this.stripCalendarLinksFromListData(result.data),
+            };
+          }
           break;
           
         case 'database':
@@ -157,6 +164,22 @@ export class ExecutorNode extends CodeNode {
     }
   }
   
+  /**
+   * Strip htmlLink from calendar list data so ResponseWriter doesn't include links
+   * (links are only for create/update, not for "what are my events")
+   */
+  private stripCalendarLinksFromListData(data: Record<string, any>): Record<string, any> {
+    const { htmlLink: _h, ...rest } = data;
+    const events = Array.isArray(rest.events)
+      ? rest.events.map((e: any) => {
+          if (!e || typeof e !== 'object') return e;
+          const { htmlLink: _eh, ...ev } = e;
+          return ev;
+        })
+      : rest.events;
+    return { ...rest, events };
+  }
+
   /**
    * Determine if args are for a list operation
    */

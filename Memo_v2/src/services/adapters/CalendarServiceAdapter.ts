@@ -173,7 +173,7 @@ export class CalendarServiceAdapter {
 
     return {
       success: result.success,
-      data: result.data,
+      data: { ...result.data, htmlLink: result.data?.htmlLink ?? result.calendarLink },
       error: result.error,
       calendarLink: result.data?.htmlLink,
     };
@@ -192,9 +192,13 @@ export class CalendarServiceAdapter {
 
     const result = await calendarService.createMultipleEvents(context, { events });
 
+    // One calendar link at the end: use first created event's link or main calendar view
+    const firstLink = result.data?.created?.[0]?.htmlLink;
+    const htmlLink = firstLink || (result.success && result.data?.created?.length ? 'https://calendar.google.com/calendar/' : undefined);
+
     return {
       success: result.success,
-      data: result.data,
+      data: { ...result.data, ...(htmlLink && { htmlLink }) },
       error: result.error,
     };
   }
@@ -232,6 +236,7 @@ export class CalendarServiceAdapter {
       success: result.success,
       data: {
         ...result.data,
+        htmlLink: result.data?.htmlLink,
         // Original request parameters (preserved for response formatting)
         days: args.days || [],
         startTime: args.startTime || args.start || '',
@@ -247,7 +252,7 @@ export class CalendarServiceAdapter {
     const timeMin = args.timeMin || new Date().toISOString();
     const timeMax = args.timeMax || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
-    const result = await calendarService.getEvents({
+    const result = await calendarService.getEvents(context, {
       timeMin,
       timeMax,
     });
@@ -271,7 +276,7 @@ export class CalendarServiceAdapter {
   }
 
   private async getEvents(calendarService: any, context: RequestUserContext, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
-    const result = await calendarService.getEvents({
+    const result = await calendarService.getEvents(context, {
       timeMin: args.timeMin || new Date().toISOString(),
       timeMax: args.timeMax || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
     });
@@ -337,7 +342,7 @@ export class CalendarServiceAdapter {
     }
 
     // Update single event (or single instance of recurring)
-        const result = await calendarService.updateEvent(context, {
+    const result = await calendarService.updateEvent(context, {
       eventId,
       summary: updateFields.summary,
       start: updateFields.start,
@@ -348,7 +353,7 @@ export class CalendarServiceAdapter {
 
     return {
       success: result.success,
-      data: result.data,
+      data: { ...result.data, htmlLink: result.data?.htmlLink },
       error: result.error,
     };
   }

@@ -33,10 +33,34 @@ export class CalendarExecutor extends BaseExecutor {
       const adapter = new CalendarServiceAdapter(context.authContext);
       const result = await adapter.execute(args as CalendarOperationArgs);
 
+      const operation = (args as CalendarOperationArgs).operation;
+      const isListOperation = operation === 'getEvents' || operation === 'get';
+
+      // For list operations: strip links so response writer doesn't show them (messy for "what are my events")
+      // For create/update: merge calendarLink so user gets the link to the created/updated event
+      let data: Record<string, any>;
+      if (isListOperation && result.data) {
+        const { htmlLink: _h, ...rest } = result.data as Record<string, any>;
+        data = {
+          ...rest,
+          events: Array.isArray(rest.events)
+            ? rest.events.map((e: any) => {
+                const { htmlLink: _eh, ...ev } = e || {};
+                return ev;
+              })
+            : rest.events,
+        };
+      } else {
+        data = {
+          ...result.data,
+          ...(result.calendarLink && !result.data?.htmlLink && { htmlLink: result.calendarLink }),
+        };
+      }
+
       return {
         stepId,
         success: result.success,
-        data: result.data,
+        data,
         error: result.error,
         durationMs: Date.now() - startTime,
       };

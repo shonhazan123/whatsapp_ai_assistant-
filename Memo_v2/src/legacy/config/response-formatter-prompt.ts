@@ -394,11 +394,18 @@ English:
 
 ### CALENDAR AGENT
 
+**Calendar link line (ONLY for create/update/createRecurring/createMultiple - NEVER for list events):**
+- Only include the link line when data.htmlLink is present and non-empty.
+- When you include it: output the actual URL with no brackets. Use:
+  - Hebrew: לינק - [paste the value of data.htmlLink here]
+  - English: Link - [paste the value of data.htmlLink here]
+- When data.htmlLink is missing or empty: omit the entire link line. Do not write "לינק - " with nothing after it, and do not output "[URL]" or any empty placeholder.
+
 **Event Created / Updated (non-recurring):**
 ✅ האירוע נוסף!
 📌 כותרת: [title]
 🕒 [date] [start] - [end]
-🔗 קישור ליומן: [URL]
+[Only if data.htmlLink exists: לינק - (the actual URL from data.htmlLink)]
 
 **Recurring Event Created (operation: createRecurring):**
 When _metadata.context.isRecurring === true AND _metadata.operation === "createRecurring":
@@ -410,13 +417,13 @@ Hebrew format:
 ✅ אירוע חוזר נוסף!
 📌 כותרת: [title]
 🕒 כל [day(s)] ב [startTime] - [endTime]
-🔗 קישור ליומן: [URL]
+[Only if data.htmlLink exists: לינק - (the actual URL from data.htmlLink)]
 
 English format:
 ✅ Recurring event added!
 📌 Title: [title]
 🕒 Every [day(s)] at [startTime] - [endTime]
-🔗 Calendar link: [URL]
+[Only if data.htmlLink exists: Link - (the actual URL from data.htmlLink)]
 
 **Day Name Formatting:**
 - English → Hebrew: "Monday" → "יום שני", "Tuesday" → "יום שלישי", "Wednesday" → "יום רביעי", "Thursday" → "יום חמישי", "Friday" → "יום שישי", "Saturday" → "יום שבת", "Sunday" → "יום ראשון"
@@ -510,7 +517,10 @@ English format:
 - Extract times from start/end ISO strings or use start_formatted/end_formatted if available
 - NEVER omit time information when showing deleted events
 
-**Event Listing:**
+**Event Listing (operation: list events / getEvents, when _metadata.context.isListing is true):**
+- NEVER include any link (neither data.htmlLink nor per-event htmlLink). Links are only for create/update.
+- Use title, date, start, end only.
+
 📅 מצאתי [X] אירועים:
 
 [emoji] [title]
@@ -518,9 +528,6 @@ English format:
 
 [emoji] [title]
 🕒 [date] [start] - [end]
-
-yaml
-Copy code
 
 ---
 

@@ -231,7 +231,8 @@ export class CalendarService {
           summary: request.summary,
           start: request.start,
           end: request.end,
-          attendees: request.attendees
+          attendees: request.attendees,
+          htmlLink: response.data.htmlLink
         },
         message: 'Event created successfully'
       };
@@ -317,7 +318,8 @@ export class CalendarService {
         attendees: event.attendees?.map(attendee => attendee.email),
         description: event.description,
         location: event.location,
-        recurringEventId: event.recurringEventId // Include recurring event ID
+        recurringEventId: event.recurringEventId, // Include recurring event ID
+        htmlLink: event.htmlLink
       })) || [];
 
       this.logger.info(`✅ Retrieved ${events.length} calendar events`);
@@ -385,7 +387,7 @@ export class CalendarService {
 
         return {
           success: true,
-          data: response.data,
+          data: { ...response.data, htmlLink: response.data?.htmlLink },
           message: 'Event updated successfully'
         };
       } catch (error: any) {
@@ -416,7 +418,7 @@ export class CalendarService {
           this.logger.info(`✅ Event updated (retry with date format): ${request.eventId}`);
           return {
             success: true,
-            data: retryResponse.data,
+            data: { ...retryResponse.data, htmlLink: retryResponse.data?.htmlLink },
             message: 'Event updated successfully'
           };
         }
@@ -784,7 +786,8 @@ export class CalendarService {
           start: response.data.start?.dateTime,
           end: response.data.end?.dateTime,
           recurrence: response.data.recurrence,
-          recurringEventId: response.data.id
+          recurringEventId: response.data.id,
+          htmlLink: response.data.htmlLink
         },
         message: `Recurring event created successfully`
       };
