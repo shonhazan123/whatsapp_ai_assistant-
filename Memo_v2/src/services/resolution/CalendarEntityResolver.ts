@@ -9,6 +9,8 @@
  * - FuzzyMatcher integration
  */
 
+import type { RequestUserContext } from '../../legacy/types/UserContext.js';
+import type { AuthContext } from '../../types/index.js';
 import { FuzzyMatcher } from '../../utils/fuzzy.js';
 import { TimeParser } from '../../utils/time.js';
 import { getCalendarService } from '../v1-services.js';
@@ -32,6 +34,18 @@ import type {
 
 export class CalendarEntityResolver implements IEntityResolver {
   readonly domain = 'calendar' as const;
+
+  /** Build RequestUserContext from AuthContext for CalendarService calls */
+  private buildRequestContext(authContext: AuthContext): RequestUserContext {
+    return {
+      user: authContext.userRecord,
+      planType: authContext.planTier,
+      whatsappNumber: authContext.userRecord.whatsapp_number,
+      capabilities: authContext.capabilities,
+      googleTokens: authContext.googleTokens,
+      googleConnected: authContext.googleConnected,
+    };
+  }
 
   /**
    * Resolve calendar entities from operation args
@@ -505,8 +519,12 @@ export class CalendarEntityResolver implements IEntityResolver {
     if (!calendarService) {
       return { type: 'not_found', error: 'Calendar service unavailable' };
     }
+    if (!context.authContext) {
+      return { type: 'not_found', error: 'User context required for calendar' };
+    }
 
-    const eventsResp = await calendarService.getEvents({
+    const requestContext = this.buildRequestContext(context.authContext);
+    const eventsResp = await calendarService.getEvents(requestContext, {
       timeMin: args.timeMin,
       timeMax: args.timeMax
     });
@@ -610,8 +628,12 @@ export class CalendarEntityResolver implements IEntityResolver {
     if (!calendarService) {
       return { type: 'not_found', error: 'Calendar service unavailable' };
     }
+    if (!context.authContext) {
+      return { type: 'not_found', error: 'User context required for calendar' };
+    }
 
-    const eventsResp = await calendarService.getEvents({ timeMin, timeMax });
+    const requestContext = this.buildRequestContext(context.authContext);
+    const eventsResp = await calendarService.getEvents(requestContext, { timeMin, timeMax });
     if (!eventsResp.success || !eventsResp.data?.events) {
       return { type: 'not_found', error: 'Failed to fetch events' };
     }
@@ -726,7 +748,7 @@ export class CalendarEntityResolver implements IEntityResolver {
     context: EntityResolverContext
   ): Promise<ResolutionCandidate[]> {
     const calendarService = getCalendarService();
-    if (!calendarService) {
+    if (!calendarService || !context.authContext) {
       return [];
     }
 
@@ -738,8 +760,9 @@ export class CalendarEntityResolver implements IEntityResolver {
       timeMax = timeMax || new Date(now.getTime() + TIME_WINDOW_DEFAULTS.CALENDAR_DEFAULT_DAYS_FORWARD * 24 * 60 * 60 * 1000).toISOString();
     }
 
-    // Fetch events
-    const eventsResp = await calendarService.getEvents({ timeMin, timeMax });
+    // Fetch events (CalendarService.getEvents expects context first, then request)
+    const requestContext = this.buildRequestContext(context.authContext);
+    const eventsResp = await calendarService.getEvents(requestContext, { timeMin, timeMax });
     if (!eventsResp.success || !eventsResp.data?.events?.length) {
       return [];
     }

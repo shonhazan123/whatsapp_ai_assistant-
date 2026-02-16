@@ -276,6 +276,7 @@ export class EntityResolutionNode {
         formatted: state.now.formatted,
       },
       recentMessages: state.recentMessages,
+      authContext: state.authContext,
     };
   }
 

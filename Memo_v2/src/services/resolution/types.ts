@@ -61,6 +61,8 @@ export interface EntityResolverContext {
     formatted: string;
   };
   recentMessages?: any[];
+  /** Auth context (for calendar/gmail resolvers that need to call services requiring user tokens) */
+  authContext?: import('../../types/index.js').AuthContext;
 }
 
 /**
