@@ -399,7 +399,7 @@ export class CalendarServiceAdapter {
     }
 
     // Delete single event (or single instance of recurring)
-    const result = await calendarService.deleteEvent(eventId);
+    const result = await calendarService.deleteEvent(context, eventId);
 
     // Include event data for response formatting
     // Priority: fetchedEvent (from search) > args (from entity resolver)

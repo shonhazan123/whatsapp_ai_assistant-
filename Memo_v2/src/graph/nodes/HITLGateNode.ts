@@ -541,7 +541,7 @@ Generate a friendly, conversational clarification message in ${language === 'he'
   private getConfirmationMessage(language: 'he' | 'en' | 'other', state: MemoState): string {
     const action = state.plannerOutput?.plan[0]?.action || 'this action';
     const isDeleteEvents =
-      action === 'delete_event' || action === 'delete_events_by_window';
+      action === 'delete event' || action === 'delete events by window';
 
     if (language === 'he') {
       if (isDeleteEvents) {
@@ -549,6 +549,8 @@ Generate a friendly, conversational clarification message in ${language === 'he'
       }
       return `⚠️ זו פעולה משמעותית (${action}).\nאתה בטוח שאתה רוצה להמשיך?`;
     }
+
+
 
     if (isDeleteEvents) {
       return `Just making sure you want to go ahead with deleting (single or multiple events) (:`;
