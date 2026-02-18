@@ -35,7 +35,7 @@ export class SecondBrainEntityResolver implements IEntityResolver {
     context: EntityResolverContext
   ): Promise<ResolutionOutput> {
     // Operations that need resolution
-    const operationsNeedingResolution = ['update', 'delete'];
+    const operationsNeedingResolution = ['updateMemory', 'deleteMemory', 'getMemoryById'];
     
     if (!operationsNeedingResolution.includes(operation)) {
       return { type: 'resolved', args };
@@ -95,7 +95,7 @@ export class SecondBrainEntityResolver implements IEntityResolver {
       type: 'disambiguation',
       candidates: candidates.slice(0, 5),
       question: this.buildDisambiguationQuestion(candidates.slice(0, 5), context.language),
-      allowMultiple: operation === 'delete',
+      allowMultiple: operation === 'deleteMemory',
     };
   }
   

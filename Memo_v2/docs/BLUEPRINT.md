@@ -69,7 +69,7 @@ LangGraph provides:
 | `gmail`        | Draft, reply, send, search                  | `GmailAgent` + `GmailFunctions`            |
 | `second-brain` | RAG-based notes, ideas, reflections         | `SecondBrainAgent` + `SecondBrainFunction` |
 | `general`      | Questions, advice, brainstorming (no tools) | `MainAgent` general responses              |
-| `meta`         | "What can you do?" — predefined responses   | New (currently in prompts)                 |
+| `meta`         | Agent info, capabilities, help, user account/plan, links | LLM-based MetaResolver (one call)          |
 
 ### 2.2 Trigger Types
 
@@ -122,6 +122,12 @@ WhatsApp Message
          │
          ▼
 ┌──────────────────┐
+│ CapabilityCheck  │  ← Code: block calendar/gmail if not connected
+│     Node         │    If blocked: sets finalResponse and bypasses execution
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
 │   HITL Gate      │  ← Confidence check, missing fields, risk level
 │     Node         │    Uses interrupt() for clarification (Planner HITL)
 └────────┬─────────┘
@@ -160,7 +166,7 @@ WhatsApp Message
     ▼ NO                                   YES ▼
     │                              ┌──────────────────┐
     │                              │   HITL Gate      │ ← interrupt() for
-    │                              │   (Resolver)     │   entity disambiguation
+    │                              │ (Entity choice)  │   entity disambiguation
     │                              └────────┬─────────┘
     │                                       │
     │                              [User replies with selection]
@@ -173,12 +179,10 @@ WhatsApp Message
     └───────────────┬───────────────────────┘
                     │
                     ▼
-┌────────┐ ┌────────┐ ┌────────┐
-│Calendar│ │Database│ │ Gmail  │  ← Code: Execute with resolved IDs
-│Executor│ │Executor│ │Executor│    No LLM, no ID resolution here
-└───┬────┘ └───┬────┘ └───┬────┘
-    │          │          │
-    └────┬─────┴──────────┘
+┌──────────────────┐
+│   Executor Node  │  ← Code: dispatches to service adapters
+│  (ServiceAdapters)│    Prefers executorArgs (resolved IDs)
+└────────┬─────────┘
          │
          ▼
 ┌──────────────────┐
@@ -206,6 +210,9 @@ WhatsApp Message
          ▼
     WhatsApp Response
 ```
+
+**Important runtime note (current implementation):**
+After successful completion, `invokeMemoGraph()` deletes the thread checkpoints (`checkpointer.deleteThread(threadId)`), so LangGraph state is primarily persisted only during pending HITL interrupts. Conversation continuity is handled by `MemoryService` (recent messages), not by long-lived LangGraph state.
 
 ---
 
@@ -545,32 +552,29 @@ function loadLLMConfigFromEnv(): Partial<LLMUsageConfig> {
 
 ### 5.1 Node Registry
 
-| Node                       | Type     | LLM?   | Purpose                                                |
-| -------------------------- | -------- | ------ | ------------------------------------------------------ |
-| `ContextAssemblyNode`      | Code     | ❌     | Build clean state from user profile, memory            |
-| `ReplyContextNode`         | Code     | ❌     | Handle reply-to, numbered lists, image context         |
-| `PlannerNode`              | LLM      | ✅     | **Plan execution**: decompose, route, set dependencies |
-| `HITLGateNode`             | Code     | ❌     | Confidence/risk check, pause if needed                 |
-| `ResolverRouterNode`       | Code     | ❌     | Build DAG, route to resolvers using smart selection    |
-| `CalendarFindResolver`     | LLM      | ✅     | **Own LLM**: Calendar search/get → operation + args    |
-| `CalendarMutateResolver`   | LLM      | ✅     | **Own LLM**: Calendar CRUD → operation + args          |
-| `DatabaseTaskResolver`     | LLM      | ✅     | **Own LLM**: Task CRUD → operation + args              |
-| `DatabaseListResolver`     | LLM      | ✅     | **Own LLM**: List CRUD → operation + args              |
-| `GmailResolver`            | LLM      | ✅     | **Own LLM**: Email ops → operation + args              |
-| `SecondBrainResolver`      | LLM      | ✅     | **Own LLM**: Memory ops → operation + args             |
-| `GeneralResolver`          | LLM      | ✅     | Conversation response (no tools)                       |
-| `MetaResolver`             | Template | ❌     | Predefined capability descriptions                     |
-| **`EntityResolutionNode`** | **Code** | **❌** | **ID lookup, fuzzy match, smart disambiguation**       |
-| `CalendarExecutor`         | Code     | ❌     | Execute calendar API calls                             |
-| `DatabaseExecutor`         | Code     | ❌     | Execute database operations                            |
-| `GmailExecutor`            | Code     | ❌     | Execute Gmail API calls                                |
-| `SecondBrainExecutor`      | Code     | ❌     | Execute RAG operations                                 |
-| `JoinNode`                 | Code     | ❌     | Merge parallel results                                 |
-| `ResponseFormatterNode`    | Code     | ❌     | Format dates, categorize, extract metadata             |
-| `ResponseWriterNode`       | LLM      | ✅     | Generate final user message                            |
-| `MemoryUpdateNode`         | Code     | ❌     | Update state.recent_messages                           |
+| Node                     | Type | LLM? | Purpose |
+| ------------------------ | ---- | ---- | ------- |
+| `ContextAssemblyNode`    | Code | ❌   | Hydrate `authContext`, derive `user`, load memory, build time context |
+| `ReplyContextNode`       | Code | ❌   | Build `input.enhancedMessage` (reply-to, numbered list selection, image context) |
+| `PlannerNode`            | LLM  | ✅   | Create `plannerOutput` (plan steps + risk/confidence + missingFields) |
+| `CapabilityCheckNode`    | Code | ❌   | Block calendar/gmail if not connected; sets `finalResponse` shortcut |
+| `HITLGateNode`           | Code | ❌   | Native HITL via `interrupt()` (planner HITL + entity disambiguation HITL) |
+| `ResolverRouterNode`     | Code | ❌   | Build dependency groups; invoke resolvers; cache `resolverResults` on resume |
+| `EntityResolutionNode`   | Code | ❌   | Resolve entities/IDs; produce `executorArgs`; request disambiguation HITL only when needed |
+| `ExecutorNode`           | Code | ❌   | Execute steps via service adapters (prefers `executorArgs` over `resolverResults`) |
+| `JoinNode`               | Code | ❌   | Summarize results; detect partial/complete failure (no interrupts) |
+| `ResponseFormatterNode`  | Code | ❌   | Normalize shapes, format dates, build response context, capture failures |
+| `ResponseWriterNode`     | LLM  | ✅   | Generate final user-facing response text |
+| `MemoryUpdateNode`       | Code | ❌   | Trim/merge recent messages in state (webhook attaches WhatsApp IDs separately) |
 
 > **Note (v1.2)**: Resolvers now use their **own LLM calls** to determine operation and extract all fields. The Planner only routes to capabilities.
+
+**Resolver implementations (invoked by `ResolverRouterNode`, not separate graph nodes):**
+- `Memo_v2/src/graph/resolvers/CalendarResolvers.ts` (calendar find/mutate)
+- `Memo_v2/src/graph/resolvers/DatabaseResolvers.ts` (tasks/lists)
+- `Memo_v2/src/graph/resolvers/GmailResolver.ts`
+- `Memo_v2/src/graph/resolvers/SecondBrainResolver.ts`
+- `Memo_v2/src/graph/resolvers/GeneralResolver.ts` (general + meta)
 
 ### 5.2 Node Details
 
@@ -601,8 +605,8 @@ function contextAssembly(input: TriggerInput): MemoState {
 			replyToMessageId: input.replyToMessageId,
 		},
 		now: getCurrentTimeContext(), // Format: [Current time: Day, DD/MM/YYYY HH:mm (ISO+offset)]
-		recent_messages: recentMessages,
-		long_term_summary: longTermSummary,
+		recentMessages,
+		longTermSummary,
 		// ... rest initialized as null/empty
 	};
 }
@@ -641,7 +645,7 @@ function replyContext(state: MemoState): MemoState {
 
 	// 2. Check for image context in recent messages (last 3)
 	if (!state.input.imageContext) {
-		state.input.imageContext = findRecentImageContext(state.recent_messages);
+		state.input.imageContext = findRecentImageContext(state.recentMessages);
 	}
 
 	// 3. Include image context in enhanced message if found
@@ -915,7 +919,7 @@ await graph.invoke(input, {
 ```typescript
 // Pseudocode
 function resolverRouter(state: MemoState): ResolverRoutes {
-	const plan = state.planner_output.plan;
+	const plan = state.plannerOutput.plan;
 	const dag = buildDependencyDAG(plan);
 
 	// Determine parallel groups
@@ -932,23 +936,9 @@ function resolverRouter(state: MemoState): ResolverRoutes {
 }
 
 function getResolverForStep(step: PlanStep): string {
-	const mapping = {
-		"calendar.find": "CalendarFindResolver",
-		"calendar.create": "CalendarMutateResolver",
-		"calendar.update": "CalendarMutateResolver",
-		"calendar.delete": "CalendarMutateResolver",
-		"database.task": "DatabaseTaskResolver",
-		"database.list": "DatabaseListResolver",
-		gmail: "GmailResolver",
-		"second-brain": "SecondBrainResolver",
-		general: "GeneralResolver",
-		meta: "MetaResolver",
-	};
-
-	return (
-		mapping[`${step.capability}.${getActionGroup(step.action)}`] ||
-		mapping[step.capability]
-	);
+	// Actual resolver selection uses ResolverSchema (single source of truth)
+	// via `selectResolver(...)` (see `Memo_v2/src/graph/resolvers/ResolverSchema.ts`).
+	return selectResolver(step, state);
 }
 ```
 
@@ -956,152 +946,15 @@ function getResolverForStep(step: PlanStep): string {
 
 ## 6. State Schema
 
-### 6.1 Complete MemoState
+The state schema is a **runtime contract** and must not drift.
 
-```typescript
-interface MemoState {
-	// === USER CONTEXT ===
-	user: {
-		phone: string;
-		timezone: string;
-		language: "he" | "en" | "other";
-		planTier: "free" | "pro" | "enterprise";
-		googleConnected: boolean;
-		capabilities: {
-			calendar: boolean;
-			gmail: boolean;
-			database: boolean;
-			secondBrain: boolean;
-		};
-	};
+Canonical sources:
 
-	// === INPUT ===
-	input: {
-		message: string;
-		enhancedMessage?: string; // With reply/image context
-		triggerType: "user" | "cron" | "nudge" | "event";
-		whatsappMessageId?: string;
-		replyToMessageId?: string;
-		imageContext?: ImageContext;
-	};
+- **Runtime**: `Memo_v2/src/graph/state/MemoState.ts` (`MemoStateAnnotation`)
+- **Cross-node types**: `Memo_v2/src/types/index.ts`
+- **Current doc reference**: `Memo_v2/docs/STATE_SCHEMA.md`
 
-	// === TIME CONTEXT ===
-	now: {
-		formatted: string; // "[Current time: Day, DD/MM/YYYY HH:mm (ISO+offset), Timezone: Asia/Jerusalem]"
-		iso: string;
-		timezone: string;
-		dayOfWeek: number; // 0-6
-	};
-
-	// === MEMORY ===
-	recent_messages: ConversationMessage[]; // Max 10, 500 tokens
-	long_term_summary?: string; // From second-brain
-
-	// === PLANNER OUTPUT ===
-	planner_output?: PlannerOutput;
-
-	// === DISAMBIGUATION ===
-	// Note: Interrupt/resume is handled by LangGraph's native interrupt() mechanism
-	// These fields are populated AFTER interrupt resumes
-	disambiguation?: {
-		type: "calendar_event" | "task" | "list" | "email";
-		candidates: Array<{ id: string; displayText: string; [key: string]: any }>;
-		resolver_step_id: string;
-		userSelection?: string; // Filled by interrupt() resume
-		resolved: boolean; // True after user responds
-	};
-
-	// === RESOLVER RESULTS ===
-	resolver_results: Map<string, ResolverResult>;
-
-	// === EXECUTION RESULTS ===
-	execution_results: Map<string, ExecutionResult>;
-
-	// === RUNNING CONTEXT (for multi-step) ===
-	refs: {
-		calendar_events?: any[];
-		selected_event_id?: string;
-		tasks?: any[];
-		selected_task_id?: string;
-		contacts?: any[];
-		selected_contact_id?: string;
-		emails?: any[];
-		selected_email_id?: string;
-	};
-
-	// === RESPONSE ===
-	formatted_response?: FormattedResponse;
-	final_response?: string;
-
-	// === CONTROL ===
-	// Note: should_pause/pause_reason REMOVED - using LangGraph interrupt() instead
-	error?: string;
-
-	// === METADATA ===
-	metadata: {
-		startTime: number;
-		nodeExecutions: NodeExecution[];
-		llmCalls: number;
-		totalTokens: number;
-		totalCost: number;
-	};
-}
-```
-
-### 6.2 Supporting Types
-
-```typescript
-interface ConversationMessage {
-	role: "user" | "assistant" | "system";
-	content: string;
-	timestamp: number;
-	whatsappMessageId?: string;
-	replyToMessageId?: string;
-	metadata?: {
-		disambiguationContext?: DisambiguationContext;
-		recentTasks?: RecentTaskSnapshot[];
-		imageContext?: ImageContext;
-	};
-}
-
-interface ImageContext {
-	imageId: string;
-	analysisResult: ImageAnalysisResult;
-	imageType: "structured" | "random";
-	extractedAt: number;
-}
-
-interface ResolverResult {
-	stepId: string;
-	type: "execute" | "clarify";
-	args?: Record<string, any>; // Tool call arguments
-	question?: string; // Clarification question
-	options?: string[]; // Clarification options
-}
-
-interface ExecutionResult {
-	stepId: string;
-	success: boolean;
-	data?: any;
-	error?: string;
-	durationMs: number;
-}
-
-interface FormattedResponse {
-	agent: string;
-	operation: string;
-	entityType: string;
-	rawData: any;
-	formattedData: any; // With human-readable dates
-	context: {
-		isRecurring: boolean;
-		isNudge: boolean;
-		hasDueDate: boolean;
-		isToday: boolean;
-		isTomorrowOrLater: boolean;
-	};
-}
-```
+This blueprint intentionally avoids duplicating full TypeScript interfaces here. If you need to understand state fields, read `Memo_v2/docs/STATE_SCHEMA.md` (and then verify against the TypeScript sources above).
 
 ---
 
@@ -1109,15 +962,14 @@ interface FormattedResponse {
 
 ### 7.1 Memory Types
 
-| Type                | Storage             | Lifetime                | V1 Equivalent                            |
-| ------------------- | ------------------- | ----------------------- | ---------------------------------------- |
-| **Short-term**      | LangGraph state     | Per-request             | ConversationWindow (in-memory)           |
-| **Recent messages** | LangGraph state     | 10 messages, 500 tokens | ConversationWindow.memory                |
-| **Disambiguation**  | LangGraph state     | 5 minutes               | ConversationWindow.disambiguationContext |
-| **Image context**   | LangGraph state     | 3 user messages         | ConversationWindow.imageContext          |
-| **Recent tasks**    | LangGraph state     | Per-session             | ConversationWindow.recentTaskContext     |
-| **Long-term**       | Supabase (optional) | Persistent              | conversation_memory table                |
-| **Second-brain**    | Vector DB           | Persistent              | SecondBrainService                       |
+| Type                | Storage                  | Lifetime / cleanup behavior | V1 Equivalent                            |
+| ------------------- | ------------------------ | --------------------------- | ---------------------------------------- |
+| **Short-term**      | LangGraph state          | Per-request                 | ConversationWindow (in-memory)           |
+| **Recent messages** | MemoryService + state    | 10 messages                 | ConversationWindow.memory                |
+| **HITL / Disambiguation** | LangGraph checkpointer | Interrupt-timeout (currently 1 minute) | ConversationWindow.disambiguationContext |
+| **Image context**   | state (via ReplyContext) | 5 minutes (only if recently extracted) | ConversationWindow.imageContext          |
+| **Long-term**       | Supabase (optional)      | Persistent                  | conversation_memory table                |
+| **Second-brain**    | Vector DB                | Persistent                  | SecondBrainService                       |
 
 ### 7.2 Memory Lifecycle
 
@@ -1385,10 +1237,11 @@ GENERAL (no tools)
     └── Handles: conversation responses
     └── Selected when: capability=general
 
-META (template-based)
+META (LLM-based — single call with full agent + user scope)
 └── MetaResolver
-    └── Handles: describe_capabilities
+    └── Handles: describe_capabilities, help, status, website, about_agent, plan_info, account_status
     └── Selected when: capability=meta
+    └── Produces final WhatsApp message (ResponseWriter passes through)
 ```
 
 **Smart Resolver Selection** (`selectResolver` function):
@@ -1608,8 +1461,8 @@ User: "1"
     → Returns: { type: 'resolved', args: { taskId: "uuid-...", operation: "delete" } }
          │
          ▼
-    DatabaseExecutor
-    → taskService.delete({ userPhone, id: "uuid-..." })
+    ExecutorNode (TaskServiceAdapter)
+    → TaskServiceAdapter.execute({ operation: "delete", taskId: "uuid-..." })
 ```
 
 ### 8.6 V1 Logic Preservation
@@ -2064,20 +1917,11 @@ const graph = new StateGraph<MemoState>({
 	.addNode("context_assembly", contextAssemblyNode)
 	.addNode("reply_context", replyContextNode)
 	.addNode("planner", plannerNode)
+	.addNode("capability_check", capabilityCheckNode)
 	.addNode("hitl_gate", hitlGateNode)
-	.addNode("resolver_router", resolverRouterNode)
-	.addNode("calendar_find_resolver", calendarFindResolver)
-	.addNode("calendar_mutate_resolver", calendarMutateResolver)
-	.addNode("database_task_resolver", databaseTaskResolver)
-	.addNode("database_list_resolver", databaseListResolver)
-	.addNode("gmail_resolver", gmailResolver)
-	.addNode("secondbrain_resolver", secondBrainResolver)
-	.addNode("general_resolver", generalResolver)
-	.addNode("meta_resolver", metaResolver)
-	.addNode("calendar_executor", calendarExecutor)
-	.addNode("database_executor", databaseExecutor)
-	.addNode("gmail_executor", gmailExecutor)
-	.addNode("secondbrain_executor", secondBrainExecutor)
+	.addNode("resolver_router", resolverRouterNode) // invokes resolver classes
+	.addNode("entity_resolution", entityResolutionNode)
+	.addNode("executor", executorNode) // dispatches to service adapters
 	.addNode("join", joinNode)
 	.addNode("response_formatter", responseFormatterNode)
 	.addNode("response_writer", responseWriterNode)
@@ -2087,9 +1931,11 @@ const graph = new StateGraph<MemoState>({
 	.addEdge("context_assembly", "reply_context")
 	.addEdge("reply_context", "planner")
 	.addConditionalEdges("planner", plannerRouter)
-	.addEdge("hitl_gate", conditionalPause)
-	.addConditionalEdges("resolver_router", resolverDispatch)
-	// ... resolver → executor edges
+	.addConditionalEdges("capability_check", capabilityCheckRouter)
+	.addConditionalEdges("hitl_gate", hitlGateRouter)
+	.addEdge("resolver_router", "entity_resolution")
+	.addConditionalEdges("entity_resolution", entityResolutionRouter)
+	.addEdge("executor", "join")
 	.addEdge("join", "response_formatter")
 	.addEdge("response_formatter", "response_writer")
 	.addEdge("response_writer", "memory_update")

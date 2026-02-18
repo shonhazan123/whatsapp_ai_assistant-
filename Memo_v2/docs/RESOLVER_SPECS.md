@@ -654,7 +654,7 @@ async function resolve(
 		model: "gpt-4o-mini",
 		messages: [
 			{ role: "system", content: getGeneralSystemPrompt() },
-			...state.recent_messages.map((m) => ({
+			...state.recentMessages.map((m) => ({
 				role: m.role,
 				content: m.content,
 			})),

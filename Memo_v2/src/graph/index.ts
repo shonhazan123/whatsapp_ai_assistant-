@@ -163,13 +163,7 @@ function plannerRouter(state: MemoState): string {
 		return "capability_check"; // Error case, let capability check handle
 	}
 
-	// Meta requests go directly to response
-	if (plannerOutput.intentType === "meta") {
-		console.log(`[plannerRouter] Meta intent, routing to response_formatter`);
-		return "response_formatter";
-	}
-
-	// All other intents go through capability check first
+	// All intents (including meta) go through capability check first
 	console.log(
 		`[plannerRouter] Intent: ${plannerOutput.intentType}, routing to capability_check`,
 	);

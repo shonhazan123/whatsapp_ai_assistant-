@@ -507,17 +507,21 @@ export const GENERAL_SCHEMA: ResolverSchema = {
 
 /**
  * MetaResolver Schema
- * Handles: Bot capabilities description, help, status
+ * Handles: Bot capabilities, help, status, agent identity, user account/plan info, website
  */
 export const META_SCHEMA: ResolverSchema = {
   name: 'meta_resolver',
   capability: 'meta',
-  summary: 'Information about the bot itself. Describes capabilities, provides help, shows status and connected services.',
+  summary: 'Information about the bot itself and the user\'s account. Describes capabilities, provides help, shows status, connected services, plan tier/pricing, agent identity, and website.',
   actionHints: [
     'describe_capabilities',
     'what_can_you_do',
     'help',
     'status',
+    'website',
+    'about_agent',
+    'plan_info',
+    'account_status',
   ],
   triggerPatterns: {
     hebrew: [
@@ -527,6 +531,13 @@ export const META_SCHEMA: ResolverSchema = {
       'איך להשתמש',
       'מה אתה עושה',
       'סטטוס',
+      'מי אתה',
+      'מה האתר',
+      'מה הכתובת',
+      'תוכנית',
+      'מחיר',
+      'מחובר לגוגל',
+      'מה התוכנית שלי',
     ],
     english: [
       'what can you do',
@@ -535,16 +546,30 @@ export const META_SCHEMA: ResolverSchema = {
       'how to use',
       'what do you do',
       'status',
+      'who are you',
+      'what are you',
+      'what is the website',
+      'my plan',
+      'what plan',
+      'plan price',
+      'am i connected',
+      'google connected',
     ],
   },
   examples: [
-    { input: 'מה אתה יכול לעשות?', action: 'describe capabilities' },
+    { input: 'מה אתה יכול לעשות?', action: 'describe_capabilities' },
     { input: 'עזרה', action: 'help' },
-    { input: 'What can you do?', action: 'describe capabilities' },
+    { input: 'What can you do?', action: 'describe_capabilities' },
     { input: 'Help', action: 'help' },
     { input: 'Status', action: 'status' },
+    { input: 'Who are you?', action: 'about_agent' },
+    { input: 'מי אתה?', action: 'about_agent' },
+    { input: 'What is the website?', action: 'website' },
+    { input: 'What plan am I on?', action: 'plan_info' },
+    { input: 'Am I connected to Google Calendar?', action: 'account_status' },
+    { input: 'מה התוכנית שלי?', action: 'plan_info' },
   ],
-  priority: 20, // LOW priority - meta commands should always take precedence
+  priority: 20,
 };
 
 // ============================================================================

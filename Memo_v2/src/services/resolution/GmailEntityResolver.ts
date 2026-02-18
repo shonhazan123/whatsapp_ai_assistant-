@@ -37,8 +37,11 @@ export class GmailEntityResolver implements IEntityResolver {
   ): Promise<ResolutionOutput> {
     // Operations that need resolution
     const operationsNeedingResolution = [
-      'getEmailById', 'read', 'replyPreview', 'replyConfirm', 
-      'forward', 'markAsRead', 'markAsUnread', 'archive', 'delete', 'label'
+      'getEmailById',
+      'replyPreview',
+      'replyConfirm',
+      'markAsRead',
+      'markAsUnread',
     ];
     
     if (!operationsNeedingResolution.includes(operation)) {

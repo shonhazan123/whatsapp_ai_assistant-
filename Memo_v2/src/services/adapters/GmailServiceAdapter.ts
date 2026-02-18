@@ -10,7 +10,17 @@ import type { AuthContext } from '../../types/index.js';
 import type { RequestUserContext } from '../../legacy/types/UserContext.js';
 
 export interface GmailOperationArgs {
-  operation: string;
+  operation:
+    | 'listEmails'
+    | 'getLatestEmail'
+    | 'getEmailById'
+    | 'sendPreview'
+    | 'sendConfirm'
+    | 'replyPreview'
+    | 'replyConfirm'
+    | 'reply' // legacy alias
+    | 'markAsRead'
+    | 'markAsUnread';
   messageId?: string;
   threadId?: string;
   to?: string[];
@@ -22,13 +32,18 @@ export interface GmailOperationArgs {
     from?: string;
     to?: string;
     subject?: string;
+    subjectContains?: string;
+    textContains?: string;
     after?: string;
     before?: string;
     hasAttachment?: boolean;
     isUnread?: boolean;
     maxResults?: number;
+    includeBody?: boolean;
+    includeHeaders?: boolean;
+    labelIds?: string[];
   };
-  labelIds?: string[];
+  labelIds?: string[]; // kept for backward compatibility; prefer filters.labelIds
   language?: 'he' | 'en';
 }
 
@@ -83,6 +98,9 @@ export class GmailServiceAdapter {
         case 'listEmails':
           return await this.listEmails(gmailService, context, args);
           
+        case 'getLatestEmail':
+          return await this.getLatestEmail(gmailService, context, args);
+          
         case 'getEmailById':
           return await this.getEmailById(gmailService, context, args);
           
@@ -92,8 +110,18 @@ export class GmailServiceAdapter {
         case 'sendConfirm':
           return await this.sendConfirm(gmailService, context, args);
           
-        case 'reply':
-          return await this.reply(gmailService, context, args);
+        case 'replyPreview':
+          return await this.replyPreview(gmailService, context, args);
+          
+        case 'replyConfirm':
+        case 'reply': // alias
+          return await this.replyConfirm(gmailService, context, args);
+          
+        case 'markAsRead':
+          return await this.markAsRead(gmailService, context, args);
+          
+        case 'markAsUnread':
+          return await this.markAsUnread(gmailService, context, args);
           
         default:
           return { success: false, error: `Unknown operation: ${operation}` };
@@ -109,21 +137,18 @@ export class GmailServiceAdapter {
   // ========================================================================
   
   private async listEmails(gmailService: any, context: RequestUserContext, args: GmailOperationArgs): Promise<GmailOperationResult> {
-    // Build query from filters
     const filters = args.filters || {};
-    const queryParts: string[] = [];
-    
-    if (filters.from) queryParts.push(`from:${filters.from}`);
-    if (filters.to) queryParts.push(`to:${filters.to}`);
-    if (filters.subject) queryParts.push(`subject:${filters.subject}`);
-    if (filters.after) queryParts.push(`after:${filters.after}`);
-    if (filters.before) queryParts.push(`before:${filters.before}`);
-    if (filters.hasAttachment) queryParts.push('has:attachment');
-    if (filters.isUnread) queryParts.push('is:unread');
-    
     const result = await gmailService.listEmails(context, {
-      query: queryParts.length > 0 ? queryParts.join(' ') : undefined,
+      from: filters.from,
+      to: filters.to,
+      subjectContains: filters.subjectContains ?? filters.subject,
+      textContains: filters.textContains,
+      after: filters.after,
+      before: filters.before,
+      labelIds: filters.labelIds ?? args.labelIds,
       maxResults: filters.maxResults || 10,
+      includeBody: filters.includeBody ?? true,
+      includeHeaders: filters.includeHeaders ?? true,
     });
     
     return {
@@ -156,6 +181,7 @@ export class GmailServiceAdapter {
     }
     
     const result = await gmailService.sendEmail(
+      context,
       {
         to: args.to,
         subject: args.subject || '',
@@ -193,7 +219,7 @@ export class GmailServiceAdapter {
     };
   }
   
-  private async reply(gmailService: any, context: RequestUserContext, args: GmailOperationArgs): Promise<GmailOperationResult> {
+  private async replyPreview(gmailService: any, context: RequestUserContext, args: GmailOperationArgs): Promise<GmailOperationResult> {
     if (!args.messageId) {
       return { success: false, error: 'Message ID is required for reply' };
     }
@@ -203,12 +229,79 @@ export class GmailServiceAdapter {
       body: args.body,
       cc: args.cc,
       bcc: args.bcc,
-    });
+    }, { previewOnly: true });
     
+    return {
+      success: result.success,
+      data: { ...result.data, preview: true },
+      error: result.error,
+    };
+  }
+
+  private async replyConfirm(gmailService: any, context: RequestUserContext, args: GmailOperationArgs): Promise<GmailOperationResult> {
+    if (!args.messageId) {
+      return { success: false, error: 'Message ID is required for reply' };
+    }
+
+    const result = await gmailService.replyToEmail(context, {
+      messageId: args.messageId,
+      body: args.body,
+      cc: args.cc,
+      bcc: args.bcc,
+    }, { previewOnly: false });
+
     return {
       success: result.success,
       data: result.data,
       error: result.error,
     };
+  }
+
+  private async getLatestEmail(gmailService: any, context: RequestUserContext, args: GmailOperationArgs): Promise<GmailOperationResult> {
+    const filters = args.filters || {};
+    const list = await gmailService.listEmails(context, {
+      from: filters.from,
+      to: filters.to,
+      subjectContains: filters.subjectContains ?? filters.subject,
+      textContains: filters.textContains,
+      after: filters.after,
+      before: filters.before,
+      labelIds: filters.labelIds ?? args.labelIds,
+      maxResults: 1,
+      includeBody: filters.includeBody ?? true,
+      includeHeaders: filters.includeHeaders ?? true,
+    });
+
+    if (!list.success) {
+      return { success: false, error: list.error || 'Failed to list emails' };
+    }
+
+    const emails = list.data?.emails;
+    const latest = Array.isArray(emails) && emails.length > 0 ? emails[0] : null;
+
+    return {
+      success: true,
+      data: {
+        email: latest,
+        query: list.data?.query,
+        count: list.data?.count ?? (Array.isArray(emails) ? emails.length : 0),
+      },
+    };
+  }
+
+  private async markAsRead(gmailService: any, context: RequestUserContext, args: GmailOperationArgs): Promise<GmailOperationResult> {
+    if (!args.messageId) {
+      return { success: false, error: 'Message ID is required' };
+    }
+    const result = await gmailService.markAsRead(context, args.messageId);
+    return { success: result.success, data: result.data, error: result.error };
+  }
+
+  private async markAsUnread(gmailService: any, context: RequestUserContext, args: GmailOperationArgs): Promise<GmailOperationResult> {
+    if (!args.messageId) {
+      return { success: false, error: 'Message ID is required' };
+    }
+    const result = await gmailService.markAsUnread(context, args.messageId);
+    return { success: result.success, data: result.data, error: result.error };
   }
 }

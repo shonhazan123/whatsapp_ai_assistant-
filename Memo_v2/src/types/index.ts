@@ -406,7 +406,7 @@ export interface SecondBrainResponseContext {
  */
 export interface ResponseContext {
 	// Capability indicator - tells which sub-context is populated
-	capability: "database" | "calendar" | "gmail" | "second-brain" | "general";
+	capability: "database" | "calendar" | "gmail" | "second-brain" | "general" | "meta";
 
 	// Capability-specific contexts (only the matching one is populated)
 	database?: DatabaseResponseContext;

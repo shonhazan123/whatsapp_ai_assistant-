@@ -1,127 +1,126 @@
-# Feature Addition Chain
+# Feature Addition Chain (Current Architecture)
 
-When adding new operations (like `deleteAll`, `updateMultiple`, etc.) to the Memo_v2 system, multiple files need to be updated in a specific order to ensure the feature works end-to-end.
+When adding a **new capability** or a **new operation/action** inside an existing capability (e.g. `deleteMultiple`, `updateAll`, `archiveThread`), multiple files must be updated so the request works end-to-end.
 
-## Full Chain of Files (in order)
+This document reflects the **current** Memo_v2 architecture (resolvers → entity resolution → `executorArgs` → adapters → formatter/writer).
 
+## Chain overview (what must exist for a capability operation to work)
+
+```text
+PlannerNode (LLM) produces PlanStep[]
+  ↓
+HITLGateNode (interrupt) may pause for planner clarification/approval
+  ↓
+ResolverRouterNode (code) invokes capability resolver(s) (LLM)
+  ↓
+EntityResolutionNode (code) resolves text → IDs, writes state.executorArgs
+  ↓
+ExecutorNode (code) executes via src/services/adapters/*, prefers executorArgs
+  ↓
+JoinNode → ResponseFormatterNode → ResponseWriterNode → MemoryUpdateNode
 ```
-1. ResolverSchema.ts         → Add actionHints for routing
-2. DatabaseResolvers.ts      → Add LLM examples + schema enum
-3. DatabaseEntityResolver.ts → Add resolution logic (if text-based)
-4. TaskServiceAdapter.ts     → Add execute() case + method
-5. response-formatter-prompt.ts → Add response formatting rules
-6. agents-database.md        → Update documentation
-```
 
-## Detailed Steps
+## Add/extend an operation (recommended checklist)
 
-### 1. ResolverSchema.ts
+### 1) Update routing contract (`ResolverSchema.ts`)
 
-**Path:** `Memo_v2/src/graph/resolvers/ResolverSchema.ts`
+**File**: `Memo_v2/src/graph/resolvers/ResolverSchema.ts`
 
-Update the relevant schema (e.g., `DATABASE_TASK_SCHEMA`) to include:
+Add or update the relevant schema entry:
 
-- **actionHints**: Add action hints for routing (e.g., `'delete_all_tasks'`)
-- **triggerPatterns**: Add Hebrew/English trigger patterns
-- **examples**: Add example inputs for the LLM
+- **`actionHints`**: include the new action so the planner routes correctly
+- **`triggerPatterns`**: Hebrew/English patterns if applicable
+- **`examples`**: examples that demonstrate the new operation
 
-### 2. DatabaseResolvers.ts
+This is the planner’s “capability contract”.
 
-**Path:** `Memo_v2/src/graph/resolvers/DatabaseResolvers.ts`
+### 2) Update resolver implementation (LLM → semantic args)
 
-Update the resolver class (e.g., `DatabaseTaskResolver`) to include:
+**Files** (by capability):
+- Calendar: `Memo_v2/src/graph/resolvers/CalendarResolvers.ts`
+- Database: `Memo_v2/src/graph/resolvers/DatabaseResolvers.ts`
+- Gmail: `Memo_v2/src/graph/resolvers/GmailResolver.ts`
+- Second brain: `Memo_v2/src/graph/resolvers/SecondBrainResolver.ts`
+- General/meta: `Memo_v2/src/graph/resolvers/GeneralResolver.ts`
 
-- **actions array**: Add the new action (e.g., `'delete_all_tasks'`)
-- **getSystemPrompt()**: Add examples for the LLM to understand the new operation
-- **getSchemaSlice()**:
-  - Add the operation to the `enum` array
-  - Add any new parameters (e.g., `patch`, `taskIds`)
-  - Document parameter descriptions
+Do:
 
-### 3. DatabaseEntityResolver.ts (if needed)
+- Add the new `action` to the resolver’s supported `actions`
+- Update prompt examples so the resolver reliably emits the new action
+- Update the resolver schema slice so the **args shape** for the new operation is explicit
 
-**Path:** `Memo_v2/src/services/resolution/DatabaseEntityResolver.ts`
+Resolver output is **semantic** (may contain text like “meeting notes”), not necessarily IDs.
 
-Only needed if the operation requires resolving text to entity IDs:
+### 3) Update entity resolution (semantic → IDs) if needed
 
-- Add operation to `operationsNeedingResolution` array
-- Add special handling for array-based operations (e.g., `deleteMultiple`)
-- Implement resolution methods (e.g., `resolveMultipleTasks()`)
+**Files**: `Memo_v2/src/services/resolution/*EntityResolver.ts`
 
-**Operations that DON'T need entity resolution:**
+Only required when execution needs IDs (taskId/eventId/messageId/etc) and the resolver produces natural language text.
 
-- `deleteAll` - Uses `where` filter
-- `updateAll` - Uses `where` filter + `patch`
+Do:
 
-**Operations that NEED entity resolution:**
+- Add the new operation to the domain’s “needs resolution” logic
+- Implement resolution and disambiguation behavior:
+  - **disambiguation** → `EntityResolutionNode` triggers HITL (user selects candidate)
+  - **not_found** → continue to response (no interrupt) with a helpful explanation
 
-- `deleteMultiple` - Needs to resolve each task text to ID
-- `updateMultiple` - Needs to resolve each update's text to ID
+Important:
+- The **authoritative resolved payload** must be written to `state.executorArgs` by `EntityResolutionNode`.
 
-### 4. TaskServiceAdapter.ts
+### 4) Update adapter execution (IDs → real side effect / query)
 
-**Path:** `Memo_v2/src/services/adapters/TaskServiceAdapter.ts`
+**Files**: `Memo_v2/src/services/adapters/*ServiceAdapter.ts`
 
-Update the adapter to:
+Do:
 
-- **TaskOperationArgs interface**: Add new parameters (e.g., `patch`, `taskIds`)
-- **execute() switch**: Add case for the new operation
-- **Implement method**: Create the operation implementation
+- Extend the adapter args type for the new operation
+- Add the `execute()` switch/dispatch case
+- Implement the operation using V1 services (thin adapter pattern)
 
-### 5. response-formatter-prompt.ts
+Adapters must return a shape compatible with:
+- `Memo_v2/docs/RESPONSE_DATA_PATTERNS.md`
 
-**Path:** `src/config/response-formatter-prompt.ts`
+If you introduce a new return shape, update that doc.
 
-Update the response formatting rules:
+### 5) Ensure `ExecutorNode` dispatch supports the capability/operation
 
-- Add format for bulk operations (e.g., "✅ נמחקו X משימות")
-- Handle partial success with `notFound` items
-- Add both Hebrew and English formats
+**File**: `Memo_v2/src/graph/nodes/ExecutorNode.ts`
 
-### 6. agents-database.md
+In the current architecture, `ExecutorNode` is the single execution dispatcher.
 
-**Path:** `docs/project-instruction/agents-database.md`
+Usually you **do not** need to change it unless:
+- you added a brand-new capability adapter
+- you need special cross-step handling
 
-Update documentation:
+### 6) Verify response behavior (formatter/writer expectations)
 
-- Add to "What the Database Agent CAN Do" section
-- Add parameter details in "Parameters & Behavior" section
-- Add example flows
+**Files**:
+- `Memo_v2/src/graph/nodes/ResponseFormatterNode.ts`
+- `Memo_v2/src/graph/nodes/ResponseWriterNode.ts`
+- `src/config/response-formatter-prompt.ts`
 
-## Notes on Operation Types
+Do:
 
-### Filter-based operations (no entity resolution)
+- Confirm the adapter output is categorized and surfaced correctly
+- If the operation needs special phrasing/UX rules, add them to `response-formatter-prompt.ts`
 
-- `deleteAll` - Uses `where` filter (window, type)
-- `updateAll` - Uses `where` filter + `patch` object with fields to update
+### 7) Update docs (must stay in sync with runtime)
 
-**Available `where` filters:**
+Update **both**:
 
-- `window`: `'today'` | `'this_week'` | `'overdue'` | `'upcoming'` | `'all'`
-- `type`: `'recurring'` | `'unplanned'` | `'reminder'`
-  - `recurring` - Tasks with `reminder_recurrence` set
-  - `unplanned` - Tasks without `due_date` AND without `reminder_recurrence`
-  - `reminder` - Tasks with `due_date` but without `reminder_recurrence`
+- Capability contract doc (canonical): `Memo_v2/docs/capabilities/<capability>.md`
+- Human-facing workflow docs (repo root): `docs/project-instruction/agents-<capability>.md`
 
-**Note:** Filtering is done in-memory by `TaskServiceAdapter.filterTasks()` after fetching all uncompleted tasks from V1.
+If the change touches core flow/state, also update:
+- `Memo_v2/docs/STATE_SCHEMA.md`
+- `Memo_v2/docs/PLANNER_AND_HITL_FLOW.md`
+- `Memo_v2/docs/SYSTEM_DIAGRAM.md`
 
-### Array-based operations (need entity resolution)
+## Testing checklist (high-signal)
 
-- `deleteMultiple` - Uses `tasks: [{ text: '...' }]` array
-- `updateMultiple` - Uses `updates: [{ text: '...', reminderDetails: {...} }]` array
+- Planner routes to the right capability/action (schema hints + examples)
+- Resolver emits the new action and args consistently
+- Entity resolution produces the required IDs in `executorArgs` (or triggers disambiguation HITL)
+- Adapter executes and returns a formatter-compatible result shape
+- Formatter + writer produce the expected user output (including partial failure / not_found messaging)
 
-## Files That DON'T Need Changes
-
-- **ExecutorNode** - Just passes args to adapters
-- **ResponseFormatterNode** - Builds context generically from execution results
-- **ResponseWriterNode** - Uses LLM with response-formatter-prompt (no code changes)
-- **PlannerNode** - Uses ResolverSchema automatically via `formatSchemasForPrompt()`
-
-## Testing Checklist
-
-1. ✅ ResolverSchema actionHints route correctly
-2. ✅ LLM in DatabaseResolvers outputs correct operation and params
-3. ✅ Entity resolution resolves text to IDs (for text-based operations)
-4. ✅ TaskServiceAdapter executes the operation
-5. ✅ ResponseFormatterPrompt formats the result correctly
-6. ✅ Documentation is updated

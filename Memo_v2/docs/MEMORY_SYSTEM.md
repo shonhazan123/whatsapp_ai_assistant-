@@ -49,8 +49,13 @@ The system implements several distinct memory types, each serving a specific pur
 
 ### 2.1 Short-Term Memory (Recent Messages)
 
-**Storage**: LangGraph State (`MemoState.recentMessages`)  
-**Lifetime**: Per-request, persisted via checkpointer  
+**Storage**:
+- Primary: `MemoryService` (in-memory singleton in `Memo_v2/src/services/memory/`)
+- Copied into: `MemoState.recentMessages` each invocation (for Planner/Resolvers context)
+
+**Lifetime**:
+- `MemoryService` persists in-process (until server restart)
+- LangGraph checkpointer persistence is used mainly for **pending HITL interrupts**; after a successful run, checkpoints are deleted (`checkpointer.deleteThread(threadId)`).
 **Limits**:
 
 - Maximum 10 messages (user + assistant pairs)
@@ -94,34 +99,33 @@ interface ConversationMessage {
 - Placeholder exists for future integration with SecondBrainService
 - Would query `second_brain_memory` table for user summaries
 
-### 2.3 Disambiguation Context
+### 2.3 Disambiguation (Entity Resolution HITL)
 
-**Storage**: LangGraph State (`MemoState.disambiguation`)  
-**Lifetime**: 5 minutes (expires automatically)  
-**Purpose**: Stores entity candidates when multiple matches are found
+**Storage**:
+- `MemoState.disambiguation` holds the candidates + question
+- LangGraph checkpointer holds the paused graph state while waiting for user reply
 
-**Data Structure**:
+**Lifetime / cleanup**:
+- Controlled by the interrupt timeout in `invokeMemoGraph()` (currently **1 minute**).
+- If the user replies after the timeout, the thread checkpoints are cleaned up and the message is treated as a **fresh invocation**.
 
-```typescript
-interface DisambiguationContext {
-	type: EntityType; // 'calendar_event' | 'task' | 'list' | 'email'
-	query: string;
-	candidates: DisambiguationCandidate[];
-	createdAt: number;
-	expiresAt: number;
-}
-```
+**Purpose**: When entity lookup is ambiguous (e.g., multiple tasks match), pause and ask the user to choose.
 
-**Usage**:
+**Data shape (current runtime)**: see `Memo_v2/src/types/index.ts` `DisambiguationContext`.
 
-- Stored when EntityResolutionNode finds multiple matches
-- Used by HITLGateNode to generate clarification questions
-- Cleared after user selection or expiry
+Key fields:
+- `type`: `"calendar" | "database" | "gmail" | "second-brain" | "error"`
+- `candidates[]`: `{ id, displayText, ... }`
+- `question`, `allowMultiple`
+- `resolverStepId`: which plan step needs resolution
+- `originalArgs`: resolver args before ID resolution
+- `userSelection`: filled on resume
+- `resolved`: used to guard resume flows
 
 ### 2.4 Image Context
 
-**Storage**: LangGraph State (`MemoState.input.imageContext`)  
-**Lifetime**: Last 3 user messages  
+**Storage**: `MemoState.input.imageContext` (also stored in MemoryService message metadata)  
+**Lifetime**: Treated as “recent” if extracted within ~5 minutes (see `ReplyContextNode.findRecentImageContext()`)
 **Purpose**: Maintains context from recently analyzed images
 
 **Data Structure**:
@@ -141,29 +145,11 @@ interface ImageContext {
 - Available in `state.input.imageContext` for resolvers
 - Automatically included in enhanced message when present
 
-### 2.5 Recent Tasks Context
+### 2.5 `state.refs` (running references)
 
-**Storage**: LangGraph State (`MemoState.refs.tasks`)  
-**Lifetime**: Per-session  
-**Purpose**: Stores recently created/updated tasks for reference
+`MemoState.refs` exists as a place to store running references for multi-step flows, but in the current implementation it is **not actively populated by nodes**.
 
-**Data Structure**:
-
-```typescript
-interface TaskRef {
-	id: string;
-	text: string;
-	completed: boolean;
-	dueDate?: string;
-	hasReminder: boolean;
-}
-```
-
-**Usage**:
-
-- Populated by DatabaseExecutor after task operations
-- Used by EntityResolutionNode for fuzzy matching
-- Referenced in conversation context for "complete this task" type requests
+If/when we re-introduce step-to-step “refs” behavior, this doc must be updated to reflect the exact writer nodes and shapes.
 
 ### 2.6 Second Brain (Persistent Knowledge)
 
@@ -241,12 +227,11 @@ return createInitialState({
    - Uses recent messages to resolve references ("it", "that")
 
 2. **Resolvers**:
-   - Access `state.recentMessages.slice(-3)` for immediate context
+   - Access `state.recentMessages` (up to 10) for immediate context
    - Use conversation history to understand follow-up requests
 
 3. **EntityResolutionNode**:
    - Uses `state.recentMessages` for fuzzy matching context
-   - References `state.refs.tasks` for task lookups
    - Stores disambiguation candidates in `state.disambiguation`
 
 4. **ReplyContextNode**:
@@ -268,8 +253,8 @@ return createInitialState({
    - Timestamp: `now - 1000` (slightly before assistant response)
 
 2. **Add Assistant Response**:
-   - Creates `ConversationMessage` with `state.finalResponse`
-   - Timestamp: current time
+   - Adds `state.finalResponse` to `state.recentMessages` for in-graph context
+   - Persisting the assistant message (with WhatsApp message ID) is done by the webhook when sending the message
 
 3. **Merge with Existing**:
    - Combines `state.recentMessages` with new messages
@@ -538,20 +523,19 @@ await graph.invoke(input, {
 ✅ **Disambiguation Context**
 
 - Stores entity candidates when multiple matches found
-- 5-minute expiry
-- Used by HITLGateNode for clarification questions
+- Pauses execution via LangGraph `interrupt()` when (and only when) true disambiguation is required
+- **Interrupt-timeout is currently 1 minute** (graph-level timeout in `invokeMemoGraph()`)
+- MemoryService also stores a disambiguation metadata snapshot with a **5-minute expiry** (ConversationWindow constant) for follow-up/reply context
 
 ✅ **Image Context**
 
 - Maintains context from recently analyzed images
-- Available for 3 user messages
+- Treated as “recent” if extracted within ~5 minutes (see `ReplyContextNode.findRecentImageContext()`)
 - Automatically attached to enhanced messages
 
 ✅ **Recent Tasks**
 
-- Stores recently created/updated tasks
-- Used for fuzzy matching and reference resolution
-- Populated by DatabaseExecutor
+- MemoryService supports storing “recent tasks” snapshots, but in the current implementation this is **not** populated by the execution pipeline (so do not rely on it for resolution).
 
 ✅ **Second Brain (Knowledge Storage)**
 
@@ -578,14 +562,13 @@ await graph.invoke(input, {
 
 **Resolvers**:
 
-- ✅ Access last 3 messages for immediate context
+- ✅ Access `state.recentMessages` (up to 10 messages) for immediate context
 - ✅ Use conversation history for follow-up requests
 
 **EntityResolutionNode**:
 
-- ✅ Uses recent messages for fuzzy matching
-- ✅ References recent tasks from `state.refs.tasks`
-- ✅ Stores disambiguation candidates
+- ✅ Uses resolver args + domain entity resolvers to resolve IDs
+- ✅ When ambiguous, writes `state.disambiguation` and requests HITL via `interrupt()`
 
 **ReplyContextNode**:
 
@@ -746,8 +729,8 @@ REQUEST END
 ┌──────────────────────────────────────┐
 │  State Persisted                     │
 │  ├─ Recent messages (10 max)        │ ✅ In state + ConversationWindow
-│  ├─ Disambiguation (5 min expiry)   │ ✅ In state
-│  ├─ Image context (3 messages)      │ ✅ In state
+│  ├─ Disambiguation                  │ ✅ In state + checkpointer (while interrupted)
+│  ├─ Image context                   │ ✅ In state (recent ~5 minutes)
 │  └─ Long-term summary               │ ❌ Not stored
 └──────────────────────────────────────┘
 ```
@@ -764,7 +747,7 @@ const MAX_TOKENS_ESTIMATE = 500;
 const CHARS_PER_TOKEN = 4; // Rough approximation
 ```
 
-**ConversationWindow Configuration** (defined in `ConversationWindow.ts`):
+**ConversationWindow Configuration** (defined in `Memo_v2/src/services/memory/ConversationWindow.ts`):
 
 ```typescript
 MAX_TOTAL_MESSAGES = 10;
@@ -774,6 +757,14 @@ MAX_SYSTEM_MESSAGES = 3;
 CHARS_PER_TOKEN = 3.5;
 CONVERSATION_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12 hours
 DISAMBIGUATION_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes
+```
+
+**Important**: `DISAMBIGUATION_EXPIRY_MS` applies to **MemoryService metadata** stored in `ConversationWindow` (for potential follow-up handling). It is **not** the LangGraph interrupt timeout.
+
+**LangGraph interrupt timeout** (defined in `Memo_v2/src/graph/index.ts`):
+
+```typescript
+const INTERRUPT_TIMEOUT_MS = 1 * 60 * 1000; // 1 minute
 ```
 
 ---
@@ -812,7 +803,7 @@ The Memo V2 memory system is **self-contained** and provides a solid foundation 
 - MemoryService API for all memory operations
 - Disambiguation context
 - Image context
-- Recent tasks
+- Recent tasks (stored in `ConversationWindow` / MemoryService)
 - Second Brain knowledge storage
 
 ⚠️ **Placeholders** (not implemented):

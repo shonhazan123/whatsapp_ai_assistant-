@@ -205,6 +205,7 @@ export interface NodeModelAssignment {
     gmail: string;
     secondBrain: string;
     general: string;
+    meta: string;
   };
   responseWriter: string;
   imageAnalysis: string;
@@ -226,6 +227,7 @@ export const DEFAULT_NODE_MODELS: NodeModelAssignment = {
     gmail: process.env.LLM_RESOLVER_GMAIL_MODEL || 'gpt-4o-mini',
     secondBrain: process.env.LLM_RESOLVER_SECONDBRAIN_MODEL || 'gpt-4o-mini',
     general: process.env.LLM_RESOLVER_GENERAL_MODEL || 'gpt-4o-mini',
+    meta: process.env.LLM_RESOLVER_META_MODEL || 'gpt-4o-mini',
   },
   
   // Response writer: cheap, fast

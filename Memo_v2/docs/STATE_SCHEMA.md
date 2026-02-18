@@ -1,983 +1,166 @@
-# Memo V2 — State Schema Reference
-
-> Complete TypeScript type definitions for the LangGraph state
-
----
-
-## Core State
-
-```typescript
-/**
- * Main state object that flows through the LangGraph
- * All nodes read from and write to this state
- */
-export interface MemoState {
-	// ============================================
-	// USER CONTEXT (lightweight — for prompts, planner, response)
-	// Populated by: ContextAssemblyNode (derived from AuthContext)
-	// Read by: All nodes
-	// ============================================
-	user: UserContext;
-
-	// ============================================
-	// AUTH CONTEXT (full hydrated — for executors & adapters)
-	// Populated by: ContextAssemblyNode (single DB fetch)
-	// Read by: ExecutorNode, CalendarServiceAdapter, GmailServiceAdapter
-	// Contains: user record, Google tokens, capabilities
-	// ============================================
-	authContext?: AuthContext;
-
-	// ============================================
-	// INPUT
-	// Populated by: ContextAssemblyNode, ReplyContextNode
-	// Read by: PlannerNode, Resolvers
-	// ============================================
-	input: InputContext;
-
-	// ============================================
-	// TIME CONTEXT
-	// Populated by: ContextAssemblyNode
-	// Read by: PlannerNode, Resolvers, ResponseFormatter
-	// ============================================
-	now: TimeContext;
-
-	// ============================================
-	// MEMORY
-	// Populated by: ContextAssemblyNode
-	// Updated by: MemoryUpdateNode
-	// ============================================
-	recent_messages: ConversationMessage[];
-	long_term_summary?: string;
-
-	// ============================================
-	// PLANNER OUTPUT
-	// Populated by: PlannerNode
-	// Read by: HITLGateNode, ResolverRouterNode
-	// ============================================
-	planner_output?: PlannerOutput;
-
-	// ============================================
-	// DISAMBIGUATION
-	// Populated by: Resolvers, HITLGateNode
-	// Read by: ReplyContextNode
-	// Cleared by: ReplyContextNode (on resolution)
-	// ============================================
-	disambiguation?: DisambiguationState;
-
-	// ============================================
-	// RESOLVER RESULTS
-	// Populated by: Resolver nodes
-	// Read by: Executor nodes
-	// ============================================
-	resolver_results: Record<string, ResolverResult>;
-
-	// ============================================
-	// EXECUTION RESULTS
-	// Populated by: Executor nodes
-	// Read by: JoinNode, ResponseFormatterNode
-	// ============================================
-	execution_results: Record<string, ExecutionResult>;
-
-	// ============================================
-	// RUNNING CONTEXT (for multi-step flows)
-	// Populated by: Resolvers, Executors
-	// Read by: Resolvers (for dependent steps)
-	// ============================================
-	refs: EntityReferences;
-
-	// ============================================
-	// RESPONSE
-	// Populated by: ResponseFormatterNode, ResponseWriterNode
-	// Read by: Webhook (final output)
-	// ============================================
-	formatted_response?: FormattedResponse;
-	final_response?: string;
-
-	// ============================================
-	// CONTROL FLAGS
-	// Note: HITL pause/resume handled by LangGraph interrupt()
-	// The should_pause/pause_reason fields have been REMOVED
-	// ============================================
-	error?: ErrorInfo;
+# Memo V2 — Runtime State & Types (Source of Truth)
 
-	// ============================================
-	// METADATA
-	// Populated by: All nodes (via BaseNode)
-	// Read by: Logging, cost tracking
-	// ============================================
-	metadata: ExecutionMetadata;
-}
-```
+This document describes the **actual, current runtime contract** from user message → LangGraph → response.
 
----
+If something here contradicts code, **code wins** and this doc must be updated.
 
-## User Context
+## Canonical sources (do not duplicate types)
 
-```typescript
-export interface UserContext {
-	/** WhatsApp phone number (normalized) */
-	phone: string;
+- **Runtime LangGraph state**: `Memo_v2/src/graph/state/MemoState.ts` (`MemoStateAnnotation`)
+- **Cross-node contracts (types imported by nodes)**: `Memo_v2/src/types/index.ts`
+- **Entity-resolution subsystem types**: `Memo_v2/src/services/resolution/types.ts`
 
-	/** User's timezone (IANA format) */
-	timezone: string;
+This doc intentionally **references** these files rather than copying full type definitions to avoid drift.
 
-	/** Detected or stored language preference */
-	language: "he" | "en" | "other";
+## High-level state lifecycle (current implementation)
 
-	/** User subscription tier */
-	planTier: "free" | "pro" | "enterprise";
+- **Thread identity**: `thread_id = userPhone` (LangGraph checkpointer key)
+- **Persistence strategy**:
+  - During **HITL interrupts**, LangGraph persists state in the checkpointer.
+  - After a **successful completion**, `invokeMemoGraph()` deletes the thread checkpoints (`checkpointer.deleteThread(threadId)`), so LangGraph state is **not** meant to persist across normal requests.
+  - Conversation continuity is handled by `MemoryService` (recent messages), not by long-lived LangGraph state.
 
-	/** Whether Google account is connected */
-	googleConnected: boolean;
+Canonical code: `Memo_v2/src/graph/index.ts`
 
-	/** Capability access (based on tier + connections) */
-	capabilities: CapabilityAccess;
-}
+## Node-by-node: what gets written/read
 
-export interface CapabilityAccess {
-	calendar: boolean;
-	gmail: boolean;
-	database: boolean;
-	secondBrain: boolean;
-}
-```
+### 1) `ContextAssemblyNode` (code)
 
----
+Writes:
+- `state.authContext`: hydrated once (user record + Google tokens + capability flags)
+- `state.user`: lightweight prompt-facing context derived from `authContext`
+- `state.input`: includes `message`, `userPhone`, `timezone`, `language`, message IDs
+- `state.recentMessages`: pulled from `MemoryService`
+- `state.now`
 
-## Auth Context
+Canonical code: `Memo_v2/src/graph/nodes/ContextAssemblyNode.ts`
 
-> **State-first pattern**: Hydrated ONCE by `ContextAssemblyNode`, then passed through
-> LangGraph shared state to all downstream nodes. Eliminates redundant DB fetches
-> that previously occurred in every service adapter.
+### 2) `ReplyContextNode` (code)
 
-```typescript
-import type { UserRecord, UserGoogleToken, UserPlanType } from './legacy/services/database/UserService';
+Writes:
+- `state.input.enhancedMessage`: enriched with reply-to context (including numbered-list selection context) and recent image context if present
+- `state.input.imageContext` (when applicable)
 
-/**
- * Full hydrated user authentication & authorization context.
- * Contains everything executors and adapters need to call Google APIs.
- */
-export interface AuthContext {
-	/** Full DB user record (users table) */
-	userRecord: UserRecord;
+Canonical code: `Memo_v2/src/graph/nodes/ReplyContextNode.ts`
 
-	/** Plan tier derived from user record */
-	planTier: UserPlanType; // 'free' | 'standard' | 'pro'
+### 3) `PlannerNode` (LLM)
 
-	/** Google OAuth tokens (null if not connected) */
-	googleTokens: UserGoogleToken | null;
+Writes:
+- `state.plannerOutput`: `intentType`, `confidence`, `riskLevel`, `needsApproval`, `missingFields`, `plan[]`
+- `state.routingSuggestions`: pattern-based hints used for natural clarification messages in HITL
 
-	/** Whether Google account is connected with valid tokens */
-	googleConnected: boolean;
+Special re-plan behavior:
+- If the prior HITL was `intent_unclear`, the planner re-plans using `state.plannerHITLResponse` (and then clears HITL fields to avoid loops).
 
-	/** Pre-computed capability flags (from scopes + plan) */
-	capabilities: {
-		calendar: boolean;
-		gmail: boolean;
-		database: boolean;
-		secondBrain: boolean;
-	};
+Canonical code: `Memo_v2/src/graph/nodes/PlannerNode.ts`
 
-	/** Timestamp (ms) when this context was hydrated */
-	hydratedAt: number;
-}
-```
+### 4) `CapabilityCheckNode` (code)
 
-### Lifecycle
+Purpose:
+- Blocks execution if the plan requires capabilities the user does not have (currently calendar/gmail).
 
-1. **Created**: `ContextAssemblyNode` fetches user record + Google tokens, refreshes tokens via `GoogleTokenManager`, stores result in `state.authContext`.
-2. **Read**: `ExecutorNode` reads `state.authContext` and passes to `CalendarServiceAdapter` / `GmailServiceAdapter` constructors.
-3. **Consumed**: Adapters call `buildRequestContext()` to convert `AuthContext` into V1-compatible `RequestUserContext` with zero DB calls.
+Writes (when blocked):
+- `state.finalResponse`: a fixed “connect Google” message
 
----
+Canonical code: `Memo_v2/src/graph/nodes/CapabilityCheckNode.ts`
 
-## Input Context
+### 5) `HITLGateNode` (code, uses `interrupt()`)
 
-```typescript
-export interface InputContext {
-	/** Original user message */
-	message: string;
+There are **two distinct HITL families**. They use different state fields and resume behavior.
 
-	/** Enhanced message (with reply/image context added) */
-	enhancedMessage?: string;
+#### A) Planner HITL (clarification / confirmation / approval / intent_unclear)
 
-	/** How this request was triggered */
-	triggerType: TriggerType;
+Triggers when (priority order):
+- `missingFields` contains `intent_unclear` (special case)
+- `confidence < 0.7`
+- `missingFields.length > 0`
+- `riskLevel === 'high'`
+- `needsApproval === true`
 
-	/** WhatsApp message ID */
-	whatsappMessageId?: string;
+Interrupt/resume fields:
+- On interrupt: sets `state.hitlType` and tracks `interruptedAt` for timeout handling.
+- On resume: stores the raw user reply in **`state.plannerHITLResponse`** (planner HITL only).
 
-	/** ID of message being replied to (if any) */
-	replyToMessageId?: string;
+Routing after resume (graph router):
+- If `hitlType === 'intent_unclear'` and `plannerHITLResponse` exists → route back to `PlannerNode` (re-plan).
+- Otherwise → continue to `ResolverRouterNode`.
 
-	/** Image analysis context (if recent image) */
-	imageContext?: ImageContext;
+Canonical code:
+- `Memo_v2/src/graph/nodes/HITLGateNode.ts`
+- `Memo_v2/src/graph/index.ts` (`hitlGateRouter`)
 
-	/** Audio transcription (if voice message) */
-	audioTranscription?: string;
-}
+#### B) Entity-Resolution HITL (disambiguation selection)
 
-export type TriggerType =
-	| "user" // Regular WhatsApp message
-	| "cron" // Scheduled job (morning brief)
-	| "nudge" // Nudge reminder
-	| "event"; // Event-triggered (overdue task)
+When an entity resolver returns `type: 'disambiguation'`, `EntityResolutionNode` sets:
+- `state.needsHITL = true`
+- `state.hitlReason = 'disambiguation'`
+- `state.disambiguation = { type, candidates, question, allowMultiple, resolverStepId, originalArgs }`
 
-export interface ImageContext {
-	/** Unique image identifier */
-	imageId: string;
+Graph routing:
+- Only `hitlReason === 'disambiguation'` routes to HITL. `not_found` does **not** interrupt; it proceeds to response generation with an explanation.
 
-	/** Analysis result from GPT-4V */
-	analysisResult: ImageAnalysisResult;
+On resume:
+- `HITLGateNode` parses user input into `state.disambiguation.userSelection` (number/array/"both"/text)
+- `EntityResolutionNode` then applies selection via the domain resolver’s `applySelection(...)`
 
-	/** Type classification */
-	imageType: "structured" | "random";
+Canonical code:
+- `Memo_v2/src/graph/nodes/EntityResolutionNode.ts`
+- `Memo_v2/src/graph/nodes/HITLGateNode.ts`
+- `Memo_v2/src/graph/index.ts` (`entityResolutionRouter`)
 
-	/** When analysis was performed */
-	extractedAt: number;
-}
+### 6) `ResolverRouterNode` (code)
 
-export interface ImageAnalysisResult {
-	/** General description */
-	description: string;
+Purpose:
+- Creates execution groups from `dependsOn`, runs resolvers in parallel where safe, sequential between dependency groups.
 
-	/** Extracted structured data (tasks, events, items) */
-	extractedData?: {
-		tasks?: string[];
-		events?: Array<{
-			title: string;
-			date?: string;
-			time?: string;
-		}>;
-		items?: string[];
-	};
+Critical resume behavior:
+- If `state.resolverResults` already contains a step’s result (e.g., after HITL resume), the node **skips re-running** the resolver (prevents duplicate LLM calls).
 
-	/** Raw text extracted from image */
-	extractedText?: string;
-}
-```
+Writes:
+- `state.resolverResults: Map<stepId, ResolverResult>`
 
----
+Canonical code: `Memo_v2/src/graph/nodes/ResolverRouterNode.ts`
 
-## Time Context
+### 7) `EntityResolutionNode` (code)
 
-```typescript
-export interface TimeContext {
-	/**
-	 * Human-readable format for prompts
-	 * Example: "[Current time: Thursday, 02/01/2026 15:30 (2026-01-02T13:30:00.000Z), Timezone: Asia/Jerusalem]"
-	 */
-	formatted: string;
+Purpose:
+- Converts semantic resolver args into **ID-resolved args** (or disambiguation / not_found context).
 
-	/** ISO 8601 timestamp */
-	iso: string;
+Writes:
+- `state.executorArgs: Map<stepId, resolvedArgs>` (**authoritative for execution**)
+- In a `not_found` / `clarify_query` case: writes a failed entry into `state.executionResults` for that step and returns early so the response pipeline can explain.
 
-	/** User's timezone (IANA format) */
-	timezone: string;
+Canonical code: `Memo_v2/src/graph/nodes/EntityResolutionNode.ts`
 
-	/** Day of week (0=Sunday, 6=Saturday) */
-	dayOfWeek: number;
+### 8) `ExecutorNode` (code)
 
-	/** Day name in user's language */
-	dayName: string;
+Critical contract:
+- For each step, it prefers `state.executorArgs.get(stepId)` over `state.resolverResults.get(stepId).args`.
 
-	/** Locale-formatted date */
-	localDate: string;
+Writes:
+- `state.executionResults: Map<stepId, ExecutionResult>`
 
-	/** Locale-formatted time */
-	localTime: string;
-}
-```
+Canonical code: `Memo_v2/src/graph/nodes/ExecutorNode.ts`
 
----
+### 9) `JoinNode` → `ResponseFormatterNode` → `ResponseWriterNode` → `MemoryUpdateNode`
 
-## Conversation Memory
+- `JoinNode`: detects partial/complete failures (no interrupts).
+- `ResponseFormatterNode`: normalizes adapter return shapes, formats dates, builds per-capability context, captures failures in `formattedResponse.failedOperations`.
+- `ResponseWriterNode`: writes final user message; handles complete failure/partial failure; uses `src/config/response-formatter-prompt.ts` for success formatting.
+- `MemoryUpdateNode`: updates `recentMessages` trimming; note that **assistant WhatsApp message ID** is attached by the webhook layer (not inside this node).
 
-```typescript
-export interface ConversationMessage {
-	/** Message role */
-	role: "user" | "assistant" | "system";
+Canonical code:
+- `Memo_v2/src/graph/nodes/JoinNode.ts`
+- `Memo_v2/src/graph/nodes/ResponseFormatterNode.ts`
+- `Memo_v2/src/graph/nodes/ResponseWriterNode.ts`
+- `Memo_v2/src/graph/nodes/MemoryUpdateNode.ts`
 
-	/** Message content */
-	content: string;
+## HITL timeout (current behavior)
 
-	/** Unix timestamp (ms) */
-	timestamp: number;
+The system enforces a timeout for stale interrupts in `invokeMemoGraph()`.
 
-	/** WhatsApp message ID */
-	whatsappMessageId?: string;
+- Current value: `INTERRUPT_TIMEOUT_MS = 1 * 60 * 1000` (1 minute)
+- Source: `Memo_v2/src/graph/index.ts`
 
-	/** ID of message being replied to */
-	replyToMessageId?: string;
+If a user replies after the timeout window, the thread is cleaned up and the message is treated as a **fresh invocation**.
 
-	/** Estimated token count */
-	estimatedTokens: number;
-
-	/** Additional metadata */
-	metadata?: MessageMetadata;
-}
-
-export interface MessageMetadata {
-	/** Disambiguation context if this message triggered one */
-	disambiguationContext?: DisambiguationContext;
-
-	/** Recent tasks for reference */
-	recentTasks?: RecentTaskSnapshot[];
-
-	/** Image context if attached */
-	imageContext?: ImageContext;
-
-	/** Function call result (for assistant messages) */
-	functionResult?: any;
-}
-
-export interface RecentTaskSnapshot {
-	id: string;
-	text: string;
-	completed: boolean;
-	dueDate?: string;
-}
-
-export interface DisambiguationContext {
-	type: EntityType;
-	query: string;
-	candidates: DisambiguationCandidate[];
-	createdAt: number;
-	expiresAt: number;
-}
-```
-
----
-
-## Planner Output
-
-```typescript
-export interface PlannerOutput {
-	/** Type of intent detected */
-	intent_type: IntentType;
-
-	/** Confidence score (0.0 - 1.0) */
-	confidence: number;
-
-	/** Risk assessment */
-	risk_level: RiskLevel;
-
-	/** Whether explicit user approval is needed */
-	needs_approval: boolean;
-
-	/** Fields that need clarification */
-	missing_fields: string[];
-
-	/** Execution plan */
-	plan: PlanStep[];
-}
-
-export type IntentType =
-	| "operation" // Actions (create, update, delete, etc.)
-	| "conversation" // Pure questions, advice, brainstorming
-	| "meta"; // Questions about Memo itself
-
-export type RiskLevel = "low" | "medium" | "high";
-
-export interface PlanStep {
-	/** Unique step identifier */
-	id: string;
-
-	/** Target capability */
-	capability: CapabilityName;
-
-	/** Semantic action (not the function name) */
-	action: string;
-
-	/** Search/filter constraints (for finding entities) */
-	constraints: Record<string, any>;
-
-	/** Changes to apply (for mutations) */
-	changes: Record<string, any>;
-
-	/** Dependencies on other steps */
-	depends_on: string[];
-}
-
-export type CapabilityName =
-	| "calendar"
-	| "database"
-	| "gmail"
-	| "second-brain"
-	| "general"
-	| "meta";
-```
-
----
-
-## Disambiguation State
-
-```typescript
-export interface DisambiguationState {
-	/** Entity type being disambiguated */
-	type: EntityType;
-
-	/** Candidates to choose from */
-	candidates: DisambiguationCandidate[];
-
-	/** Which resolver step triggered this */
-	resolver_step_id: string;
-
-	/** User's selection (filled after interrupt() resumes) */
-	userSelection?: string;
-
-	/** Whether disambiguation has been resolved */
-	resolved: boolean;
-}
-
-export type EntityType =
-	| "calendar_event"
-	| "task"
-	| "list"
-	| "email"
-	| "contact";
-
-export interface DisambiguationCandidate {
-	/** Entity ID */
-	id: string;
-
-	/** Display text for user */
-	displayText: string;
-
-	/** Entity-specific data */
-	[key: string]: any;
-}
-```
-
----
-
-## Capability-Specific Execution Results
-
-> **IMPORTANT**: V1 services return snake_case fields (e.g., `due_date`, `reminder_recurrence`).
-> These types reflect the actual data structure returned by executors.
-
-```typescript
-/**
- * Database Task Result (from V1 TaskService)
- */
-export interface DatabaseTaskResult {
-	id: string;
-	text: string;
-	category?: string;
-	due_date?: string;                          // snake_case from V1
-	reminder?: string;                          // INTERVAL string
-	reminder_recurrence?: ReminderRecurrence;   // snake_case from V1
-	next_reminder_at?: string;                  // snake_case from V1
-	nudge_count?: number;
-	completed: boolean;
-	created_at?: string;                        // snake_case from V1
-}
-
-/**
- * Calendar Event Result (from CalendarServiceAdapter)
- */
-export interface CalendarEventResult {
-	id?: string;
-	summary: string;
-	start?: string;
-	end?: string;
-	htmlLink?: string;
-	days?: string[];              // For recurring events
-	startTime?: string;
-	endTime?: string;
-	recurrence?: string;
-	isRecurringSeries?: boolean;  // True when operating on entire series
-	deleted?: number;             // For bulk operations
-	updated?: number;
-	events?: CalendarEventResult[];
-}
-
-/**
- * Gmail Result (from GmailServiceAdapter)
- */
-export interface GmailResult {
-	messageId?: string;
-	threadId?: string;
-	from?: string;
-	to?: string[];
-	subject?: string;
-	body?: string;
-	date?: string;
-	preview?: boolean;
-}
-
-/**
- * Second Brain Result (from SecondBrainServiceAdapter)
- */
-export interface SecondBrainResult {
-	id?: string;
-	text: string;
-	metadata?: Record<string, any>;
-	similarity?: number;
-}
-
-/**
- * Reminder Recurrence (matches V1 TaskService.ReminderRecurrence)
- */
-export interface ReminderRecurrence {
-	type: "daily" | "weekly" | "monthly" | "nudge";
-	time?: string;        // "HH:mm" format
-	days?: number[];      // For weekly: [0-6]
-	dayOfMonth?: number;  // For monthly: 1-31
-	interval?: string;    // For nudge: "10 minutes"
-	until?: string;       // Optional end date
-	timezone?: string;
-}
-```
-
----
-
-## Resolver & Execution Results
-
-```typescript
-export interface ResolverResult {
-	/** Step ID this result is for */
-	stepId: string;
-
-	/** Result type */
-	type: "execute" | "clarify";
-
-	/** Tool call arguments (if type = 'execute') */
-	args?: Record<string, any>;
-
-	/** Function name to call */
-	functionName?: string;
-
-	/** Clarification question (if type = 'clarify') */
-	question?: string;
-
-	/** Clarification options (if type = 'clarify') */
-	options?: string[];
-}
-
-export interface ExecutionResult {
-	/** Step ID this result is for */
-	stepId: string;
-
-	/** Whether execution succeeded */
-	success: boolean;
-
-	/** Result data */
-	data?: any;
-
-	/** Error message if failed */
-	error?: string;
-
-	/** Execution duration in milliseconds */
-	durationMs: number;
-
-	/** Function that was called */
-	functionName: string;
-
-	/** Arguments that were passed */
-	args: Record<string, any>;
-}
-```
-
----
-
-## Entity References
-
-```typescript
-/**
- * Running context for multi-step flows
- * Allows later steps to reference results from earlier steps
- */
-export interface EntityReferences {
-	/** Calendar events from search */
-	calendar_events?: CalendarEventRef[];
-
-	/** Selected event ID (after disambiguation or explicit selection) */
-	selected_event_id?: string;
-
-	/** Tasks from search */
-	tasks?: TaskRef[];
-
-	/** Selected task ID */
-	selected_task_id?: string;
-
-	/** Lists from search */
-	lists?: ListRef[];
-
-	/** Selected list ID */
-	selected_list_id?: string;
-
-	/** Contacts from lookup */
-	contacts?: ContactRef[];
-
-	/** Selected contact */
-	selected_contact_id?: string;
-
-	/** Emails from search */
-	emails?: EmailRef[];
-
-	/** Selected email ID */
-	selected_email_id?: string;
-}
-
-export interface CalendarEventRef {
-	id: string;
-	summary: string;
-	start: string;
-	end: string;
-	isRecurring: boolean;
-	recurringEventId?: string;
-}
-
-export interface TaskRef {
-	id: string;
-	text: string;
-	completed: boolean;
-	dueDate?: string;
-	hasReminder: boolean;
-}
-
-export interface ListRef {
-	id: string;
-	listName: string;
-	isChecklist: boolean;
-	itemCount: number;
-}
-
-export interface ContactRef {
-	id: string;
-	name: string;
-	email?: string;
-	phone?: string;
-}
-
-export interface EmailRef {
-	id: string;
-	subject: string;
-	from: string;
-	date: string;
-	snippet: string;
-}
-```
-
----
-
-## Response Types
-
-```typescript
-export interface FormattedResponse {
-	/** Which capability produced this response */
-	agent: CapabilityName;
-
-	/** What operation was performed */
-	operation: string;
-
-	/** Entity type involved */
-	entityType: string;
-
-	/** Raw data from execution */
-	rawData: any;
-
-	/** Formatted data (human-readable dates, etc.) */
-	formattedData: any;
-
-	/** Response context for formatting decisions (capability-specific) */
-	context: ResponseContext;
-
-	/** Failed operations for contextual error responses */
-	failedOperations?: FailedOperationContext[];
-}
-
-/**
- * Main ResponseContext - holds capability-specific nested contexts
- * Only ONE capability context will be populated based on the source
- */
-export interface ResponseContext {
-	/** Capability indicator - tells which sub-context is populated */
-	capability: "database" | "calendar" | "gmail" | "second-brain" | "general";
-
-	/** Database-specific context (populated when capability='database') */
-	database?: DatabaseResponseContext;
-
-	/** Calendar-specific context (populated when capability='calendar') */
-	calendar?: CalendarResponseContext;
-
-	/** Gmail-specific context (populated when capability='gmail') */
-	gmail?: GmailResponseContext;
-
-	/** Second Brain-specific context (populated when capability='second-brain') */
-	secondBrain?: SecondBrainResponseContext;
-}
-
-/**
- * Database Response Context
- * Flags specific to task/reminder/list operations
- * 
- * IMPORTANT: V1 TaskService returns snake_case fields (due_date, reminder_recurrence)
- * 
- * For LISTING operations (action === "list tasks"):
- * - Only isListing and isEmpty are set at context level
- * - Per-item flags are on each item's _itemContext
- * - Data includes _categorized buckets
- * 
- * For SINGLE operations (create/update/delete):
- * - All flags are aggregated from items
- * - Per-item _itemContext is also attached
- */
-export interface DatabaseResponseContext {
-	isReminder: boolean;        // Task has due_date (aggregated, not set for listings)
-	isTask: boolean;            // Task has NO due_date (aggregated, not set for listings)
-	isNudge: boolean;           // Has nudge-type recurrence (aggregated, not set for listings)
-	isRecurring: boolean;       // Has any reminder_recurrence (aggregated, not set for listings)
-	hasDueDate: boolean;        // Has due_date field (aggregated, not set for listings)
-	isToday: boolean;           // due_date is today (aggregated, not set for listings)
-	isTomorrowOrLater: boolean; // due_date is tomorrow or later (aggregated, not set for listings)
-	isOverdue: boolean;         // due_date is in the past (aggregated, not set for listings)
-	isListing: boolean;         // action === "list tasks" (from PlannerNode)
-	isEmpty: boolean;           // No results returned
-}
-
-/**
- * Calendar Response Context
- * Flags specific to calendar event operations
- * 
- * Per-item _itemContext is attached to each event with:
- * { isRecurring, isRecurringSeries, isToday, isTomorrowOrLater, isPast }
- */
-export interface CalendarResponseContext {
-	isRecurring: boolean;       // Event has recurrence pattern
-	isRecurringSeries: boolean; // Operating on entire recurring series
-	isToday: boolean;           // Event start is today
-	isTomorrowOrLater: boolean; // Event start is tomorrow or later
-	isListing: boolean;         // action === "list events" (from PlannerNode)
-	isBulkOperation: boolean;   // action contains "by window"
-	isEmpty: boolean;           // No events returned
-}
-
-/**
- * Gmail Response Context
- * Flags specific to email operations
- * 
- * Per-item _itemContext is attached to each email with:
- * { isPreview }
- */
-export interface GmailResponseContext {
-	isPreview: boolean;         // sendPreview operation
-	isSent: boolean;            // sendConfirm / "send confirm" operation
-	isReply: boolean;           // reply operation
-	isListing: boolean;         // action === "list emails" (from PlannerNode)
-	isEmpty: boolean;           // No emails returned
-}
-
-/**
- * Second Brain Response Context
- * Flags specific to memory operations
- */
-export interface SecondBrainResponseContext {
-	isStored: boolean;          // storeMemory operation
-	isSearch: boolean;          // searchMemory operation
-	isEmpty: boolean;           // No results returned
-}
-
-/**
- * Context for failed operations (for contextual error responses)
- */
-export interface FailedOperationContext {
-	stepId: string;
-	capability: string;         // "database", "calendar", etc.
-	operation: string;          // "delete task", "update event", etc.
-	searchedFor?: string;       // What was being looked for
-	userRequest: string;        // Original user message
-	errorMessage: string;       // The actual error
-}
-```
-
----
-
-## Control & Metadata Types
-
-> **Note**: `PauseReason` has been **REMOVED**. HITL pause/resume is now handled by
-> LangGraph's native `interrupt()` mechanism. See `InterruptPayload` below.
-
-```typescript
-/**
- * Payload passed to interrupt() when graph needs user input
- * LangGraph handles the pause/resume automatically
- */
-export interface InterruptPayload {
-	/** Type of interrupt */
-	type: InterruptType;
-
-	/** Question to ask user */
-	question: string;
-
-	/** Options for user to choose from (optional) */
-	options?: string[];
-
-	/** Additional metadata */
-	metadata?: {
-		stepId?: string;
-		entityType?: EntityType;
-		candidates?: DisambiguationCandidate[];
-	};
-}
-
-export type InterruptType =
-	| "disambiguation" // Multiple entity matches
-	| "clarification" // Need more info
-	| "confirmation" // Confirm destructive action
-	| "approval"; // Explicit approval needed
-
-/**
- * Execution metadata tracked across all nodes
- */
-export interface ExecutionMetadata {
-	/** When graph started */
-	startTime: number;
-
-	/** Per-node execution tracking */
-	nodeExecutions: NodeExecution[];
-
-	/** Total LLM calls made */
-	llmCalls: number;
-
-	/** Total tokens used */
-	totalTokens: number;
-
-	/** Total cost in USD */
-	totalCost: number;
-}
-
-export interface NodeExecution {
-	node: string;
-	startTime: number;
-	endTime: number;
-	durationMs: number;
-}
-
-export interface ErrorInfo {
-	/** Error type */
-	type: ErrorType;
-
-	/** Error message */
-	message: string;
-
-	/** Stack trace (dev only) */
-	stack?: string;
-
-	/** Which node failed */
-	failedNode?: string;
-
-	/** Which step failed (if resolver/executor) */
-	failedStep?: string;
-}
-
-export type ErrorType =
-	| "validation" // Input validation failed
-	| "api_error" // External API error
-	| "rate_limit" // Rate limited
-	| "auth_error" // Authentication failed
-	| "not_found" // Entity not found
-	| "permission" // Permission denied
-	| "internal"; // Internal error
-```
-
----
-
-## LangGraph Channel Configuration
-
-```typescript
-import { Annotation } from "@langchain/langgraph";
-
-/**
- * LangGraph state channels configuration
- */
-export const memoStateChannels = Annotation.Root({
-	// Scalar values (last-write-wins)
-	user: Annotation<UserContext>,
-	input: Annotation<InputContext>,
-	now: Annotation<TimeContext>,
-	planner_output: Annotation<PlannerOutput | undefined>,
-	disambiguation: Annotation<DisambiguationState | undefined>,
-	refs: Annotation<EntityReferences>,
-	formatted_response: Annotation<FormattedResponse | undefined>,
-	final_response: Annotation<string | undefined>,
-	// NOTE: should_pause and pause_reason REMOVED - using interrupt() instead
-	error: Annotation<ErrorInfo | undefined>,
-	long_term_summary: Annotation<string | undefined>,
-
-	// Array with sliding window behavior
-	recent_messages: Annotation<ConversationMessage[]>({
-		reducer: (current, update) => {
-			const merged = [...current, ...update];
-			// Keep only last 10 messages, max 500 tokens
-			return enforceMemoryLimits(merged, 10, 500);
-		},
-		default: () => [],
-	}),
-
-	// Record with merge behavior
-	resolver_results: Annotation<Record<string, ResolverResult>>({
-		reducer: (current, update) => ({ ...current, ...update }),
-		default: () => ({}),
-	}),
-
-	execution_results: Annotation<Record<string, ExecutionResult>>({
-		reducer: (current, update) => ({ ...current, ...update }),
-		default: () => ({}),
-	}),
-
-	// Metadata with accumulation behavior
-	metadata: Annotation<ExecutionMetadata>({
-		reducer: (current, update) => ({
-			...current,
-			...update,
-			nodeExecutions: [
-				...current.nodeExecutions,
-				...(update.nodeExecutions || []),
-			],
-			llmCalls: current.llmCalls + (update.llmCalls || 0),
-			totalTokens: current.totalTokens + (update.totalTokens || 0),
-			totalCost: current.totalCost + (update.totalCost || 0),
-		}),
-		default: () => ({
-			startTime: Date.now(),
-			nodeExecutions: [],
-			llmCalls: 0,
-			totalTokens: 0,
-			totalCost: 0,
-		}),
-	}),
-});
-```
-
----
-
-## Constants
-
-```typescript
-/** Maximum messages in recent_messages */
-export const MAX_RECENT_MESSAGES = 10;
-
-/** Maximum tokens in recent_messages */
-export const MAX_RECENT_TOKENS = 500;
-
-/** Maximum recent tasks to store */
-export const MAX_RECENT_TASKS = 4;
-
-/** Disambiguation expiry time (5 minutes) */
-export const DISAMBIGUATION_EXPIRY_MS = 5 * 60 * 1000;
-
-/** Conversation max age (12 hours) */
-export const CONVERSATION_MAX_AGE_MS = 12 * 60 * 60 * 1000;
-
-/** Confidence threshold for HITL trigger */
-export const CONFIDENCE_THRESHOLD = 0.7;
-
-/** Maximum parallel resolver executions */
-export const MAX_PARALLEL_RESOLVERS = 3;
-```
-
----
-
-_See BLUEPRINT.md for how these types are used in the flow._

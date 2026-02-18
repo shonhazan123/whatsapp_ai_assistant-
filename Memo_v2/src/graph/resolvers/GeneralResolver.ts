@@ -7,7 +7,10 @@
 
 import type { Capability, PlanStep } from '../../types/index.js';
 import type { MemoState } from '../state/MemoState.js';
-import { LLMResolver, TemplateResolver, type ResolverOutput } from './BaseResolver.js';
+import { getNodeModel } from '../../config/llm-config.js';
+import { getMetaInfo } from '../../config/meta-info.js';
+import { getPlanTiers } from '../../config/plan-tiers.js';
+import { LLMResolver, type ResolverOutput } from './BaseResolver.js';
 
 // ============================================================================
 // GENERAL RESOLVER (LLM-based)
@@ -112,170 +115,162 @@ RULES:
 }
 
 // ============================================================================
-// META RESOLVER (Template-based, no LLM)
+// META RESOLVER (LLM-based — single call with full meta scope)
 // ============================================================================
 
+const META_SYSTEM_PROMPT = `You are Donna (in English) or דונה (in Hebrew). You are a female AI personal secretary; when replying in Hebrew, use feminine language (e.g. "אני דונה", "אני יכולה", "בואי", "אתה" when addressing the user is fine; refer to yourself in feminine forms).
+
+Your job is to answer questions about yourself, your capabilities, and the user's account/plan. You will receive agent info, plan definitions, user state, and the user's question.
+
+RULES:
+- Answer ONLY from the provided data. Never guess or invent information.
+- If something is missing or "Not configured", say so honestly.
+- Match the user's language: English → friendly female voice; Hebrew → דונה, feminine Hebrew.
+- The response is sent over WhatsApp as plain text: no markdown rendering. Do NOT use markdown link syntax like [text](url) — WhatsApp shows brackets and parentheses literally, so it looks broken. To share a link, write it once on its own line or after a short label, e.g. "האתר: https://donnai.io" or "Website: https://donnai.io". Never write the URL twice (no "👉 [https://...](https://...)").
+- Use *asterisks* for bold only if you want emphasis; otherwise keep links and text clean. Be friendly and organized with short lines for readability on a phone.
+- Never expose internal details (file names, code paths, env vars).
+
+OUTPUT FORMAT (MUST BE VALID JSON):
+{
+  "response": "Your full WhatsApp message — already formatted by you (headings, bullets, line breaks as needed)",
+  "language": "he" | "en"
+}`;
+
 /**
- * MetaResolver - Capability descriptions without LLM
- * 
- * Actions: describe_capabilities, help, status
+ * MetaResolver — LLM-based resolver that receives the full meta scope
+ * (agent identity, plan tiers, user state) and produces the final user message.
+ *
+ * Actions: describe_capabilities, help, status, website, about_agent,
+ *          plan_info, account_status, what_can_you_do
  */
-export class MetaResolver extends TemplateResolver {
+export class MetaResolver extends LLMResolver {
   readonly name = 'meta_resolver';
   readonly capability: Capability = 'meta';
-  readonly actions = ['describe_capabilities', 'help', 'status', 'what_can_you_do'];
-  
+  readonly actions = [
+    'describe_capabilities', 'what_can_you_do', 'help', 'status',
+    'website', 'about_agent', 'plan_info', 'account_status',
+  ];
+
   getSystemPrompt(): string {
-    // Not used - template-based
-    return '';
+    return META_SYSTEM_PROMPT;
   }
-  
+
   getSchemaSlice(): object {
-    // Not used - template-based
-    return {};
-  }
-  
-  async resolve(step: PlanStep, state: MemoState): Promise<ResolverOutput> {
-    const { action } = step;
-    const response = this.generateFromTemplate(step, state);
-    
     return {
-      stepId: step.id,
-      type: 'execute',
-      args: {
-        response,
-        language: state.user.language,
-        isTemplate: true,
+      name: 'metaResponse',
+      parameters: {
+        type: 'object',
+        properties: {
+          response: { type: 'string', description: 'Final WhatsApp-formatted message' },
+          language: { type: 'string', enum: ['he', 'en'] },
+        },
+        required: ['response', 'language'],
       },
     };
   }
-  
-  protected generateFromTemplate(step: PlanStep, state: MemoState): string {
-    const { action } = step;
-    const isHebrew = state.user.language === 'he';
-    const capabilities = state.user.capabilities;
-    
-    switch (action) {
-      case 'describe_capabilities':
-      case 'what_can_you_do':
-        return this.getCapabilitiesDescription(capabilities, isHebrew);
-        
-      case 'help':
-        return this.getHelpMessage(isHebrew);
-        
-      case 'status':
-        return this.getStatusMessage(state, isHebrew);
-        
-      default:
-        return this.getDefaultResponse(isHebrew);
+
+  async resolve(step: PlanStep, state: MemoState): Promise<ResolverOutput> {
+    try {
+      const userMessage = this.buildMetaUserMessage(step, state);
+      const modelConfig = getNodeModel('meta', true);
+      const requestId = (state.input as any).requestId;
+
+      const { callLLM: callLLMService } = await import('../../services/llm/LLMService.js');
+
+      const llmResponse = await callLLMService({
+        messages: [
+          { role: 'system', content: this.getSystemPrompt() },
+          { role: 'user', content: userMessage },
+        ],
+        model: modelConfig.model,
+        temperature: 0.3,
+        maxTokens: 1000,
+        functions: [this.getSchemaSlice() as any],
+        functionCall: { name: 'metaResponse' },
+      }, requestId);
+
+      let parsed: { response: string; language: string };
+      if (llmResponse.functionCall) {
+        parsed = JSON.parse(llmResponse.functionCall.arguments);
+      } else if (llmResponse.toolCalls && llmResponse.toolCalls.length > 0) {
+        parsed = JSON.parse(llmResponse.toolCalls[0].function.arguments);
+      } else {
+        throw new Error('No function call in meta LLM response');
+      }
+
+      return {
+        stepId: step.id,
+        type: 'execute',
+        args: {
+          response: parsed.response,
+          language: parsed.language || state.user.language,
+          isMetaFinal: true,
+        },
+      };
+    } catch (error: any) {
+      console.error(`[MetaResolver] LLM call failed, using fallback:`, error);
+      const fallback = state.user.language === 'he'
+        ? 'לא הצלחתי לעבד את הבקשה. נסה שוב בבקשה.'
+        : "I couldn't process your request. Please try again.";
+      return {
+        stepId: step.id,
+        type: 'execute',
+        args: {
+          response: fallback,
+          language: state.user.language,
+          isMetaFinal: true,
+        },
+      };
     }
   }
-  
-  private getCapabilitiesDescription(
-    capabilities: { calendar: boolean; gmail: boolean; database: boolean; secondBrain: boolean },
-    isHebrew: boolean
-  ): string {
-    if (isHebrew) {
-      const caps: string[] = ['אני יכול לעזור לך עם:'];
-      
-      if (capabilities.calendar) {
-        caps.push('📅 *לוח שנה* - יצירה, עדכון ומחיקה של אירועים');
-      }
-      if (capabilities.database) {
-        caps.push('✅ *משימות* - ניהול משימות, תזכורות ורשימות');
-      }
-      if (capabilities.gmail) {
-        caps.push('📧 *אימייל* - קריאה, שליחה ותשובה לאימיילים');
-      }
-      if (capabilities.secondBrain) {
-        caps.push('🧠 *זיכרון* - שמירה וחיפוש מידע אישי');
-      }
-      
-      caps.push('💬 *שיחה* - שאל אותי כל דבר!');
-      
-      return caps.join('\n');
-    }
-    
-    const caps: string[] = ['I can help you with:'];
-    
-    if (capabilities.calendar) {
-      caps.push('📅 *Calendar* - Create, update, and delete events');
-    }
-    if (capabilities.database) {
-      caps.push('✅ *Tasks* - Manage tasks, reminders, and lists');
-    }
-    if (capabilities.gmail) {
-      caps.push('📧 *Email* - Read, send, and reply to emails');
-    }
-    if (capabilities.secondBrain) {
-      caps.push('🧠 *Memory* - Store and search personal information');
-    }
-    
-    caps.push('💬 *Chat* - Ask me anything!');
-    
-    return caps.join('\n');
-  }
-  
-  private getHelpMessage(isHebrew: boolean): string {
-    if (isHebrew) {
-      return `🆘 *עזרה*
 
-*דוגמאות לפקודות:*
-• "צור אירוע מחר בשעה 10"
-• "הוסף משימה: להתקשר לרופא"
-• "מה יש לי היום?"
-• "תזכיר לי לקנות חלב בעוד שעה"
-• "שמור: מספר הטלפון של יוסי הוא 054-1234567"
+  private buildMetaUserMessage(step: PlanStep, state: MemoState): string {
+    const metaInfo = getMetaInfo();
+    const allTiers = getPlanTiers();
+    const userTier = allTiers[state.user.planTier];
 
-*טיפים:*
-• דבר אליי בעברית או באנגלית
-• אני מבין שפה טבעית
-• אפשר לשאול שאלות המשך`;
-    }
-    
-    return `🆘 *Help*
-
-*Example commands:*
-• "Create an event tomorrow at 10am"
-• "Add task: Call the doctor"
-• "What do I have today?"
-• "Remind me to buy milk in 1 hour"
-• "Save: John's phone number is 555-1234"
-
-*Tips:*
-• Talk to me in English or Hebrew
-• I understand natural language
-• You can ask follow-up questions`;
-  }
-  
-  private getStatusMessage(state: MemoState, isHebrew: boolean): string {
     const caps = state.user.capabilities;
-    const connected: string[] = [];
-    
-    if (caps.calendar) connected.push(isHebrew ? 'לוח שנה' : 'Calendar');
-    if (caps.gmail) connected.push(isHebrew ? 'אימייל' : 'Email');
-    if (caps.database) connected.push(isHebrew ? 'משימות' : 'Tasks');
-    if (caps.secondBrain) connected.push(isHebrew ? 'זיכרון' : 'Memory');
-    
-    if (isHebrew) {
-      return `📊 *סטטוס*
+    const enabledServices: string[] = [];
+    if (caps.calendar) enabledServices.push('Calendar');
+    if (caps.gmail) enabledServices.push('Gmail');
+    if (caps.database) enabledServices.push('Tasks & Reminders');
+    if (caps.secondBrain) enabledServices.push('Second Brain (Memory)');
 
-*שירותים פעילים:* ${connected.join(', ') || 'אין'}
-*אזור זמן:* ${state.user.timezone}
-*שפה:* עברית`;
+    const mi = metaInfo as { agentNameHebrew?: string; shortDescriptionHebrew?: string };
+    let msg = `## Agent Information
+- Name (EN): ${metaInfo.agentName}${mi.agentNameHebrew ? ` | Name (HE): ${mi.agentNameHebrew}` : ''}
+- Description (EN): ${metaInfo.shortDescription}${mi.shortDescriptionHebrew ? `\n- Description (HE): ${mi.shortDescriptionHebrew}` : ''}
+- Website URL: ${metaInfo.websiteUrl}`;
+
+    if (metaInfo.supportUrl) msg += `\n- Support URL: ${metaInfo.supportUrl}`;
+    if (metaInfo.helpLinks.length > 0) {
+      msg += `\n- Help Links:`;
+      for (const link of metaInfo.helpLinks) {
+        msg += `\n  • ${link.label}: ${link.url}`;
+      }
     }
-    
-    return `📊 *Status*
 
-*Active services:* ${connected.join(', ') || 'None'}
-*Timezone:* ${state.user.timezone}
-*Language:* English`;
-  }
-  
-  private getDefaultResponse(isHebrew: boolean): string {
-    return isHebrew
-      ? 'איך אפשר לעזור?'
-      : 'How can I help?';
+    msg += `\n\n## Subscription Plans (source: https://donnai.io/pricing)`;
+    for (const [tierKey, tier] of Object.entries(allTiers)) {
+      const th = tier as { nameHebrew?: string; period?: string; featuresHebrew?: string[] };
+      msg += `\n### ${tier.name}${th.nameHebrew ? ` / ${th.nameHebrew}` : ''} (${tierKey})`;
+      msg += `\n- Price: ${tier.price} ${tier.currency}${th.period ? `/${th.period}` : ''}`;
+      msg += `\n- Features (EN): ${tier.features.join(', ')}`;
+      if (th.featuresHebrew && th.featuresHebrew.length) {
+        msg += `\n- Features (HE): ${th.featuresHebrew.join(', ')}`;
+      }
+    }
+
+    msg += `\n\n## User Account`;
+    msg += `\n- Current plan: ${state.user.planTier}${userTier ? ` (${userTier.name})` : ''}`;
+    msg += `\n- Google Connected: ${state.user.googleConnected ? 'Yes' : 'No'}`;
+    msg += `\n- Enabled capabilities: ${enabledServices.length > 0 ? enabledServices.join(', ') : 'None'}`;
+    msg += `\n- Timezone: ${state.user.timezone}`;
+    msg += `\n- Language: ${state.user.language === 'he' ? 'Hebrew' : 'English'}`;
+
+    msg += `\n\n## User's Question\n${state.input.enhancedMessage || state.input.message}`;
+
+    return msg;
   }
 }
 

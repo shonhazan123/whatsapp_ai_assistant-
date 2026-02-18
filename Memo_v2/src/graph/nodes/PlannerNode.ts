@@ -520,6 +520,20 @@ export class PlannerNode extends LLMNode {
       // Validate plan steps
       normalized.plan = this.validatePlanSteps(normalized.plan, state);
 
+      // Safeguard: if LLM returns meta intent with empty plan, inject one step
+      if (normalized.intentType === 'meta' && normalized.plan.length === 0) {
+        const msg = state.input.enhancedMessage || state.input.message;
+        normalized.plan = [{
+          id: 'A',
+          capability: 'meta',
+          action: this.inferMetaAction(msg),
+          constraints: { rawMessage: msg },
+          changes: {},
+          dependsOn: [],
+        }];
+        console.log(`[PlannerNode] Injected meta step (LLM returned empty plan): action=${normalized.plan[0].action}`);
+      }
+
       console.log(`[PlannerNode] Intent: ${normalized.intentType}, Confidence: ${normalized.confidence}, Steps: ${normalized.plan.length}, Risk: ${normalized.riskLevel}`);
 
       return normalized as PlannerOutput;
@@ -624,7 +638,7 @@ export class PlannerNode extends LLMNode {
    * Create fallback output when LLM fails
    */
   private createFallbackOutput(message: string, state: MemoState): PlannerOutput {
-    // Meta intent
+    // Meta intent — always emit one step so resolver_router can dispatch
     if (this.matchesMetaIntent(message)) {
       return {
         intentType: 'meta',
@@ -632,7 +646,14 @@ export class PlannerNode extends LLMNode {
         riskLevel: 'low',
         needsApproval: false,
         missingFields: [],
-        plan: [],
+        plan: [{
+          id: 'A',
+          capability: 'meta' as Capability,
+          action: this.inferMetaAction(message),
+          constraints: { rawMessage: message },
+          changes: {},
+          dependsOn: [],
+        }],
       };
     }
 
@@ -741,7 +762,18 @@ export class PlannerNode extends LLMNode {
 
   // Pattern matchers
   private matchesMetaIntent(message: string): boolean {
-    return /what can you do|מה אתה יכול|help|עזרה|capabilities|יכולות/i.test(message);
+    return /what can you do|מה אתה יכול|help|עזרה|capabilities|יכולות|who are you|מי אתה|what are you|what is the website|מה האתר|מה הכתובת|my plan|what plan|תוכנית|מחיר|plan price|am i connected|google connected|מחובר לגוגל|status|סטטוס/i.test(message);
+  }
+
+  private inferMetaAction(message: string): string {
+    const m = message.toLowerCase();
+    if (/website|אתר|כתובת|url|link/i.test(m)) return 'website';
+    if (/who are you|מי אתה|what are you|מה אתה(?! יכול)/i.test(m)) return 'about_agent';
+    if (/my plan|what plan|plan price|what does.*include|תוכנית|מחיר/i.test(m)) return 'plan_info';
+    if (/am i connected|google connected|מחובר/i.test(m)) return 'account_status';
+    if (/status|סטטוס/i.test(m)) return 'status';
+    if (/help|עזרה/i.test(m)) return 'help';
+    return 'describe_capabilities';
   }
 
   private matchesGreeting(message: string): boolean {
