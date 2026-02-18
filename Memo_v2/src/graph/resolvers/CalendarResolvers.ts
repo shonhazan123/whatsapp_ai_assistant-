@@ -240,6 +240,7 @@ Analyze the user's intent to determine the correct operation:
 - User wants to CREATE new event → "create"
 - User mentions MULTIPLE separate events → "createMultiple"
 - User wants WEEKLY/MONTHLY recurring → "createRecurring"
+- User wants MULTIPLE DIFFERENT recurring events (same days, different titles/times) → "createMultipleRecurring"
 - User wants to CHANGE/MOVE a SINGLE event → "update"
 - User wants to CHANGE/MOVE ALL events in a time window → "updateByWindow"
 - User wants to DELETE/CANCEL a SINGLE event → "delete"
@@ -345,6 +346,15 @@ User: "create meetings on Monday, Tuesday, and Wednesday at 2pm"
 Example 5 - Weekly recurring:
 User: "work every Sunday, Tuesday, Wednesday 9-18"
 → { "operation": "createRecurring", "summary": "Work", "startTime": "09:00", "endTime": "18:00", "days": ["Sunday", "Tuesday", "Wednesday"], "language": "en" }
+
+Example 5b - Multiple different recurring events (same days, different times/titles):
+User: "תכניס לי היום עבודה לוד קבוע מ 08:00 עד 10:00 ועבודה בית שמש קבוע מ 17:00 - 21:00"
+Current time: Wednesday, 19/02/2025 10:00
+→ { "operation": "createMultipleRecurring", "days": ["Wednesday"], "events": [
+    { "summary": "עבודה לוד", "location": "לוד", "startTime": "08:00", "endTime": "10:00" },
+    { "summary": "עבודה בית שמש", "location": "בית שמש", "startTime": "17:00", "endTime": "21:00" }
+  ], "language": "he" }
+Note: Use createMultipleRecurring when user wants MULTIPLE DIFFERENT recurring events sharing the same day(s). Each event has its own summary/location/times. The shared "days" array applies to all events unless an individual event overrides it.
 
 Example 6 - Update event:
 User: "move tomorrow's meeting with Dana to 6:30pm"

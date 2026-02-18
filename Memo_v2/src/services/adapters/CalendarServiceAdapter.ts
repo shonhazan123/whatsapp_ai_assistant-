@@ -116,6 +116,9 @@ export class CalendarServiceAdapter {
         case 'createRecurring':
           return await this.createRecurringEvent(calendarService, context, args);
 
+        case 'createMultipleRecurring':
+          return await this.createMultipleRecurringEvents(calendarService, context, args);
+
         case 'get':
           return await this.getEvent(calendarService, context, args);
 
@@ -244,6 +247,61 @@ export class CalendarServiceAdapter {
         recurrence: recurrence,
       },
       error: result.error,
+    };
+  }
+
+  private async createMultipleRecurringEvents(calendarService: any, context: RequestUserContext, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
+    const events = args.events || [];
+    if (events.length === 0) {
+      return { success: false, error: 'No events provided for createMultipleRecurring' };
+    }
+
+    const sharedDays = args.days || [];
+    const sharedUntil = args.until;
+
+    console.log(`[CalendarServiceAdapter] createMultipleRecurring: Creating ${events.length} recurring events on days [${sharedDays.join(', ')}]`);
+
+    const created: any[] = [];
+    const errors: Array<{ summary: string; error: string }> = [];
+
+    for (const event of events) {
+      const singleArgs: CalendarOperationArgs = {
+        operation: 'createRecurring',
+        summary: event.summary || '',
+        startTime: event.startTime || event.start || '',
+        endTime: event.endTime || event.end || '',
+        days: event.days || sharedDays,
+        until: event.until || sharedUntil,
+        description: event.description || args.description,
+        location: event.location || args.location,
+        reminderMinutesBefore: event.reminderMinutesBefore ?? args.reminderMinutesBefore,
+        language: args.language,
+      };
+
+      const result = await this.createRecurringEvent(calendarService, context, singleArgs);
+
+      if (result.success) {
+        created.push({
+          summary: singleArgs.summary,
+          ...result.data,
+        });
+      } else {
+        errors.push({ summary: singleArgs.summary || 'Untitled', error: result.error || 'Unknown error' });
+      }
+    }
+
+    console.log(`[CalendarServiceAdapter] createMultipleRecurring: Created ${created.length}, errors: ${errors.length}`);
+
+    return {
+      success: created.length > 0,
+      data: {
+        created,
+        days: sharedDays,
+        total: events.length,
+        successCount: created.length,
+        errors: errors.length > 0 ? errors : undefined,
+      },
+      error: errors.length > 0 ? `Failed to create ${errors.length} of ${events.length} recurring events` : undefined,
     };
   }
 

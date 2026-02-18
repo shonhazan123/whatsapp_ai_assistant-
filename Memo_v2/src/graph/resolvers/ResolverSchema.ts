@@ -121,11 +121,14 @@ export const CALENDAR_MUTATE_SCHEMA: ResolverSchema = {
   capability: 'calendar',
   summary: 'Create, update, and delete calendar events. Handles single events, multiple events, recurring events, and event modifications.',
   actionHints: [
+    'calendar_operation',  // Generic - LLM determines specific operation
     'create_event',
-    'create_multiple_events',
-    'create_recurring',
     'update_event',
     'delete_event',
+    'create_recurring',
+    'create_multiple_events',
+    'create_multiple_recurring',
+    'truncate_recurring',
     'delete_events_by_window',
     'update_events_by_window',
   ],
@@ -163,8 +166,7 @@ export const CALENDAR_MUTATE_SCHEMA: ResolverSchema = {
       'תפנה את כל',
       'הזז את כל',
       'שנה את כל האירועים',
-      'מחק את כל האירועים',
-      'תמחק את כל',
+      'תמחק את כל האירועים',
     ],
     english: [
       'add to calendar',
