@@ -1,0 +1,36 @@
+---
+description: "Memo_v2 graph I/O contract: executorArgs vs resolverResults, HITL routing, adapters."
+globs:
+  - "Memo_v2/src/graph/**/*.ts"
+  - "Memo_v2/src/services/adapters/**/*.ts"
+  - "Memo_v2/src/services/resolution/**/*.ts"
+alwaysApply: false
+---
+
+## State contract (single source of truth)
+
+- Runtime state is defined in `Memo_v2/src/graph/state/MemoState.ts`.
+- Shared I/O types are in `Memo_v2/src/types/index.ts`.
+- If you add a field to state or change a type, update:
+  - `Memo_v2/docs/STATE_SCHEMA.md`
+  - `Memo_v2/docs/SYSTEM_DIAGRAM.md` (if flow changed)
+
+## Resolver → entity resolution → executor contract
+
+- Resolvers produce **semantic args** into `state.resolverResults`.
+- `EntityResolutionNode` is responsible for producing **ID-resolved args** into `state.executorArgs`.
+- `ExecutorNode` must prefer `executorArgs` over `resolverResults` when both exist.
+
+## HITL contract
+
+- Use LangGraph `interrupt()` only through:
+  - `HITLGateNode` (Planner HITL + entity disambiguation HITL)
+- Disambiguation HITL must flow:
+  - Entity resolver returns `type:'disambiguation'`
+  - `EntityResolutionNode` sets `needsHITL + hitlReason='disambiguation' + disambiguation payload`
+  - Graph routes to HITL
+  - Resume writes `disambiguation.userSelection`
+  - Entity resolver `applySelection(...)` produces resolved IDs/args
+
+See: `Memo_v2/docs/PLANNER_AND_HITL_FLOW.md`.
+

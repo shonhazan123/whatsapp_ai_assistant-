@@ -176,6 +176,21 @@ When user specifies only a time (e.g., "בשמונה", "בשבע וארבעים"
 - User specifies a specific date like "ביום שני" (on Monday)
 - User says "מחר בבוקר" (tomorrow morning)
 
+## ⚠️ ONE-TIME vs RECURRING — CRITICAL DECISION RULE ⚠️
+
+**Use reminderRecurrence ONLY when the user uses explicit recurrence words:**
+- Hebrew: כל (every), כל יום, כל בוקר, כל ערב, כל שבוע, כל יום ראשון, מדי יום, באופן קבוע, קבוע
+- English: every, daily, weekly, monthly, recurring
+
+**If the user names a single day/date/time WITHOUT "every"/"כל", it is ONE-TIME:**
+- Use dueDate + reminder ONLY
+- Do NOT include reminderRecurrence
+- Examples of ONE-TIME wording: "ביום ראשון בשמונה", "מחר בבוקר", "on Sunday at 8", "tomorrow morning", "בבוקר ביום ראשון בשעה שמונה"
+
+**Key distinction:**
+- "תזכירי לי ביום ראשון בשמונה בבוקר" → ONE-TIME (no "כל") → dueDate only
+- "תזכירי לי כל יום ראשון בשמונה בבוקר" → RECURRING weekly (has "כל") → reminderRecurrence only
+
 ## RECURRING REMINDERS (reminderRecurrence):
 
 ### Daily: "כל יום ב-X" / "every day at X"
@@ -231,13 +246,25 @@ User: "תזכירי לי עוד חמש דקות לעשות בדיקה"
 Current time: Thursday, 02/01/2025 14:00 (2025-01-02T14:00:00+02:00)
 → { "operation": "create", "text": "לעשות בדיקה", "dueDate": "2025-01-02T14:05:00+02:00", "reminder": "0 minutes" }
 
-Example 5 - Daily recurring:
+Example 5 - Daily recurring (note "כל בוקר" = every morning):
 User: "תזכיר לי כל בוקר ב-9 לעשות ספורט"
 → { "operation": "create", "text": "לעשות ספורט", "reminderRecurrence": { "type": "daily", "time": "09:00" } }
 
-Example 6 - Weekly recurring:
+Example 6 - Weekly recurring (note "כל יום ראשון" = every Sunday):
 User: "תזכיר לי כל יום ראשון ב-14:00 להתקשר לאמא"
 → { "operation": "create", "text": "להתקשר לאמא", "reminderRecurrence": { "type": "weekly", "days": [0], "time": "14:00" } }
+
+Example 6x - ⚠️ ONE-TIME on a weekday (NO "כל" = single occurrence, NOT recurring):
+User: "תזכירי לי בבוקר ביום ראשון בשעה שמונה לדבר עם אורל"
+Current time: Thursday, 02/19/2026 08:46
+→ { "operation": "create", "text": "לדבר עם אורל", "dueDate": "2026-02-22T08:00:00+02:00", "reminder": "0 minutes" }
+Note: "ביום ראשון" (on Sunday) WITHOUT "כל" = this coming Sunday only. "בבוקר...בשעה שמונה" = 08:00. No reminderRecurrence!
+
+Example 6y - ⚠️ ONE-TIME "tomorrow morning" (NOT daily):
+User: "תזכירי לי מחר בבוקר בשמונה להתקשר לרופא"
+Current time: Thursday, 02/19/2026 20:00
+→ { "operation": "create", "text": "להתקשר לרופא", "dueDate": "2026-02-20T08:00:00+02:00", "reminder": "0 minutes" }
+Note: "מחר בבוקר" = tomorrow morning. No "כל" → one-time only. No reminderRecurrence!
 
 Example 5a - Time only WITHOUT date (MUST be TODAY):
 User: "תזכיר לי בשבע וארבעים למשוך כסף"
@@ -471,6 +498,229 @@ Output only the JSON, no explanation. NEVER include IDs you don't have.`;
     };
   }
   
+  // ── Keyword hint arrays for pre-LLM operation analysis ──────────────────
+
+  private static readonly RECURRING_KEYWORDS: Array<{ pattern: RegExp; weight: number; label: string }> = [
+    // Hebrew - "every" prefix is the strongest recurring signal
+    { pattern: /כל\s*יום/i, weight: 3, label: 'כל יום' },
+    { pattern: /כל\s*בוקר/i, weight: 3, label: 'כל בוקר' },
+    { pattern: /כל\s*ערב/i, weight: 3, label: 'כל ערב' },
+    { pattern: /כל\s*שבוע/i, weight: 3, label: 'כל שבוע' },
+    { pattern: /כל\s*חודש/i, weight: 3, label: 'כל חודש' },
+    { pattern: /כל\s*יום\s*(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)/i, weight: 3, label: 'כל יום [weekday]' },
+    { pattern: /באופן\s*קבוע/i, weight: 2, label: 'באופן קבוע' },
+    { pattern: /קבוע/i, weight: 1.5, label: 'קבוע' },
+    { pattern: /חוזר(ת)?/i, weight: 2, label: 'חוזר/ת' },
+    { pattern: /מדי\s*(יום|שבוע|חודש|בוקר|ערב)/i, weight: 2.5, label: 'מדי [period]' },
+    { pattern: /בכל\s*\d+\s*לחודש/i, weight: 3, label: 'בכל X לחודש' },
+    // English
+    { pattern: /every\s*(day|morning|evening|week|month)/i, weight: 3, label: 'every [period]' },
+    { pattern: /every\s*(sunday|monday|tuesday|wednesday|thursday|friday|saturday)/i, weight: 3, label: 'every [weekday]' },
+    { pattern: /\b(daily|weekly|monthly)\b/i, weight: 2.5, label: 'daily/weekly/monthly' },
+    { pattern: /\brecurring\b/i, weight: 2, label: 'recurring' },
+  ];
+
+  private static readonly NUDGE_KEYWORDS: Array<{ pattern: RegExp; weight: number; label: string }> = [
+    // Hebrew - nudge-specific verbs
+    { pattern: /תציק(י)?/i, weight: 3, label: 'תציק/י' },
+    { pattern: /נדנד(י)?/i, weight: 3, label: 'נדנד/י' },
+    { pattern: /נודניק/i, weight: 3, label: 'נודניק' },
+    { pattern: /תחפור(י)?/i, weight: 2.5, label: 'תחפור/י' },
+    // Short-interval recurrence (< 1 day) = nudge
+    { pattern: /כל\s*\d+\s*דקות/i, weight: 3, label: 'כל X דקות' },
+    { pattern: /כל\s*\d+\s*שעות/i, weight: 2.5, label: 'כל X שעות' },
+    { pattern: /כל\s*(חצי\s*שעה|רבע\s*שעה)/i, weight: 3, label: 'כל חצי/רבע שעה' },
+    // English
+    { pattern: /\bnudge\b/i, weight: 3, label: 'nudge' },
+    { pattern: /keep\s*remind/i, weight: 2.5, label: 'keep reminding' },
+    { pattern: /\bpester\b/i, weight: 2, label: 'pester' },
+    { pattern: /\bnag\b/i, weight: 2, label: 'nag' },
+    { pattern: /every\s*\d+\s*minutes?/i, weight: 3, label: 'every X minutes' },
+    { pattern: /every\s*\d+\s*hours?/i, weight: 2.5, label: 'every X hours' },
+  ];
+
+  private static readonly ONE_TIME_KEYWORDS: Array<{ pattern: RegExp; weight: number; label: string }> = [
+    // Hebrew - specific single-occurrence time references
+    { pattern: /מחר\b/i, weight: 2, label: 'מחר' },
+    { pattern: /היום\b/i, weight: 2, label: 'היום' },
+    { pattern: /בעוד\s*\d+/i, weight: 2.5, label: 'בעוד X' },
+    { pattern: /עוד\s*\d+\s*(דקות|שעות)/i, weight: 2.5, label: 'עוד X דקות/שעות' },
+    { pattern: /בשעה\b/i, weight: 1.5, label: 'בשעה' },
+    // "ביום ראשון" WITHOUT preceding "כל" = one specific day
+    { pattern: /(?<!כל\s)ביום\s*(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)/i, weight: 2, label: 'ביום [weekday] (single)' },
+    { pattern: /בבוקר\b/i, weight: 1, label: 'בבוקר (time-of-day)' },
+    { pattern: /בערב\b/i, weight: 1, label: 'בערב (time-of-day)' },
+    { pattern: /מחר\s*בבוקר/i, weight: 2.5, label: 'מחר בבוקר' },
+    { pattern: /מחר\s*בערב/i, weight: 2.5, label: 'מחר בערב' },
+    // English
+    { pattern: /\btomorrow\b/i, weight: 2, label: 'tomorrow' },
+    { pattern: /\btoday\b/i, weight: 2, label: 'today' },
+    { pattern: /\bat\s+\d/i, weight: 1.5, label: 'at [time]' },
+    { pattern: /\bin\s+\d+\s*(minutes?|hours?)/i, weight: 2.5, label: 'in X minutes/hours' },
+    { pattern: /(?<!every\s)\bon\s*(sunday|monday|tuesday|wednesday|thursday|friday|saturday)/i, weight: 2, label: 'on [weekday] (single)' },
+    { pattern: /\bthis\s*(morning|evening|afternoon)/i, weight: 2, label: 'this morning/evening' },
+    { pattern: /\bnext\s*(sunday|monday|tuesday|wednesday|thursday|friday|saturday)/i, weight: 2, label: 'next [weekday]' },
+  ];
+
+  private static readonly CRUD_KEYWORDS: Array<{ pattern: RegExp; weight: number; label: string; operation: string }> = [
+    // Create
+    { pattern: /תזכיר(י)?/i, weight: 2, label: 'תזכיר/י', operation: 'create' },
+    { pattern: /תזכורת/i, weight: 1.5, label: 'תזכורת', operation: 'create' },
+    { pattern: /\bremind\b/i, weight: 2, label: 'remind', operation: 'create' },
+    { pattern: /תוסיפ(י)?/i, weight: 2, label: 'תוסיפ/י', operation: 'create' },
+    { pattern: /\b(create|add)\b/i, weight: 2, label: 'create/add', operation: 'create' },
+    // Delete / complete
+    { pattern: /מחק(י)?/i, weight: 2, label: 'מחק/י', operation: 'delete' },
+    { pattern: /בטל(י)?/i, weight: 2, label: 'בטל/י', operation: 'delete' },
+    { pattern: /הסר(י)?/i, weight: 2, label: 'הסר/י', operation: 'delete' },
+    { pattern: /סיימתי/i, weight: 2, label: 'סיימתי', operation: 'delete' },
+    { pattern: /עשיתי/i, weight: 2, label: 'עשיתי', operation: 'delete' },
+    { pattern: /בוצע/i, weight: 2, label: 'בוצע', operation: 'delete' },
+    { pattern: /\b(delete|remove|cancel|done|complete)\b/i, weight: 2, label: 'delete/done', operation: 'delete' },
+    // List
+    { pattern: /מה יש לי/i, weight: 2, label: 'מה יש לי', operation: 'getAll' },
+    { pattern: /מה התזכורות/i, weight: 2, label: 'מה התזכורות', operation: 'getAll' },
+    { pattern: /הראה|הראי/i, weight: 1.5, label: 'הראה/י', operation: 'getAll' },
+    { pattern: /\b(show|list|what.*remind)/i, weight: 2, label: 'show/list', operation: 'getAll' },
+    // Update
+    { pattern: /שנ(ה|י)|עדכנ(י)?/i, weight: 2, label: 'שנה/עדכן', operation: 'update' },
+    { pattern: /הזז(י)?/i, weight: 2, label: 'הזז/י', operation: 'update' },
+    { pattern: /\b(update|change|move|modify|reschedule)\b/i, weight: 2, label: 'update/change', operation: 'update' },
+  ];
+
+  /**
+   * Analyze message keywords and return scored operation hints.
+   * Returns { reminderType, crudHint, matchDetails } for LLM guidance.
+   */
+  private analyzeOperationHints(message: string): {
+    reminderType: { type: string; score: number; matched: string[] }[];
+    crudHint: { operation: string; score: number; matched: string[] } | null;
+  } {
+    const scoreGroup = (
+      keywords: Array<{ pattern: RegExp; weight: number; label: string }>,
+    ): { score: number; matched: string[] } => {
+      let score = 0;
+      const matched: string[] = [];
+      for (const kw of keywords) {
+        if (kw.pattern.test(message)) {
+          score += kw.weight;
+          matched.push(kw.label);
+        }
+      }
+      return { score, matched };
+    };
+
+    const recurring = scoreGroup(DatabaseTaskResolver.RECURRING_KEYWORDS);
+    const nudge = scoreGroup(DatabaseTaskResolver.NUDGE_KEYWORDS);
+    const oneTime = scoreGroup(DatabaseTaskResolver.ONE_TIME_KEYWORDS);
+
+    const reminderType: { type: string; score: number; matched: string[] }[] = [];
+    if (recurring.score > 0) reminderType.push({ type: 'recurring', ...recurring });
+    if (nudge.score > 0) reminderType.push({ type: 'nudge', ...nudge });
+    if (oneTime.score > 0) reminderType.push({ type: 'one_time', ...oneTime });
+    reminderType.sort((a, b) => b.score - a.score);
+
+    // CRUD hint
+    const crudScores = new Map<string, { score: number; matched: string[] }>();
+    for (const kw of DatabaseTaskResolver.CRUD_KEYWORDS) {
+      if (kw.pattern.test(message)) {
+        const existing = crudScores.get(kw.operation) || { score: 0, matched: [] };
+        existing.score += kw.weight;
+        existing.matched.push(kw.label);
+        crudScores.set(kw.operation, existing);
+      }
+    }
+    let crudHint: { operation: string; score: number; matched: string[] } | null = null;
+    for (const [op, data] of crudScores) {
+      if (!crudHint || data.score > crudHint.score) {
+        crudHint = { operation: op, ...data };
+      }
+    }
+
+    return { reminderType, crudHint };
+  }
+
+  /**
+   * Format operation hints into a readable section for the LLM user message.
+   */
+  private formatOperationHints(hints: ReturnType<DatabaseTaskResolver['analyzeOperationHints']>): string {
+    const lines: string[] = [];
+    lines.push('## Pre-Analysis Hints (keyword-based, use as recommendation only)');
+
+    if (hints.reminderType.length > 0) {
+      lines.push('Reminder type signals detected:');
+      for (const rt of hints.reminderType) {
+        lines.push(`- **${rt.type}**: score=${rt.score.toFixed(1)}, matched: "${rt.matched.join('", "')}"`);
+      }
+      const top = hints.reminderType[0];
+      if (top.type === 'one_time' && top.score > 0) {
+        lines.push('→ Strongest signal is ONE-TIME. Use dueDate+reminder only. Do NOT add reminderRecurrence unless you are certain the user wants a recurring reminder (look for "כל"/"every").');
+      } else if (top.type === 'recurring') {
+        lines.push('→ Strongest signal is RECURRING. Use reminderRecurrence (daily/weekly/monthly). Do NOT include dueDate+reminder.');
+      } else if (top.type === 'nudge') {
+        lines.push('→ Strongest signal is NUDGE. Use reminderRecurrence with type "nudge". dueDate is allowed with nudge only.');
+      }
+    } else {
+      lines.push('No strong reminder-type signals detected.');
+    }
+
+    if (hints.crudHint) {
+      lines.push(`CRUD signal: **${hints.crudHint.operation}** (score=${hints.crudHint.score.toFixed(1)}, matched: "${hints.crudHint.matched.join('", "')}")`);
+    }
+
+    lines.push('');
+    return lines.join('\n');
+  }
+
+  /**
+   * Override buildUserMessage to inject keyword-based operation hints
+   */
+  protected override buildUserMessage(step: PlanStep, state: MemoState): string {
+    const message = state.input.enhancedMessage || state.input.message;
+    const timeContext = state.now.formatted;
+
+    let userMessage = `${timeContext}\n\n`;
+
+    // Inject pre-analysis hints
+    const hints = this.analyzeOperationHints(message);
+    const hasHints = hints.reminderType.length > 0 || hints.crudHint !== null;
+    if (hasHints) {
+      userMessage += this.formatOperationHints(hints);
+      console.log(
+        `[${this.name}] Operation hints: reminder=${hints.reminderType.map(r => `${r.type}(${r.score})`).join(',')}` +
+        (hints.crudHint ? `, crud=${hints.crudHint.operation}(${hints.crudHint.score})` : ''),
+      );
+    }
+
+    // Include user's clarification response if resumed HITL
+    if (state.plannerHITLResponse) {
+      userMessage += `## User Clarification\n`;
+      userMessage += `The user was asked for more information and responded: "${state.plannerHITLResponse}"\n`;
+      userMessage += `This clarification applies to the original request below. Extract all relevant info from BOTH messages.\n\n`;
+    }
+
+    if (state.recentMessages.length > 0) {
+      userMessage += `Recent conversation:\n`;
+      const recent = state.recentMessages.slice(-3);
+      for (const msg of recent) {
+        userMessage += `${msg.role}: ${msg.content.substring(0, 100)}...\n`;
+      }
+      userMessage += '\n';
+    }
+
+    userMessage += `User wants to: ${step.action}\n`;
+    if (Object.keys(step.constraints).length > 0) {
+      userMessage += `Constraints: ${JSON.stringify(step.constraints)}\n`;
+    }
+    if (Object.keys(step.changes).length > 0) {
+      userMessage += `Changes: ${JSON.stringify(step.changes)}\n`;
+    }
+
+    userMessage += `\nUser message: ${message}`;
+
+    return userMessage;
+  }
+
   async resolve(step: PlanStep, state: MemoState): Promise<ResolverOutput> {
     // Always use LLM to extract operation and fields from natural language
     try {

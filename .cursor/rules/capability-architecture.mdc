@@ -1,0 +1,37 @@
+---
+description: "Memo_v2 architecture contract: capability workflow + docs must match runtime."
+alwaysApply: true
+---
+
+## Non-negotiable project contract
+
+- **Docs must match runtime code 100%**. If you discover a mismatch, **fix the code or the docs** immediately—do not continue layering changes on top of incorrect assumptions.
+- Treat these as canonical references:
+  - `docs/project-instruction/*` (repo-root workflow/agent docs)
+  - `Memo_v2/docs/*` (Memo_v2-specific, current architecture docs)
+  - Runtime truth: `Memo_v2/src/graph/index.ts`, `Memo_v2/src/graph/state/MemoState.ts`, `Memo_v2/src/types/index.ts`
+
+## Capability end-to-end checklist (must be complete)
+
+For any new capability or new operation inside a capability, verify ALL of these exist and are wired:
+
+- **Planner routing contract**: `Memo_v2/src/graph/resolvers/ResolverSchema.ts`
+- **Resolver implementation** (LLM → semantic args): `Memo_v2/src/graph/resolvers/*`
+- **Entity resolution** (semantic → IDs → `executorArgs`): `Memo_v2/src/services/resolution/*EntityResolver.ts` + `Memo_v2/src/graph/nodes/EntityResolutionNode.ts`
+- **Execution** (IDs → side effects) via adapters: `Memo_v2/src/services/adapters/*ServiceAdapter.ts` + `Memo_v2/src/graph/nodes/ExecutorNode.ts`
+- **Response behavior**: `Memo_v2/src/graph/nodes/ResponseFormatterNode.ts`, `Memo_v2/src/graph/nodes/ResponseWriterNode.ts`, `src/config/response-formatter-prompt.ts`
+- **Docs update**:
+  - `Memo_v2/docs/feature-addition-chain.md`
+  - `Memo_v2/docs/capabilities/<capability>.md`
+  - `docs/project-instruction/agents-<capability>.md` (repo-root)
+
+## HITL rules (current architecture)
+
+- There are **two HITL families**:
+  - Planner HITL (clarification/confirmation/approval/intent_unclear)
+  - Entity-resolution HITL (disambiguation selection)
+- HITL uses LangGraph `interrupt()` and resume via `Command({ resume: userReply })`.
+- The authoritative docs are:
+  - `Memo_v2/docs/PLANNER_AND_HITL_FLOW.md`
+  - `Memo_v2/docs/STATE_SCHEMA.md`
+

@@ -1,0 +1,38 @@
+---
+description: "How to write/update Memo_v2 capability contract docs and keep them in sync with code."
+globs:
+  - "Memo_v2/docs/capabilities/**/*.md"
+  - "Memo_v2/docs/feature-addition-chain.md"
+alwaysApply: false
+---
+
+## Capability contract docs are not optional
+
+If you change a capability’s behavior, add a new operation, or change args/return shapes, you MUST update the corresponding capability doc in:
+
+- `Memo_v2/docs/capabilities/<capability>.md`
+
+## Required sections (keep headings consistent)
+
+- **Purpose + boundaries**
+- **ResolverSchema entries** (schema constant names + file path)
+- **Resolver output contract** (operations list + args fields that matter)
+- **Entity resolution contract**
+  - which operations need resolution
+  - what IDs/fields are written into `executorArgs`
+  - disambiguation HITL behavior (what the user is asked)
+- **Execution contract**
+  - which adapter executes it
+  - any ExecutorNode special handling (e.g., link stripping)
+- **Response formatting/writer behavior**
+  - reference `Memo_v2/docs/RESPONSE_DATA_PATTERNS.md`
+  - mention any prompt rules in `src/config/response-formatter-prompt.ts`
+- **End-to-end example (shape)** (1 short, realistic example)
+
+## Keep docs anchored to canonical code
+
+Prefer **linking to files** over copying large enums or type definitions:
+
+- State/types: `Memo_v2/src/graph/state/MemoState.ts`, `Memo_v2/src/types/index.ts`
+- Entity resolution types: `Memo_v2/src/services/resolution/types.ts`
+
