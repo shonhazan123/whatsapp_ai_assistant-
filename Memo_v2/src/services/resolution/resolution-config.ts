@@ -105,9 +105,9 @@ export const OPERATION_BEHAVIORS: Record<string, OperationBehavior> = {
     checkFieldsForIdentity: false,
   },
   'calendar.deleteBySummary': {
-    multipleMatchBehavior: 'all',  // Delete all matching
-    disambiguateOnMultiple: false,
-    allowSelectAll: false,
+    multipleMatchBehavior: 'all',
+    disambiguateOnMultiple: true,
+    allowSelectAll: true,
     checkFieldsForIdentity: false,
   },
   

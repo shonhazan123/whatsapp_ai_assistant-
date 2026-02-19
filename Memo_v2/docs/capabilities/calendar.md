@@ -49,7 +49,7 @@ Common fields (by operation):
 
 Entity resolution is applied for operations that need an `eventId` or a concrete target set:
 
-`operation ∈ ['get', 'update', 'delete', 'getRecurringInstances', 'truncateRecurring', 'deleteByWindow', 'updateByWindow']`
+`operation ∈ ['get', 'update', 'delete', 'getRecurringInstances', 'truncateRecurring', 'deleteByWindow', 'updateByWindow', 'deleteBySummary']`
 
 ### What gets produced
 
@@ -57,12 +57,25 @@ Entity resolution is applied for operations that need an `eventId` or a concrete
 
 - `state.executorArgs.get(stepId)` including (when needed):
   - `eventId` (single event target)
+  - `eventIds`, `deletedSummaries`, `originalEvents` (bulk targets for `deleteByWindow` / `deleteBySummary`)
   - Additional flags/fields used for recurring-series choice (when disambiguated)
 
 ### HITL behavior (disambiguation)
 
 - If multiple candidates match, `CalendarEntityResolver` can return `type: 'disambiguation'` with candidates + question.
 - `HITLGateNode` collects user selection and `CalendarEntityResolver.applySelection(...)` applies it.
+
+### `deleteBySummary` resolution flow
+
+1. Extracts `summary` from resolver args, derives wide time window (defaults: 1 day back, 90 days forward).
+2. Fetches events and fuzzy-matches on summary (`FuzzyMatcher`, threshold `CALENDAR_DELETE_THRESHOLD`).
+3. Smart grouping decides the path:
+   - **All same recurring series** or **all identical summaries**: auto-resolve all → bulk `eventIds`.
+   - **Single match**: resolve with `eventId`, check for recurring HITL.
+   - **Score gap >= `DISAMBIGUATION_GAP`**: auto-select top match.
+   - **Ambiguous (close scores)**: HITL disambiguation (`allowMultiple: true`).
+4. `applySelection()` enriches bulk selections with `deletedSummaries` and `originalEvents`.
+5. Adapter receives `deleteBySummary` operation and handles single, bulk, or recurring series deletion.
 
 ## Execution contract (adapters)
 
@@ -88,11 +101,23 @@ Canonical references:
 - `Memo_v2/src/graph/nodes/ResponseFormatterNode.ts`
 - `Memo_v2/src/graph/nodes/ResponseWriterNode.ts`
 
-## End-to-end example (shape)
+## End-to-end examples (shape)
 
-1. Planner produces a `PlanStep` with `capability: "calendar"` and a raw message constraint.
-2. Resolver outputs semantic args (e.g., `{ operation: "delete", summary: "team meeting" }`).
+### Single delete by ID
+
+1. Planner produces a `PlanStep` with `capability: "calendar"`, action `"delete event"`.
+2. Resolver outputs `{ operation: "delete", summary: "team meeting" }`.
 3. Entity resolution resolves `eventId` (or triggers disambiguation).
 4. Executor calls `CalendarServiceAdapter.execute(...)`.
 5. Formatter/writer produce the final WhatsApp response.
+
+### Delete by summary (bulk)
+
+1. Planner produces `action: "delete event"`, resolver outputs `{ operation: "deleteBySummary", summary: "אימון" }`.
+2. Entity resolution fetches events, fuzzy-matches on summary:
+   - All 3 matches have identical summary → auto-resolve with `eventIds: [id1, id2, id3]`.
+   - OR matches are ambiguous → HITL disambiguation, user selects "כולם" → `eventIds` from all candidates.
+3. Executor calls `CalendarServiceAdapter.execute({ operation: "deleteBySummary", eventIds, ... })`.
+4. Adapter loops through `eventIds`, deletes each, returns `{ deleted: 3, events: [...] }`.
+5. ResponseFormatter detects `meta.deleted > 1` → flags `isBulkOperation`, writer produces bulk confirmation.
 

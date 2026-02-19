@@ -1,25 +1,43 @@
 /**
  * SecondBrainServiceAdapter
- * 
- * Adapter for V1 SecondBrainService.
- * Converts resolver args (secondBrainOperations) into SecondBrainService method calls.
+ *
+ * Adapter that converts resolver/executor args into SecondBrainVaultService calls.
+ * Handles:
+ * - storeMemory (insert or override based on conflictDecision)
+ * - searchMemory (hybrid search)
+ * - deleteMemory
+ * - updateMemory
+ * - getAllMemory
+ * - getMemoryById
  */
 
-import { getSecondBrainService } from '../v1-services.js';
+import {
+  getSecondBrainVaultService,
+  type MemoryType,
+} from '../second-brain/SecondBrainVaultService.js';
+
+// ============================================================================
+// TYPES
+// ============================================================================
 
 export interface SecondBrainOperationArgs {
   operation: string;
-  memoryId?: string;
-  text?: string;
-  query?: string;
-  limit?: number;
-  metadata?: {
+  memory?: {
+    type: MemoryType;
+    content: string;
+    summary?: string;
     tags?: string[];
-    source?: string;
-    context?: string;
-    category?: string;
+    metadata?: Record<string, any>;
   };
-  language?: 'he' | 'en';
+  query?: string;
+  searchText?: string;
+  type?: MemoryType;
+  memoryId?: string;
+  memoryIds?: string[];
+  limit?: number;
+  offset?: number;
+  conflictDecision?: 'override' | 'insert';
+  conflictTargetId?: string;
 }
 
 export interface SecondBrainOperationResult {
@@ -28,32 +46,41 @@ export interface SecondBrainOperationResult {
   error?: string;
 }
 
+// ============================================================================
+// ADAPTER
+// ============================================================================
+
 export class SecondBrainServiceAdapter {
   private userPhone: string;
-  
+
   constructor(userPhone: string) {
     this.userPhone = userPhone;
   }
-  
-  /**
-   * Execute a second brain operation
-   */
+
   async execute(args: SecondBrainOperationArgs): Promise<SecondBrainOperationResult> {
     const { operation } = args;
-    const secondBrainService = getSecondBrainService();
-    
-    if (!secondBrainService) {
-      return { success: false, error: 'SecondBrainService not available' };
-    }
-    
+    const vault = getSecondBrainVaultService();
+
     try {
       switch (operation) {
         case 'storeMemory':
-          return await this.storeMemory(secondBrainService, args);
-          
+          return await this.storeMemory(vault, args);
+
         case 'searchMemory':
-          return await this.searchMemory(secondBrainService, args);
-          
+          return await this.searchMemory(vault, args);
+
+        case 'deleteMemory':
+          return await this.deleteMemory(vault, args);
+
+        case 'updateMemory':
+          return await this.updateMemory(vault, args);
+
+        case 'getAllMemory':
+          return await this.getAllMemory(vault, args);
+
+        case 'getMemoryById':
+          return await this.getMemoryById(vault, args);
+
         default:
           return { success: false, error: `Unknown operation: ${operation}` };
       }
@@ -62,71 +89,125 @@ export class SecondBrainServiceAdapter {
       return { success: false, error: error.message || String(error) };
     }
   }
-  
+
   // ========================================================================
   // OPERATION IMPLEMENTATIONS
   // ========================================================================
-  
-  private async storeMemory(secondBrainService: any, args: SecondBrainOperationArgs): Promise<SecondBrainOperationResult> {
-    if (!args.text) {
-      return { success: false, error: 'Text is required for storing memory' };
+
+  private async storeMemory(
+    vault: ReturnType<typeof getSecondBrainVaultService>,
+    args: SecondBrainOperationArgs
+  ): Promise<SecondBrainOperationResult> {
+    if (!args.memory?.content) {
+      return { success: false, error: 'Memory content is required for storing' };
     }
-    
-    try {
-      // First create embedding for the text
-      const embedding = await secondBrainService.embedText(args.text);
-      
-      // Then store with insertOrMerge
-      const result = await secondBrainService.insertOrMergeMemory(
-        this.userPhone,
-        args.text,
-        embedding,
-        {
-          ...args.metadata,
-          language: this.isHebrew(args.text) ? 'hebrew' : 'english',
-        }
-      );
-      
-      return {
-        success: true,
-        data: result,
-      };
-    } catch (error: any) {
-      return {
-        success: false,
-        error: error.message || 'Failed to store memory',
-      };
+
+    const { memory, conflictDecision, conflictTargetId } = args;
+
+    if (conflictDecision === 'override' && conflictTargetId) {
+      const result = await vault.override(this.userPhone, conflictTargetId, {
+        type: memory.type,
+        content: memory.content,
+        summary: memory.summary,
+        tags: memory.tags,
+        metadata: memory.metadata,
+      });
+      return { success: true, data: { ...result, overridden: true } };
     }
+
+    const result = await vault.insert(this.userPhone, {
+      type: memory.type,
+      content: memory.content,
+      summary: memory.summary,
+      tags: memory.tags,
+      metadata: memory.metadata,
+    });
+    return { success: true, data: result };
   }
-  
-  private async searchMemory(secondBrainService: any, args: SecondBrainOperationArgs): Promise<SecondBrainOperationResult> {
+
+  private async searchMemory(
+    vault: ReturnType<typeof getSecondBrainVaultService>,
+    args: SecondBrainOperationArgs
+  ): Promise<SecondBrainOperationResult> {
     if (!args.query) {
       return { success: false, error: 'Query is required for searching memory' };
     }
-    
-    try {
-      const results = await secondBrainService.searchMemory(
-        this.userPhone,
-        args.query,
-        args.limit || 5
-      );
-      
-      return {
-        success: true,
-        data: results,
-      };
-    } catch (error: any) {
-      return {
-        success: false,
-        error: error.message || 'Failed to search memory',
-      };
-    }
+
+    const results = await vault.hybridSearch(
+      this.userPhone,
+      args.query,
+      { type: args.type, limit: args.limit || 5 }
+    );
+
+    return { success: true, data: { results } };
   }
-  
-  /**
-   * Detect if text is Hebrew
-   */
-  private isHebrew(text: string): boolean {
-    return /[\u0590-\u05FF]/.test(text);
+
+  private async deleteMemory(
+    vault: ReturnType<typeof getSecondBrainVaultService>,
+    args: SecondBrainOperationArgs
+  ): Promise<SecondBrainOperationResult> {
+    const ids = args.memoryIds || (args.memoryId ? [args.memoryId] : []);
+    if (ids.length === 0) {
+      return { success: false, error: 'Memory ID is required for deletion' };
+    }
+
+    let deleted = 0;
+    for (const id of ids) {
+      const ok = await vault.deleteById(this.userPhone, id);
+      if (ok) deleted++;
+    }
+
+    return { success: true, data: { deleted, total: ids.length } };
+  }
+
+  private async updateMemory(
+    vault: ReturnType<typeof getSecondBrainVaultService>,
+    args: SecondBrainOperationArgs
+  ): Promise<SecondBrainOperationResult> {
+    if (!args.memoryId) {
+      return { success: false, error: 'Memory ID is required for update' };
+    }
+    if (!args.memory?.content) {
+      return { success: false, error: 'New memory content is required for update' };
+    }
+
+    const result = await vault.override(this.userPhone, args.memoryId, {
+      type: args.memory.type,
+      content: args.memory.content,
+      summary: args.memory.summary,
+      tags: args.memory.tags,
+      metadata: args.memory.metadata,
+    });
+
+    return { success: true, data: result };
+  }
+
+  private async getAllMemory(
+    vault: ReturnType<typeof getSecondBrainVaultService>,
+    args: SecondBrainOperationArgs
+  ): Promise<SecondBrainOperationResult> {
+    const results = await vault.list(this.userPhone, {
+      type: args.type,
+      limit: args.limit || 20,
+      offset: args.offset || 0,
+    });
+
+    return { success: true, data: { memories: results } };
+  }
+
+  private async getMemoryById(
+    vault: ReturnType<typeof getSecondBrainVaultService>,
+    args: SecondBrainOperationArgs
+  ): Promise<SecondBrainOperationResult> {
+    if (!args.memoryId) {
+      return { success: false, error: 'Memory ID is required' };
+    }
+
+    const result = await vault.getById(this.userPhone, args.memoryId);
+    if (!result) {
+      return { success: false, error: 'Memory not found' };
+    }
+
+    return { success: true, data: result };
   }
 }

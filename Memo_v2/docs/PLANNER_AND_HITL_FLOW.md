@@ -37,7 +37,7 @@ Planner also writes `state.routingSuggestions` (pattern hints) used only for HIT
 
 In `HITLGateNode.checkHITLConditions()` (priority order):
 
-1. If `plannerOutput.missingFields` includes **`intent_unclear`** → interrupt with type `clarification`, and set `hitlType = 'intent_unclear'`.
+1. If `plannerOutput.missingFields` includes **`intent_unclear`** → interrupt with type `clarification`, and set `hitlType = 'intent_unclear'`. The clarification message **always** includes the second-brain option (“לשמור בזכרון?” / “save to memory?”) so the user can choose to store the information even when pattern matching did not suggest it.
 2. Else if `plannerOutput.confidence < 0.7` → interrupt with clarification.
 3. Else if `plannerOutput.missingFields.length > 0` → interrupt with clarification.
 4. Else if `plannerOutput.riskLevel === 'high'` → interrupt with confirmation.

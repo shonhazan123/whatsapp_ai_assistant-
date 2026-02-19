@@ -622,7 +622,7 @@ export class ResponseFormatterNode extends CodeNode {
 		}
 
 		// Single item with known identifier fields - wrap in array
-		if (data.id || data.summary || data.text || data.messageId) {
+		if (data.id || data.summary || data.text || data.content || data.messageId) {
 			return [data];
 		}
 
@@ -787,6 +787,8 @@ export class ResponseFormatterNode extends CodeNode {
 		const meta = this.extractMetadata(data);
 		const isListing = isCalendarListing(action);
 
+		const isDeleteBySummaryBulk = action === "delete event" && typeof meta.deleted === "number" && meta.deleted > 1;
+
 		const context: CalendarResponseContext = {
 			isRecurring: false,
 			isRecurringSeries: meta.isRecurringSeries || false, // Check metadata first (from wrapper)
@@ -794,7 +796,7 @@ export class ResponseFormatterNode extends CodeNode {
 			isTomorrowOrLater: false,
 			isListing,
 			isBulkOperation:
-				action === "delete events by window" || action === "update events by window",
+				action === "delete events by window" || action === "update events by window" || isDeleteBySummaryBulk,
 			isEmpty: events.length === 0,
 		};
 
@@ -914,36 +916,39 @@ export class ResponseFormatterNode extends CodeNode {
 	 * - { results: [...] } wrapper
 	 */
 	private extractSecondBrainContext(
-		data: any, // Raw data from executor - may be wrapped
+		data: any,
 		action: string,
 	): SecondBrainResponseContext {
-		// Extract items array from various wrapper structures
 		const memories = this.extractItemsArray(
 			data,
 			"second-brain",
 		) as SecondBrainResult[];
 
-		// Action values from PlannerNode: "store memory", "search memory", "list memories"
 		const isStored = action === "store memory";
 		const isSearch = action === "search memory";
 		const isListing = action === "list memories";
+		const isOverride = !!(data?.overridden);
+		const memoryType = (data?.type as "note" | "contact" | "kv") || null;
 
 		const context: SecondBrainResponseContext = {
 			isStored,
 			isSearch,
+			isOverride,
+			memoryType,
 			isEmpty: memories.length === 0,
 		};
 
-		// Enrich each memory with _itemContext
 		for (const item of memories) {
 			(item as any)._itemContext = {
 				isNew: isStored,
+				isOverride: !!(item as any).overridden,
+				memoryType: (item as any).type || null,
 				hasMetadata: !!(item as any).metadata,
 			};
 		}
 
 		console.log(
-			`[ResponseFormatter] SecondBrain context: isStored=${isStored}, isSearch=${isSearch}, memoryCount=${memories.length}`,
+			`[ResponseFormatter] SecondBrain context: isStored=${isStored}, isSearch=${isSearch}, isOverride=${isOverride}, type=${memoryType}, memoryCount=${memories.length}`,
 		);
 		return context;
 	}
