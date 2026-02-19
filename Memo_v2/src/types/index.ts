@@ -14,6 +14,8 @@ export interface UserContext {
 	language: "he" | "en" | "other";
 	planTier: "free" | "standard" | "pro";
 	googleConnected: boolean;
+	/** User's display name from users.settings.user_name; set at context assembly. */
+	userName?: string;
 	capabilities: {
 		calendar: boolean;
 		gmail: boolean;
