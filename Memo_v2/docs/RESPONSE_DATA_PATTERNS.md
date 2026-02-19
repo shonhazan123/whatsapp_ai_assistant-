@@ -440,25 +440,64 @@ ResponseFormatterNode → formats result
 **Raw Response:**
 
 ```typescript
-[
-  { id: "mem1", text: "Memory content", similarity: 0.85, metadata: {...} },
-  { id: "mem2", text: "Another memory", similarity: 0.72, metadata: {...} }
-]
-// OR:
 {
-  results: [...]
+  results: [
+    { id: "mem1", type: "note", content: "Memory content", summary: "...", tags: [...], metadata: {...}, similarity: 0.85, keyword_score: 0.12 },
+    { id: "mem2", type: "kv", content: "WiFi password is 1234", summary: "WiFi password", tags: ["wifi"], metadata: { subject: "wifi password", value: "1234" }, similarity: 0.72, keyword_score: 0.08 }
+  ]
 }
 ```
 
 ### storeMemory
 
-**Raw Response:**
+**Raw Response (new insert):**
 
 ```typescript
 {
   id: "mem123",
-  text: "Stored content",
-  metadata: { tags: ["work"], source: "user" }
+  type: "note",
+  content: "Stored content",
+  summary: "Brief summary",
+  tags: ["tag1"],
+  metadata: { source: "text", entities: ["topic"] }
+}
+```
+
+**Raw Response (override — after HITL confirmed update):**
+
+```typescript
+{
+  id: "mem456",
+  type: "contact",
+  content: "Jones - Phone: 050-9999999",
+  summary: "Contact info for Jones",
+  tags: ["contact", "jones"],
+  metadata: { name: "Jones", phone: "050-9999999" },
+  overridden: true
+}
+```
+
+### getAllMemory
+
+**Raw Response:**
+
+```typescript
+{
+  memories: [
+    { id: "mem1", type: "note", content: "...", summary: "...", tags: [...], metadata: {...}, created_at: "..." },
+    { id: "mem2", type: "contact", content: "...", ... }
+  ]
+}
+```
+
+### deleteMemory
+
+**Raw Response:**
+
+```typescript
+{
+  deleted: 1,
+  total: 1
 }
 ```
 
@@ -557,7 +596,7 @@ Each item returned from ServiceAdapters is enriched with an `_itemContext` objec
 - For **update_task** / **update**: Response formatter uses "updated" language (e.g. "עדכנתי את התזכורת" / "I updated the reminder"), not "created".
 - Calendar: `"list events"`, `"create event"`, `"delete event"`, etc.
 - Gmail: `"list emails"`, `"send email"`, etc.
-- Second Brain: `"store memory"`, `"search memory"`, `"list memories"`
+- Second Brain: `"store memory"`, `"search memory"`, `"list memories"`, `"delete memory"`, `"update memory"`
 
 ### Database Items
 
@@ -599,6 +638,8 @@ email._itemContext = {
 ```typescript
 memory._itemContext = {
 	isNew: boolean, // Just stored
+	isOverride: boolean, // Was overridden (delete+insert after HITL)
+	memoryType: "note" | "contact" | "kv" | null, // Memory type
 	hasMetadata: boolean, // Has metadata attached
 };
 ```

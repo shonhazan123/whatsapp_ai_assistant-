@@ -1,15 +1,19 @@
 /**
  * ResolverSchema - Structured capability definitions for each resolver
- * 
+ *
  * This module provides the Planner with explicit contract information about
  * what each resolver can handle, enabling deterministic routing decisions.
- * 
+ *
  * Each schema includes:
  * - Name and capability
  * - Summary of responsibilities
  * - Action hints the resolver handles
  * - Trigger patterns (Hebrew + English) for pattern matching
  * - Examples for the LLM to learn from
+ *
+ * Agent identity: Donna (female). Hebrew trigger patterns include both masculine
+ * and feminine forms so that user phrases addressed to Donna (e.g. "תזכרי", "מה את יכולה")
+ * are matched correctly.
  */
 
 import type { Capability } from '../../types/index.js';
@@ -79,9 +83,11 @@ export const CALENDAR_FIND_SCHEMA: ResolverSchema = {
       'מתי יש לי',
       'מתי הפגישה',
       'הראה לי את היומן',
+      'הראי לי את היומן',
       'האם יש לי משהו',
       'האם אני פנוי',
       'בדוק את הלוז',
+      'בדקי את הלוז',
       'מה בלוז',
       'מה ביומן',
       'כמה שעות',
@@ -135,38 +141,63 @@ export const CALENDAR_MUTATE_SCHEMA: ResolverSchema = {
   triggerPatterns: {
     hebrew: [
       'תוסיף ליומן',
+      'תוסיפי ליומן',
       'תקבע',
+      'תקבעי',
       'קבע לי',
       'צור אירוע',
+      'צרי אירוע',
       'שים ביומן',
+      'שימי ביומן',
       'הוסף פגישה',
+      'הוסיפי פגישה',
       'מחק אירוע',
+      'מחקי אירוע',
       'בטל פגישה',
+      'בטלי פגישה',
       'הזז את',
+      'הזיזי את',
       "תפנה את מחר",
+      "תפני את מחר",
       "תפנה את ",
+      "תפני את ",
       "תפנה את הפגישה",
+      "תפני את הפגישה",
       "תפנה את האירועים",
+      "תפני את האירועים",
       "תפנה את האירוע",
+      "תפני את האירוע",
       'שנה את הפגישה',
+      'שני את הפגישה',
       'עדכן אירוע',
+      'עדכני אירוע',
       'כל יום',
       'כל שבוע',
       'תמחק את האירוע',
+      'תמחקי את האירוע',
       'הזז את האירוע',
+      'הזיזי את האירוע',
       'שנה את האירוע',
+      'שני את האירוע',
       "מחר",
       "שבוע",
       "יום",
       "שעה",
-      // Bulk operation patterns
+      // Bulk operation patterns (Donna = female agent)
       'תמחק את האירועים',
+      'תמחקי את האירועים',
       'הזז את האירועים',
+      'הזיזי את האירועים',
       'שנה את האירועים',
+      'שני את האירועים',
       'תפנה את כל',
+      'תפני את כל',
       'הזז את כל',
+      'הזיזי את כל',
       'שנה את כל האירועים',
+      'שני את כל האירועים',
       'תמחק את כל האירועים',
+      'תמחקי את כל האירועים',
     ],
     english: [
       'add to calendar',
@@ -240,6 +271,7 @@ export const DATABASE_TASK_SCHEMA: ResolverSchema = {
   triggerPatterns: {
     hebrew: [
       'תזכיר לי',
+      'תזכירי לי',
       'תזכורת',
       'משימה',
       'משימות',
@@ -249,16 +281,24 @@ export const DATABASE_TASK_SCHEMA: ResolverSchema = {
       'עשיתי',
       'בוצע',
       'מחק תזכורת',
+      'מחקי תזכורת',
       'מחק משימה',
+      'מחקי משימה',
       'הוסף משימה',
+      'הוסיפי משימה',
       'נדנד אותי',
       'תציק לי',
-      // Bulk operation patterns
+      // Bulk operation patterns (Donna = female agent)
       'מחק את כל',
+      'מחקי את כל',
       'מחק הכל',
+      'מחקי הכל',
       'תמחק את כולם',
+      'תמחקי את כולם',
       'עדכן את כל',
+      'עדכני את כל',
       'שנה את כל',
+      'שני את כל',
     ],
     english: [
       'remind me',
@@ -324,9 +364,13 @@ export const DATABASE_LIST_SCHEMA: ResolverSchema = {
       'רשימה',
       'רשימת',
       'תיצור רשימה',
+      'תיצרי רשימה',
       'הוסף לרשימה',
+      'הוסיפי לרשימה',
       'תוסיף לרשימת',
+      'תוסיפי לרשימת',
       'מחק רשימה',
+      'מחקי רשימה',
       'אילו רשימות',
     ],
     english: [
@@ -374,9 +418,13 @@ export const GMAIL_SCHEMA: ResolverSchema = {
       'אימייל',
       'מה יש לי במייל',
       'שלח מייל',
+      'שלחי מייל',
       'תשלח מייל',
+      'תשלחי מייל',
       'ענה למייל',
+      'עני למייל',
       'תענה על המייל',
+      'תעני על המייל',
       'תיבת דואר',
     ],
     english: [
@@ -405,12 +453,12 @@ export const GMAIL_SCHEMA: ResolverSchema = {
 
 /**
  * SecondBrainResolver Schema
- * Handles: Store/search personal knowledge and facts
+ * Handles: Semantic long-term memory vault (note / contact / kv)
  */
 export const SECONDBRAIN_SCHEMA: ResolverSchema = {
   name: 'secondbrain_resolver',
   capability: 'second-brain',
-  summary: 'Personal knowledge management. Store facts, notes, and information. Search and retrieve previously saved memories.',
+  summary: 'Semantic long-term memory vault. Store notes, contacts, and key-value facts. Search and retrieve previously saved memories. Types: note (ideas/summaries), contact (name+phone/email), kv (subject=value facts like bills/passwords).',
   actionHints: [
     'store_memory',
     'save_memory',
@@ -423,13 +471,25 @@ export const SECONDBRAIN_SCHEMA: ResolverSchema = {
   triggerPatterns: {
     hebrew: [
       'תזכור ש',
+      'תזכרי ש',
       'זכור ש',
+      'זכרי ש',
       'שמור ש',
+      'שמרי ש',
       'שמור את זה',
+      'שמרי את זה',
       'מה אמרתי על',
       'מה שמרתי',
       'מה אתה זוכר',
-      'תמחק את מה ששמרתי',
+      'מה את זוכרת',
+      'שמור את הטלפון',
+      'שמרי את הטלפון',
+      'שמור איש קשר',
+      'שמרי איש קשר',
+      'הסיסמא של',
+      'חשבון חשמל',
+      'מה הטלפון של',
+      'מה הסיסמא',
     ],
     english: [
       'remember that',
@@ -440,15 +500,32 @@ export const SECONDBRAIN_SCHEMA: ResolverSchema = {
       'what did i save',
       'what do you remember',
       'delete what i saved',
+      'save contact',
+      'save phone',
+      'password is',
+      'bill is',
+      'costs',
+      'what is the password',
+      'find contact',
     ],
   },
   examples: [
     { input: 'תזכור שדני אוהב פיצה', action: 'store memory' },
+    { input: 'תזכרי שדני אוהב פיצה', action: 'store memory' },
     { input: 'מה אמרתי על הפרויקט?', action: 'search memory' },
     { input: 'מה שמרתי?', action: 'list memories' },
+    { input: 'מה את זוכרת על הפרויקט?', action: 'search memory' },
     { input: 'תמחק את מה ששמרתי על דני', action: 'delete memory' },
+    { input: 'תמחקי את מה ששמרתי על דני', action: 'delete memory' },
     { input: 'Remember that the project deadline is January 15th', action: 'store memory' },
     { input: 'What did I save about the meeting?', action: 'search memory' },
+    { input: 'Jones - phone 050-1234567, email jones@email.com, HVAC contractor', action: 'store memory' },
+    { input: 'electricity bill is 500', action: 'store memory' },
+    { input: 'WiFi password is 1234', action: 'store memory' },
+    { input: 'שמור את הטלפון של דני: 052-9876543, אינסטלטור', action: 'store memory' },
+    { input: 'שמרי את הטלפון של דני: 052-9876543, אינסטלטור', action: 'store memory' },
+    { input: 'what is my wifi password?', action: 'search memory' },
+    { input: 'find Jones contact', action: 'search memory' },
   ],
   priority: 40,
 };
@@ -526,12 +603,15 @@ export const META_SCHEMA: ResolverSchema = {
   triggerPatterns: {
     hebrew: [
       'מה אתה יכול',
+      'מה את יכולה',
       'מה היכולות שלך',
       'עזרה',
       'איך להשתמש',
       'מה אתה עושה',
+      'מה את עושה',
       'סטטוס',
       'מי אתה',
+      'מי את',
       'מה האתר',
       'מה הכתובת',
       'תוכנית',
@@ -558,6 +638,7 @@ export const META_SCHEMA: ResolverSchema = {
   },
   examples: [
     { input: 'מה אתה יכול לעשות?', action: 'describe_capabilities' },
+    { input: 'מה את יכולה לעשות?', action: 'describe_capabilities' },
     { input: 'עזרה', action: 'help' },
     { input: 'What can you do?', action: 'describe_capabilities' },
     { input: 'Help', action: 'help' },

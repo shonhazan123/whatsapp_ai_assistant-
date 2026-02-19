@@ -51,6 +51,7 @@ const defaultUser: UserContext = {
   language: 'he',
   planTier: 'free',
   googleConnected: false,
+  userName: undefined,
   capabilities: {
     calendar: false,
     gmail: false,

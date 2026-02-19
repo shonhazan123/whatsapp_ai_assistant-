@@ -151,12 +151,15 @@ export class ContextAssemblyNode extends CodeNode {
    * from the full AuthContext.
    */
   private deriveUserContext(auth: AuthContext, language: 'he' | 'en' | 'other'): UserContext {
+    const rawName = auth.userRecord.settings?.user_name;
+    const userName = typeof rawName === 'string' && rawName.trim() ? rawName.trim() : undefined;
     return {
       phone: auth.userRecord.whatsapp_number,
       timezone: auth.userRecord.timezone || 'Asia/Jerusalem',
       language,
       planTier: auth.planTier,
       googleConnected: auth.googleConnected,
+      userName,
       capabilities: { ...auth.capabilities },
     };
   }

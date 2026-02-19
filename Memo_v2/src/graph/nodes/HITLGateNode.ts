@@ -59,16 +59,16 @@ Generate a SHORT, conversational message asking the user to clarify their intent
 
 ## Capability Descriptions (use these friendly terms, not internal names)
 - calendar (create/edit): "להוסיף/לערוך אירוע ביומן" / "add/edit calendar event"
-- calendar (query): "לבדוק מה יש ביומן" / "check your calendar"  
+- calendar (query): "לבדוק מה יש ביומן" / "check your calendar"
 - database (reminder): "ליצור תזכורת" / "create a reminder"
 - database (task): "ליצור משימה" / "create a task"
 - gmail: "לטפל במייל" / "handle email"
-- second-brain: "לשמור/לחפש מידע" / "save/search information"
+- second-brain: When asking if user wants to SAVE/REMEMBER something, use exactly: "לשמור בזכרון?" (Hebrew) / "save to memory?" (English). For search/recall: "לחפש בזכרון?" / "search memory?"
 
 ## Missing Field Translations
 - target_unclear: Ask WHICH specific items (by name or time window)
 - time_unclear: Ask WHEN
-- intent_unclear: Ask WHAT they want to do (with friendly alternatives)
+- intent_unclear: Ask WHAT they want to do. Always offer second-brain as an option when it could apply: "לשמור בזכרון?" (save to memory?) in Hebrew, "save to memory?" in English. Other options: calendar, reminder/task, email, or just chat.
 - which_one: Ask which specific item from options
 
 ## Output
@@ -421,12 +421,20 @@ export class HITLGateNode extends CodeNode {
   ): Promise<string> {
     const language = state.user.language;
     const userMessage = state.input.enhancedMessage || state.input.message;
-    
+    const isIntentUnclear = hitlCheck.reason === 'intent_unclear';
+
+    // For intent_unclear: always include second-brain in options so user is offered "save to memory?"
+    const baseSuggestions = state.routingSuggestions?.slice(0, 3) || [];
+    const hasSecondBrain = baseSuggestions.some(s => s.capability === 'second-brain');
+    const routingSuggestions = isIntentUnclear && !hasSecondBrain
+      ? [{ resolverName: 'secondbrain_resolver', capability: 'second-brain' as const, matchedPatterns: ['save/remember'], score: 0 }, ...baseSuggestions]
+      : baseSuggestions;
+
     // Build context for LLM
     const context = {
       userMessage,
       language,
-      routingSuggestions: state.routingSuggestions?.slice(0, 3) || [],
+      routingSuggestions,
       plannerOutput: state.plannerOutput ? {
         confidence: state.plannerOutput.confidence,
         missingFields: state.plannerOutput.missingFields,
@@ -438,7 +446,11 @@ export class HITLGateNode extends CodeNode {
       hitlReason: hitlCheck.reason,
       hitlDetails: hitlCheck.details,
     };
-    
+
+    const intentUnclearInstruction = isIntentUnclear
+      ? `\n## Mandatory for intent_unclear\nYou MUST include the option to save to memory. Use exactly: "${language === 'he' ? 'לשמור בזכרון?' : 'save to memory?'}" as one of the choices (e.g. reminder, calendar, save to memory, or something else).\n`
+      : '';
+
     const userPrompt = `## User Message
 "${userMessage}"
 
@@ -463,6 +475,7 @@ ${context.plannerOutput
 Reason: ${hitlCheck.reason || 'unclear intent'}
 Details: ${hitlCheck.details || 'Low confidence in understanding'}
 ${hitlCheck.missingFields?.length ? `Missing fields: ${hitlCheck.missingFields.join(', ')}` : ''}
+${intentUnclearInstruction}
 
 Generate a friendly, conversational clarification message in ${language === 'he' ? 'Hebrew' : 'English'}:`;
 
@@ -645,6 +658,11 @@ Generate a friendly, conversational clarification message in ${language === 'he'
       delete_task: { he: 'למחוק משימה', en: 'delete a task' },
       complete_task: { he: 'לסמן משימה כהושלמה', en: 'mark a task as complete' },
       list_tasks: { he: 'להציג את המשימות שלך', en: 'show your tasks' },
+      store_memory: { he: 'לשמור בזכרון', en: 'save to memory' },
+      search_memory: { he: 'לחפש בזכרון', en: 'search memory' },
+      list_memories: { he: 'להציג את מה ששמרת בזכרון', en: 'list saved memories' },
+      delete_memory: { he: 'למחוק מזכרון', en: 'delete from memory' },
+      update_memory: { he: 'לעדכן זכרון', en: 'update memory' },
       respond: { he: 'לענות לך', en: 'respond to you' },
     };
     

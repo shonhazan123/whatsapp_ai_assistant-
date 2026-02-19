@@ -90,8 +90,9 @@ If user asks about bot capabilities, help, or status → capability = **meta**
 Patterns: "מה אתה יכול", "what can you do", "עזרה", "help"
 
 ### Step 2: Check for SECOND-BRAIN (memory storage/recall)
-If user wants to SAVE a fact or RECALL saved information → capability = **second-brain**
-Patterns: "תזכור ש", "remember that", "מה אמרתי על", "what did I save"
+If user wants to SAVE a fact, contact, or key-value info, or RECALL saved information → capability = **second-brain**
+Patterns: "תזכור ש", "remember that", "מה אמרתי על", "what did I save", "save contact", "phone is", "password is", "bill is", "שמור את הטלפון"
+Types: notes (ideas/summaries), contacts (name+phone/email), kv facts (subject=value like bills/passwords)
 
 ### Step 3: Check for GMAIL
 If user mentions email/mail operations → capability = **gmail** (if connected)
@@ -234,7 +235,7 @@ User: "מה יש לי מחר?"
   }]
 }
 
-### E) Memory storage → secondbrain_resolver
+### E) Memory storage (note) → secondbrain_resolver
 User: "תזכור שדני אוהב פיצה"
 {
   "intentType": "operation",
@@ -247,6 +248,42 @@ User: "תזכור שדני אוהב פיצה"
     "capability": "second-brain",
     "action": "store memory",
     "constraints": { "rawMessage": "תזכור שדני אוהב פיצה" },
+    "changes": {},
+    "dependsOn": []
+  }]
+}
+
+### E2) Memory storage (contact) → secondbrain_resolver
+User: "Jones - phone 050-1234567, email jones@email.com, HVAC contractor"
+{
+  "intentType": "operation",
+  "confidence": 0.9,
+  "riskLevel": "low",
+  "needsApproval": false,
+  "missingFields": [],
+  "plan": [{
+    "id": "A",
+    "capability": "second-brain",
+    "action": "store memory",
+    "constraints": { "rawMessage": "Jones - phone 050-1234567, email jones@email.com, HVAC contractor" },
+    "changes": {},
+    "dependsOn": []
+  }]
+}
+
+### E3) Memory storage (kv) → secondbrain_resolver
+User: "WiFi password is 1234"
+{
+  "intentType": "operation",
+  "confidence": 0.9,
+  "riskLevel": "low",
+  "needsApproval": false,
+  "missingFields": [],
+  "plan": [{
+    "id": "A",
+    "capability": "second-brain",
+    "action": "store memory",
+    "constraints": { "rawMessage": "WiFi password is 1234" },
     "changes": {},
     "dependsOn": []
   }]
@@ -437,6 +474,7 @@ export class PlannerNode extends LLMNode {
       userMessage += `\nIMPORTANT: The user has clarified their intent. Plan accordingly with HIGH confidence.\n`;
       userMessage += `- If they said "יומן" / "calendar" → route to calendar capability\n`;
       userMessage += `- If they said "תזכורת" / "reminder" → route to database capability\n`;
+      userMessage += `- If they said "לשמור בזכרון" / "save to memory" / "remember" / "שמור בזכרון" → route to second-brain capability\n`;
       userMessage += `- Otherwise interpret their response as the desired action\n\n`;
     }
 
@@ -733,8 +771,8 @@ export class PlannerNode extends LLMNode {
       return state.user.capabilities.gmail ? 'gmail' : 'general';
     }
 
-    // Memory patterns (remember facts)
-    if (/תזכור ש|זכור ש|שמור.*ש|remember that|save.*that/i.test(message)) {
+    // Memory patterns (remember facts, contacts, key-value info)
+    if (/תזכור ש|זכור ש|שמור.*ש|שמור את הטלפון|שמור איש קשר|הסיסמא של|חשבון חשמל|remember that|save.*that|save contact|save phone|password is|bill is/i.test(message)) {
       return 'second-brain';
     }
 

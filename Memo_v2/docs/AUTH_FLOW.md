@@ -105,7 +105,7 @@ interface AuthContext {
    - Fetches Google tokens via `UserService.getGoogleTokens()` (1 DB call)
    - Refreshes tokens via `GoogleTokenManager.ensureFreshTokens()` (if needed)
    - Stores everything in `state.authContext`
-   - Derives lightweight `state.user` (UserContext) for prompts/planner
+   - Derives lightweight `state.user` (UserContext) for prompts/planner (includes optional `userName` from `users.settings.user_name`; used by ResponseWriterNode and morning digest)
 
 2. **ExecutorNode** reads `state.authContext` and passes it to adapters
 

@@ -131,7 +131,7 @@ export class ResponseWriterNode extends CodeNode {
       console.log(`[ResponseWriter] Partial failure detected, generating combined response`);
 
       // First generate success response
-      const successResponse = await this.generateSuccessResponse(formattedResponse, language, requestId);
+      const successResponse = await this.generateSuccessResponse(formattedResponse, language, requestId, state.user.userName);
 
       // Then generate failure explanation
       const failureExplanation = await this.generateErrorExplanation(formattedResponse.failedOperations!, language, requestId);
@@ -190,7 +190,7 @@ export class ResponseWriterNode extends CodeNode {
     }
 
     // For function call results (calendar, database, gmail, second-brain), use LLM with ResponseFormatterPrompt
-    const successResponse = await this.generateSuccessResponse(formattedResponse, language, requestId);
+    const successResponse = await this.generateSuccessResponse(formattedResponse, language, requestId, state.user.userName);
     return {
       finalResponse: successResponse,
     };
@@ -264,7 +264,8 @@ ${JSON.stringify(failureDetails, null, 2)}`;
   private async generateSuccessResponse(
     formattedResponse: FormattedResponse,
     language: 'he' | 'en',
-    requestId?: string
+    requestId?: string,
+    userName?: string
   ): Promise<string> {
     console.log('[ResponseWriter] Using LLM with ResponseFormatterPrompt for function call results');
 
@@ -277,14 +278,25 @@ ${JSON.stringify(failureDetails, null, 2)}`;
 
       // Build the prompt data for ResponseFormatterPrompt
       // The prompt expects JSON with _metadata field containing capability-specific context
+      const metadata: Record<string, any> = {
+        agent: formattedResponse.agent,
+        entityType: formattedResponse.entityType,
+        operation: formattedResponse.operation,
+        context: formattedResponse.context,
+        isMultiStep: isMultiStep,  // Flag for multi-capability responses
+      };
+      if (userName != null && userName !== '') {
+        metadata.userName = userName;
+        // Randomly require name at start (~50% of the time) so the agent actually uses it
+        const startWithUserName = Math.random() < 0.5;
+        metadata.startWithUserName = startWithUserName;
+        console.log(`[ResponseWriter] userName=${userName}, startWithUserName=${startWithUserName}`);
+        if (startWithUserName) {
+          console.log(`[ResponseWriter] Including user name at start for this response: ${userName}`);
+        }
+      }
       const promptData: Record<string, any> = {
-        _metadata: {
-          agent: formattedResponse.agent,
-          entityType: formattedResponse.entityType,
-          operation: formattedResponse.operation,
-          context: formattedResponse.context,
-          isMultiStep: isMultiStep,  // Flag for multi-capability responses
-        },
+        _metadata: metadata,
         ...formattedResponse.formattedData,
       };
 

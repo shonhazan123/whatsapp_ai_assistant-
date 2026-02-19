@@ -14,6 +14,8 @@ export interface UserContext {
 	language: "he" | "en" | "other";
 	planTier: "free" | "standard" | "pro";
 	googleConnected: boolean;
+	/** User's display name from users.settings.user_name; set at context assembly. */
+	userName?: string;
 	capabilities: {
 		calendar: boolean;
 		gmail: boolean;
@@ -333,9 +335,14 @@ export interface GmailResult {
  */
 export interface SecondBrainResult {
 	id?: string;
-	text: string;
+	type?: "note" | "contact" | "kv";
+	content?: string;
+	text?: string; // Legacy compat — prefer content
+	summary?: string;
+	tags?: string[];
 	metadata?: Record<string, any>;
 	similarity?: number;
+	overridden?: boolean;
 }
 
 // ============================================================================
@@ -393,6 +400,8 @@ export interface GmailResponseContext {
 export interface SecondBrainResponseContext {
 	isStored: boolean; // storeMemory operation
 	isSearch: boolean; // searchMemory operation
+	isOverride: boolean; // Memory was overridden (delete+insert)
+	memoryType: "note" | "contact" | "kv" | null; // Type of memory stored/found
 	isEmpty: boolean; // No results returned
 }
 

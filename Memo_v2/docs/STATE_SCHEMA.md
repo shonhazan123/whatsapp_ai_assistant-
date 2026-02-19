@@ -28,7 +28,7 @@ Canonical code: `Memo_v2/src/graph/index.ts`
 
 Writes:
 - `state.authContext`: hydrated once (user record + Google tokens + capability flags)
-- `state.user`: lightweight prompt-facing context derived from `authContext`
+- `state.user`: lightweight prompt-facing context derived from `authContext` (includes optional `userName` from `users.settings.user_name`, set when non-empty)
 - `state.input`: includes `message`, `userPhone`, `timezone`, `language`, message IDs
 - `state.recentMessages`: pulled from `MemoryService`
 - `state.now`

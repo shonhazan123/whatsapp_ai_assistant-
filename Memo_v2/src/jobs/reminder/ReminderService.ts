@@ -15,6 +15,8 @@ interface User {
   id: string;
   phone: string;
   timezone: string;
+  /** From users.settings.user_name; used only for morning digest greeting. */
+  userName?: string;
 }
 
 interface TaskWithUser extends Task {
@@ -240,8 +242,8 @@ export class ReminderService {
       }
       
       const userResult = await query(
-        `SELECT id, whatsapp_number AS phone, COALESCE(timezone, 'Asia/Jerusalem') as timezone 
-         FROM users 
+        `SELECT id, whatsapp_number AS phone, COALESCE(timezone, 'Asia/Jerusalem') AS timezone, settings
+         FROM users
          WHERE whatsapp_number = $1`,
         [userPhone]
       );
@@ -250,7 +252,16 @@ export class ReminderService {
         throw new Error(`User with phone ${userPhone} not found`);
       }
 
-      const user: User = userResult.rows[0];
+      const row = userResult.rows[0];
+      const settings = typeof row.settings === 'object' && row.settings !== null ? row.settings : {};
+      const rawName = settings.user_name;
+      const userName = typeof rawName === 'string' && rawName.trim() ? rawName.trim() : undefined;
+      const user: User = {
+        id: row.id,
+        phone: row.phone,
+        timezone: row.timezone,
+        ...(userName !== undefined && { userName }),
+      };
       
       const plannedTasks = await this.getTodaysTasks(user.id, user.timezone);
       const unplannedTasks = await this.getUnplannedTasks(user.id);
@@ -427,13 +438,23 @@ export class ReminderService {
   }
 
   /**
-   * Get all users with their timezone info
+   * Get all users with their timezone and settings (for morning digest: userName from settings).
    */
   private async getAllUsers(): Promise<User[]> {
     const result = await query(
-      'SELECT id, whatsapp_number AS phone, COALESCE(timezone, \'Asia/Jerusalem\') as timezone FROM users'
+      `SELECT id, whatsapp_number AS phone, COALESCE(timezone, 'Asia/Jerusalem') AS timezone, settings FROM users`
     );
-    return result.rows;
+    return result.rows.map((row: { id: string; phone: string; timezone: string; settings?: Record<string, unknown> }) => {
+      const settings = typeof row.settings === 'object' && row.settings !== null ? row.settings : {};
+      const rawName = settings.user_name;
+      const userName = typeof rawName === 'string' && rawName.trim() ? rawName.trim() : undefined;
+      return {
+        id: row.id,
+        phone: row.phone,
+        timezone: row.timezone,
+        ...(userName !== undefined && { userName }),
+      };
+    });
   }
 
   /**
@@ -908,8 +929,13 @@ export class ReminderService {
     }
   }
 
+  /** Instruction so the digest AI always responds in Hebrew. */
+  private static readonly DIGEST_LANGUAGE_INSTRUCTION =
+    'Critical: The user\'s language is Hebrew. You MUST write the entire message in Hebrew only. Do not use English.\n\n';
+
   /**
-   * Build data structure for daily digest with tasks and calendar events
+   * Build data structure for daily digest with tasks and calendar events.
+   * Greeting "בוקר טוב [name]" is prepended in code after AI response; here we only pass language instruction and content.
    */
   private buildDailyDigestData(plannedTasks: Task[], unplannedTasks: Task[], calendarEvents: any[], user: User): string {
     const today = new Date().toLocaleDateString('en-US', {
@@ -920,7 +946,7 @@ export class ReminderService {
     const incomplete = plannedTasks.filter(t => !t.completed);
     const completed = plannedTasks.filter(t => t.completed);
     
-    let data = `Today's Schedule - ${today}\n\n`;
+    let data = `${ReminderService.DIGEST_LANGUAGE_INSTRUCTION}Today's Schedule - ${today}\n\n`;
     
     // Calendar Events
     if (calendarEvents.length > 0) {
@@ -981,15 +1007,15 @@ export class ReminderService {
   }
 
   /**
-   * Build data structure for empty daily digest
+   * Build data structure for empty daily digest.
+   * Greeting "בוקר טוב [name]" is prepended in code after AI response; message must be in Hebrew.
    */
   private buildEmptyDigestData(user: User): string {
     const today = new Date().toLocaleDateString('en-US', {
       timeZone: user.timezone || 'Asia/Jerusalem',
       dateStyle: 'long'
     });
-    
-    return `Today's Schedule - ${today}\n\nNo tasks or events scheduled for today.`;
+    return `${ReminderService.DIGEST_LANGUAGE_INSTRUCTION}Today's Schedule - ${today}\n\nNo tasks or events scheduled for today. Write a short, friendly message in Hebrew only (e.g. that there are no tasks or events today). and if he / she wants - Donna is here to help plan the day`;
   }
 
   /**
@@ -1054,7 +1080,11 @@ export class ReminderService {
           const rawData = this.buildEmptyDigestData(user);
           message = await this.enhanceMessageWithAI(rawData, user.phone);
         }
-        
+        // Always start morning digest with "בוקר טוב [user_name]!" (or "בוקר טוב!" if no name)
+        const greeting = user.userName
+          ? `בוקר טוב ${user.userName}!\n\n`
+          : 'בוקר טוב!\n\n';
+        message = greeting + message;
         await sendWhatsAppMessage(user.phone, message);
         this.loggerInstance.info(`✅ Morning digest sent successfully to ${user.phone} (attempt ${attempt + 1})`);
         return true;

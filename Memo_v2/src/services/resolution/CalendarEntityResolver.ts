@@ -58,7 +58,7 @@ export class CalendarEntityResolver implements IEntityResolver {
     // Operations that need entity resolution
     const operationsNeedingResolution = [
       'get', 'update', 'delete', 'getRecurringInstances', 'truncateRecurring',
-      'deleteByWindow', 'updateByWindow'
+      'deleteByWindow', 'updateByWindow', 'deleteBySummary'
     ];
 
     // Check if resolution needed
@@ -77,6 +77,8 @@ export class CalendarEntityResolver implements IEntityResolver {
         return this.resolveSingleEvent(args, context, 'delete');
       case 'deleteByWindow':
         return this.resolveDeleteByWindow(args, context);
+      case 'deleteBySummary':
+        return this.resolveDeleteBySummary(args, context);
       case 'update':
         return this.resolveUpdate(args, context);
       case 'updateByWindow':
@@ -171,10 +173,18 @@ export class CalendarEntityResolver implements IEntityResolver {
       // Handle "both" or "all" for regular disambiguation (not recurring choice)
       if (lowerSelection === 'both' ||
         lowerSelection === 'שניהם' || lowerSelection === 'כולם') {
+        const resolvedArgs: Record<string, any> = {
+          ...args,
+          eventIds: candidates.map(c => c.id),
+        };
+        if (args.operation === 'deleteBySummary') {
+          resolvedArgs.deletedSummaries = candidates.map(c => c.entity?.summary || c.displayText);
+          resolvedArgs.originalEvents = candidates.map(c => c.entity);
+        }
         return {
           type: 'resolved',
           resolvedIds: candidates.map(c => c.id),
-          args: { ...args, eventIds: candidates.map(c => c.id) },
+          args: resolvedArgs,
         };
       }
 
@@ -206,14 +216,19 @@ export class CalendarEntityResolver implements IEntityResolver {
         };
       }
 
+      const arrayArgs: Record<string, any> = {
+        ...args,
+        eventId: selectedCandidates[0].id,
+        eventIds: selectedCandidates.map(c => c.id),
+      };
+      if (args.operation === 'deleteBySummary') {
+        arrayArgs.deletedSummaries = selectedCandidates.map(c => c.entity?.summary || c.displayText);
+        arrayArgs.originalEvents = selectedCandidates.map(c => c.entity);
+      }
       return {
         type: 'resolved',
         resolvedIds: selectedCandidates.map(c => c.id),
-        args: {
-          ...args,
-          eventId: selectedCandidates[0].id,
-          eventIds: selectedCandidates.map(c => c.id),
-        },
+        args: arrayArgs,
       };
     }
 
@@ -265,15 +280,21 @@ export class CalendarEntityResolver implements IEntityResolver {
     }
 
     // Regular selection (not recurring choice)
+    const singleArgs: Record<string, any> = {
+      ...args,
+      eventId: selected.id,
+      recurringEventId: selected.metadata?.recurringEventId,
+      isRecurring: selected.metadata?.isRecurring,
+    };
+    if (args.operation === 'deleteBySummary') {
+      singleArgs.summary = selected.entity?.summary;
+      singleArgs.start = selected.entity?.start?.dateTime || selected.entity?.start?.date;
+      singleArgs.end = selected.entity?.end?.dateTime || selected.entity?.end?.date;
+    }
     return {
       type: 'resolved',
       resolvedIds: [selected.id],
-      args: {
-        ...args,
-        eventId: selected.id,
-        recurringEventId: selected.metadata?.recurringEventId,
-        isRecurring: selected.metadata?.isRecurring,
-      },
+      args: singleArgs,
       isRecurring: selected.metadata?.isRecurring,
       recurringEventId: selected.metadata?.recurringEventId,
     };
@@ -592,6 +613,203 @@ export class CalendarEntityResolver implements IEntityResolver {
         originalEvents: Array.from(masterIds.values()).map(v => v.event),
       },
     };
+  }
+
+  /**
+   * Resolve delete by summary - delete ALL events matching a summary.
+   * Uses fuzzy matching + smart grouping with HITL disambiguation when ambiguous.
+   */
+  private async resolveDeleteBySummary(
+    args: Record<string, any>,
+    context: EntityResolverContext
+  ): Promise<ResolutionOutput> {
+    const summary = args.summary;
+
+    if (!summary) {
+      return {
+        type: 'clarify_query',
+        error: 'No event description provided for deleteBySummary',
+        searchedFor: '',
+        suggestions: ['Provide event summary/title'],
+      };
+    }
+
+    // Derive time window — wide defaults since user didn't specify one
+    let timeMin = args.timeMin;
+    let timeMax = args.timeMax;
+    if (!timeMin || !timeMax) {
+      const derived = this.deriveWindow(args, summary);
+      if (derived) {
+        timeMin = derived.timeMin;
+        timeMax = derived.timeMax;
+      } else {
+        const now = new Date();
+        timeMin = new Date(now.getTime() - TIME_WINDOW_DEFAULTS.CALENDAR_DEFAULT_DAYS_BACK * 24 * 60 * 60 * 1000).toISOString();
+        timeMax = new Date(now.getTime() + TIME_WINDOW_DEFAULTS.CALENDAR_DEFAULT_DAYS_FORWARD * 24 * 60 * 60 * 1000).toISOString();
+      }
+    }
+
+    // Fetch events
+    const calendarService = getCalendarService();
+    if (!calendarService) {
+      return { type: 'not_found', error: 'Calendar service unavailable' };
+    }
+    if (!context.authContext) {
+      return { type: 'not_found', error: 'User context required for calendar' };
+    }
+
+    const requestContext = this.buildRequestContext(context.authContext);
+    const eventsResp = await calendarService.getEvents(requestContext, { timeMin, timeMax });
+    if (!eventsResp.success || !eventsResp.data?.events) {
+      return { type: 'not_found', error: 'Failed to fetch events' };
+    }
+
+    const events = eventsResp.data.events as any[];
+
+    // Fuzzy match on summary
+    const matches = FuzzyMatcher.search<any>(
+      summary,
+      events,
+      ['summary', 'description'],
+      RESOLUTION_THRESHOLDS.CALENDAR_DELETE_THRESHOLD
+    );
+
+    if (matches.length === 0) {
+      return {
+        type: 'not_found',
+        error: getDisambiguationMessage('event_not_found', context.language, { searchedFor: summary }),
+        searchedFor: summary,
+      };
+    }
+
+    // Build candidates with scores
+    const candidates: ResolutionCandidate[] = matches.map(m => ({
+      id: m.item.id,
+      displayText: this.formatEventDisplay(m.item),
+      entity: m.item,
+      score: m.score,
+      metadata: {
+        isRecurring: !!m.item.recurringEventId,
+        recurringEventId: m.item.recurringEventId,
+        start: m.item.start,
+        end: m.item.end,
+      },
+    }));
+
+    // --- Smart grouping ---
+
+    // 1) All same recurring series → auto-resolve all (delete series)
+    if (this.checkAllSameRecurringSeries(candidates)) {
+      console.log(`[CalendarEntityResolver] deleteBySummary: all ${candidates.length} candidates from same recurring series`);
+      const masterIds = this.collectMasterIds(candidates);
+      return {
+        type: 'resolved',
+        resolvedIds: Array.from(masterIds.keys()),
+        args: {
+          ...args,
+          operation: 'deleteBySummary',
+          eventIds: Array.from(masterIds.keys()),
+          deletedSummaries: Array.from(masterIds.values()).map(v => v.summary),
+          originalEvents: Array.from(masterIds.values()).map(v => v.event),
+        },
+      };
+    }
+
+    // 2) All identical summaries (exact case-insensitive match) → auto-resolve all
+    const allIdenticalSummary = candidates.every(
+      c => (c.entity?.summary || '').toLowerCase().trim() === (candidates[0].entity?.summary || '').toLowerCase().trim()
+    );
+    if (allIdenticalSummary && candidates.length > 1) {
+      console.log(`[CalendarEntityResolver] deleteBySummary: all ${candidates.length} candidates have identical summary`);
+      const masterIds = this.collectMasterIds(candidates);
+      return {
+        type: 'resolved',
+        resolvedIds: Array.from(masterIds.keys()),
+        args: {
+          ...args,
+          operation: 'deleteBySummary',
+          eventIds: Array.from(masterIds.keys()),
+          deletedSummaries: Array.from(masterIds.values()).map(v => v.summary),
+          originalEvents: Array.from(masterIds.values()).map(v => v.event),
+        },
+      };
+    }
+
+    // 3) Single match → resolve, check recurring HITL
+    if (candidates.length === 1) {
+      const selected = candidates[0];
+      const recurringResult = this.handleRecurringEventResolution(selected, args, context, 'delete');
+      if (recurringResult) return recurringResult;
+
+      return {
+        type: 'resolved',
+        resolvedIds: [selected.id],
+        args: {
+          ...args,
+          operation: 'deleteBySummary',
+          eventId: selected.id,
+          summary: selected.entity?.summary,
+          start: selected.entity?.start?.dateTime || selected.entity?.start?.date,
+          end: selected.entity?.end?.dateTime || selected.entity?.end?.date,
+          recurringEventId: selected.metadata?.recurringEventId,
+          isRecurring: selected.metadata?.isRecurring,
+          isRecurringSeries: args.recurringSeriesIntent || false,
+        },
+      };
+    }
+
+    // 4) Multiple different matches — check score gap
+    const scoreGap = candidates[0].score - candidates[1].score;
+    if (scoreGap >= RESOLUTION_THRESHOLDS.DISAMBIGUATION_GAP) {
+      // High confidence in top match — treat as single
+      const selected = candidates[0];
+      const recurringResult = this.handleRecurringEventResolution(selected, args, context, 'delete');
+      if (recurringResult) return recurringResult;
+
+      return {
+        type: 'resolved',
+        resolvedIds: [selected.id],
+        args: {
+          ...args,
+          operation: 'deleteBySummary',
+          eventId: selected.id,
+          summary: selected.entity?.summary,
+          start: selected.entity?.start?.dateTime || selected.entity?.start?.date,
+          end: selected.entity?.end?.dateTime || selected.entity?.end?.date,
+          recurringEventId: selected.metadata?.recurringEventId,
+          isRecurring: selected.metadata?.isRecurring,
+          isRecurringSeries: args.recurringSeriesIntent || false,
+        },
+      };
+    }
+
+    // 5) Ambiguous — HITL disambiguation
+    const behavior = getOperationBehavior('calendar', 'deleteBySummary');
+    console.log(`[CalendarEntityResolver] deleteBySummary: ${candidates.length} ambiguous candidates, triggering disambiguation`);
+    return {
+      type: 'disambiguation',
+      candidates: candidates.slice(0, 5),
+      question: this.buildDisambiguationQuestion(candidates.slice(0, 5), context.language),
+      allowMultiple: behavior.allowSelectAll,
+    };
+  }
+
+  /**
+   * Collect master IDs from candidates, deduplicating recurring instances.
+   */
+  private collectMasterIds(candidates: ResolutionCandidate[]): Map<string, { id: string; summary: string; event: any }> {
+    const masterIds = new Map<string, { id: string; summary: string; event: any }>();
+    for (const c of candidates) {
+      const masterId = c.metadata?.recurringEventId || c.id;
+      if (!masterIds.has(masterId)) {
+        masterIds.set(masterId, {
+          id: masterId,
+          summary: c.entity?.summary || 'Untitled Event',
+          event: c.entity,
+        });
+      }
+    }
+    return masterIds;
   }
 
   /**

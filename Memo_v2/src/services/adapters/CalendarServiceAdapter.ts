@@ -134,6 +134,9 @@ export class CalendarServiceAdapter {
         case 'deleteByWindow':
           return await this.deleteByWindow(calendarService, context, args);
 
+        case 'deleteBySummary':
+          return await this.deleteBySummary(calendarService, context, args);
+
         case 'updateByWindow':
           return await this.updateByWindow(calendarService, context, args);
 
@@ -540,6 +543,108 @@ export class CalendarServiceAdapter {
       },
       error: errors.length > 0 ? `Failed to delete ${errors.length} events` : undefined,
     };
+  }
+
+  /**
+   * Delete all events matching a summary.
+   * Handles single, bulk, and recurring series deletions based on resolved args from EntityResolver.
+   */
+  private async deleteBySummary(calendarService: any, context: RequestUserContext, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
+    const isRecurringSeries = args.isRecurringSeries || false;
+
+    // Case 1: Recurring series delete
+    if (isRecurringSeries) {
+      const recurringId = (args as any).recurringEventId || args.eventId;
+      if (!recurringId) {
+        return { success: false, error: 'Recurring event ID required for series delete' };
+      }
+      console.log(`[CalendarServiceAdapter] deleteBySummary: Deleting recurring series ${recurringId}`);
+      const result = await calendarService.deleteRecurringSeries(context, recurringId);
+      return {
+        success: result.success,
+        data: {
+          ...result.data,
+          isRecurringSeries: true,
+          summary: args.summary,
+        },
+        error: result.error,
+      };
+    }
+
+    // Case 2: Bulk delete (multiple events matched by summary)
+    if (args.eventIds && args.eventIds.length > 0) {
+      const originalEvents = args.originalEvents || [];
+      console.log(`[CalendarServiceAdapter] deleteBySummary: Deleting ${args.eventIds.length} events matching summary`);
+
+      const eventMap = new Map<string, any>();
+      originalEvents.forEach((event: any) => {
+        const masterId = event.recurringEventId || event.id;
+        if (masterId && !eventMap.has(masterId)) {
+          eventMap.set(masterId, event);
+        }
+      });
+
+      const deleted: string[] = [];
+      const errors: Array<{ eventId: string; error: string }> = [];
+
+      for (const eventId of args.eventIds) {
+        try {
+          const result = await calendarService.deleteEvent(context, eventId);
+          if (result.success) {
+            deleted.push(eventId);
+          } else {
+            errors.push({ eventId, error: result.error || 'Unknown error' });
+          }
+        } catch (error: any) {
+          errors.push({ eventId, error: error.message || String(error) });
+        }
+      }
+
+      console.log(`[CalendarServiceAdapter] deleteBySummary: Deleted ${deleted.length}, errors: ${errors.length}`);
+
+      const events = deleted.map(id => {
+        const event = eventMap.get(id);
+        if (event) {
+          return {
+            id: event.id,
+            summary: event.summary || 'Untitled Event',
+            start: event.start?.dateTime || event.start?.date,
+            end: event.end?.dateTime || event.end?.date,
+          };
+        }
+        return null;
+      }).filter((e): e is NonNullable<typeof e> => e !== null);
+
+      return {
+        success: deleted.length > 0,
+        data: {
+          deleted: deleted.length,
+          eventIds: deleted,
+          summaries: args.deletedSummaries,
+          events: events.length > 0 ? events : undefined,
+          errors: errors.length > 0 ? errors : undefined,
+        },
+        error: errors.length > 0 ? `Failed to delete ${errors.length} events` : undefined,
+      };
+    }
+
+    // Case 3: Single event delete
+    if (args.eventId) {
+      console.log(`[CalendarServiceAdapter] deleteBySummary: Deleting single event ${args.eventId}`);
+      const result = await calendarService.deleteEvent(context, args.eventId);
+      return {
+        success: result.success,
+        data: {
+          ...result.data,
+          summary: args.summary,
+          start: args.start,
+          end: args.end,
+        },
+        error: result.error,
+      };
+    }
+
+    return { success: false, error: 'No event ID(s) provided for deleteBySummary' };
   }
 
   /**
