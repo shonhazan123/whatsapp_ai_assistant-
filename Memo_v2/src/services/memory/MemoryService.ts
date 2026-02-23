@@ -11,11 +11,12 @@
  * - Validate message existence
  */
 
-import type { ConversationMessage as MemoStateMessage, DisambiguationContext, ImageContext } from '../../types/index.js';
-import { ConversationWindow, type ConversationMessage as CWMessage, type RecentTaskSnapshot } from './ConversationWindow.js';
+import type { ConversationMessage as MemoStateMessage, DisambiguationContext, ImageContext, LatestAction } from '../../types/index.js';
+import { ConversationWindow, type ConversationMessage as CWMessage, type LatestActionRecord, type RecentTaskSnapshot } from './ConversationWindow.js';
 
 // Re-export types for convenience
 export type { RecentTaskSnapshot } from './ConversationWindow.js';
+export type { LatestActionRecord } from './ConversationWindow.js';
 
 /**
  * MemoryService - Singleton service for conversation memory management
@@ -203,6 +204,44 @@ export class MemoryService {
       replyToMessageId: msg.replyToMessageId,
       metadata: msg.metadata ? this.convertMetadataToMemoState(msg.metadata) : undefined,
     };
+  }
+
+  // ============================================================================
+  // LATEST ACTIONS (per-session, for referential follow-ups)
+  // ============================================================================
+
+  /**
+   * Push one or more latest actions (FIFO, max 10 enforced by ConversationWindow).
+   */
+  public pushLatestActions(phone: string, actions: LatestAction[]): void {
+    if (!actions || actions.length === 0) return;
+
+    const records: LatestActionRecord[] = actions.map(a => ({
+      createdAt: a.createdAt,
+      capability: a.capability,
+      action: a.action,
+      summary: a.summary,
+      when: a.when,
+      externalIds: a.externalIds,
+    }));
+
+    this.conversationWindow.pushLatestActions(phone, records);
+    console.log(`[MemoryService] Pushed ${records.length} latestActions for ${phone}`);
+  }
+
+  /**
+   * Get latest actions in MemoState format (most-recent first).
+   */
+  public getLatestActions(phone: string, limit?: number): LatestAction[] {
+    const records = this.conversationWindow.getLatestActions(phone, limit);
+    return records.map(r => ({
+      createdAt: r.createdAt,
+      capability: r.capability,
+      action: r.action,
+      summary: r.summary,
+      when: r.when,
+      externalIds: r.externalIds,
+    })).reverse(); // most-recent first
   }
 
   // ============================================================================

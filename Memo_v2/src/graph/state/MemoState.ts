@@ -16,6 +16,7 @@ import type {
   ExecutionResult,
   FormattedResponse,
   HITLResultEntry,
+  LatestAction,
   MessageInput,
   PendingHITL,
   PlannerOutput,
@@ -131,6 +132,12 @@ export const MemoStateAnnotation = Annotation.Root({
 
   longTermSummary: Annotation<string | undefined>({
     default: () => undefined,
+    reducer: (_, update) => update,
+  }),
+
+  // === LATEST ACTIONS (per-session, for referential follow-ups like "it/that/זה") ===
+  latestActions: Annotation<LatestAction[]>({
+    default: () => [],
     reducer: (_, update) => update,
   }),
 
@@ -295,6 +302,7 @@ export function createInitialState(partial: Partial<MemoState> = {}): MemoState 
     },
     recentMessages: partial.recentMessages || [],
     longTermSummary: partial.longTermSummary,
+    latestActions: partial.latestActions || [],
     plannerOutput: partial.plannerOutput,
     routingSuggestions: partial.routingSuggestions,
     disambiguation: partial.disambiguation,

@@ -344,9 +344,9 @@ export abstract class LLMResolver extends BaseResolver {
     // Add recent context if available
     if (state.recentMessages.length > 0) {
       userMessage += `Recent conversation:\n`;
-      const recent = state.recentMessages.slice(-3);
+      const recent = state.recentMessages.slice(-6);
       for (const msg of recent) {
-        userMessage += `${msg.role}: ${msg.content.substring(0, 100)}...\n`;
+        userMessage += `${msg.role}: ${msg.content.substring(0, 250)}...\n`;
       }
       userMessage += '\n';
     }

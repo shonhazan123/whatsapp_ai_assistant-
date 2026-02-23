@@ -33,6 +33,7 @@ Writes:
 - `state.user`: lightweight prompt-facing context derived from `authContext` (includes optional `userName`)
 - `state.input`: includes `message`, `userPhone`, `timezone`, `language`, message IDs
 - `state.recentMessages`: pulled from `MemoryService`
+- `state.latestActions`: last 3 executed actions (most-recent first) from `MemoryService`, used by PlannerNode to resolve referential follow-ups ("it/that/זה")
 - `state.now`
 - `state.threadId`: conversation identity (WhatsApp phone)
 - `state.traceId`: per-request chain ID, immutable once set
@@ -143,7 +144,17 @@ Canonical code: `Memo_v2/src/graph/nodes/ExecutorNode.ts`
 - `JoinNode`: detects partial/complete failures (no interrupts).
 - `ResponseFormatterNode`: normalizes adapter return shapes, formats dates, builds per-capability context, captures failures.
 - `ResponseWriterNode`: writes final user message.
-- `MemoryUpdateNode`: updates `recentMessages`.
+- `MemoryUpdateNode`: updates `recentMessages`; also extracts **all** successful execution results into `latestActions` (per-session FIFO, max 10, stored in `ConversationWindow`).
+
+## LatestActions contract
+
+- **Type**: `LatestAction[]` (defined in `Memo_v2/src/types/index.ts`)
+- **Fields**: `createdAt`, `capability`, `action`, `summary`, `when?`, `externalIds?`
+- **Storage**: `ConversationWindow` in-memory map, per userPhone, 12h session scope, FIFO max 10.
+- **Written by**: `MemoryUpdateNode` — iterates all plan steps; for each `executionResults.get(stepId).success === true`, builds and pushes a `LatestAction`.
+- **Read by**: `ContextAssemblyNode` — fetches last 3 (most-recent first) into `state.latestActions`.
+- **Consumed by**: `PlannerNode` — injected as a tiny `## Latest Actions` block in the user message; used to resolve referential language ("it/that/זה").
+- **Planner rule**: most-recent action is the strongest candidate when user uses referential language. Only triggers `intent_unclear` HITL when no latestAction is plausible.
 
 ## HITL timeout (current behavior)
 

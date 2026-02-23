@@ -58,6 +58,8 @@ Planner writes `state.plannerOutput`:
 
 Planner also writes `state.routingSuggestions` (pattern hints) used for HITL clarification wording.
 
+Planner receives `state.latestActions` (last 3, most-recent first) as a tiny hint block. When user uses referential language ("it/that/זה/אותו"), planner uses the most-recent action as the strongest candidate. Only emits `intent_unclear` when no latestAction is plausible.
+
 ## 2) HITL trigger rules
 
 In `HITLGateNode.checkPlannerHITLConditions()` (priority order):

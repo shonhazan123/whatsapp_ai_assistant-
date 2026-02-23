@@ -370,21 +370,27 @@ export class HITLGateNode {
         rawReply,
       }));
 
-      const language = state.user.language;
-      const errorPrefix = language === 'he'
-        ? '❌ לא הבנתי את התשובה. '
-        : '❌ I didn\'t understand your answer. ';
-
-      const updatedPending: PendingHITL = {
-        ...pending,
-        question: errorPrefix + pending.question,
+      // Do NOT continue with the pending action. Treat the user's message as a new request
+      // and re-route to planner so we plan for the new input (e.g. "מה האירועים שלי?" instead of yes/no).
+      const newInput = {
+        ...state.input,
+        message: rawReply,
+        enhancedMessage: rawReply,
       };
-
+      const hitlExchange: MemoState['recentMessages'] = [
+        { role: 'assistant', content: pending.question, timestamp: new Date().toISOString() },
+        { role: 'user', content: rawReply, timestamp: new Date().toISOString() },
+      ];
+      console.log(`[HITLGateNode] Invalid reply: re-routing to planner with new message as input: "${rawReply.slice(0, 80)}${rawReply.length > 80 ? '...' : ''}"`);
       return new Command({
         update: {
-          pendingHITL: updatedPending,
+          pendingHITL: null,
+          input: newInput,
+          recentMessages: hitlExchange,
+          // Clear old plan so planner runs fresh on the new message and downstream uses new plan
+          plannerOutput: undefined,
         } as Partial<MemoState>,
-        goto: 'hitl_gate',
+        goto: 'planner',
       });
     }
 
@@ -743,7 +749,7 @@ Generate a short, warm confirmation message:`;
         model: 'gpt-4o-mini',
         temperature: 0.7,
         maxTokens: 150,
-        
+
       });
 
       const message = response.content?.trim();
@@ -868,9 +874,10 @@ Generate a friendly, conversational clarification message in ${language === 'he'
   }
 
   // ========================================================================
-  // MEMORY HELPERS
+  // MEMORY HELPERS (so HITL Q&A appear in recent context for planner/response)
   // ========================================================================
 
+  /** Persist the HITL question (confirmation/clarification) so it appears in recentMessages for future context. */
   private addInterruptMessageToMemory(state: MemoState, question: string | undefined): void {
     if (!question) return;
     try {

@@ -157,7 +157,19 @@ Examples:
 - "תמחק את הפגישה עם דני" → name exists → NO "target_unclear"
 - "תמחק את התזכורות" → no names, no time window → YES "target_unclear"
 
-### 6) Risk/approval
+### 6) Referential language ("it/that/this/זה/אותו/אותה/גם/also/that too")
+When the user's message uses referential language (e.g., "תכניסי לי את זה גם ליומן", "move it to 5pm", "delete it", "גם אותו הדבר") and does NOT explicitly name a target:
+- Check the **Latest Actions** section in the user context. The **first item** (most recent) is the strongest candidate.
+- The user's message tells you WHAT TO DO with the referent (e.g., "גם ליומן" = also add to calendar, "תזיזי" = move/update, "תמחקי" = delete).
+- Use the referent's summary/when/capability to build the plan step with HIGH confidence.
+- If the most-recent action doesn't fit, try the 2nd or 3rd action.
+- ONLY set "intent_unclear" + confidence < 0.6 when:
+  * Latest Actions is empty, OR
+  * None of the latest actions are plausible referents, OR
+  * The desired action itself is genuinely ambiguous (not just referential)
+- NEVER create a brand-new entity from thin air when the user is clearly referring to a prior action.
+
+### 7) Risk/approval
 - riskLevel: low=create/read, medium=update, high=delete/send email/bulk delete.
 - needsApproval = true for any high-risk step.
 
@@ -403,6 +415,25 @@ User: "מחר בבוקר יש לי אימון בשמונה, חלאקה לאימ�
   }]
 }
 
+### L) Referential follow-up → use Latest Actions
+User previously created a reminder "לקנות חלב מחר ב-8". Now user says: "תכניסי לי את זה גם ליומן"
+Latest Actions shows: [database] create reminder: "לקנות חלב" | 2026-02-24T08:00
+{
+  "intentType": "operation",
+  "confidence": 0.9,
+  "riskLevel": "low",
+  "needsApproval": false,
+  "missingFields": [],
+  "plan": [{
+    "id": "A",
+    "capability": "calendar",
+    "action": "create event",
+    "constraints": { "rawMessage": "תכניסי לי את זה גם ליומן", "extractedInfo": { "summary": "לקנות חלב", "when": "2026-02-24T08:00", "source": "latestAction_reference" } },
+    "changes": {},
+    "dependsOn": []
+  }]
+}
+
 ## HARD RULES
 - Output ONLY JSON (no markdown, no comments).
 - Always include constraints.rawMessage for every step.
@@ -500,8 +531,18 @@ export class PlannerNode extends LLMNode {
       // Provide a larger window so the Planner can understand context, not just the last input
       const recent = state.recentMessages.slice(-10);
       for (const msg of recent) {
-        const preview = msg.content.length > 200 ? msg.content.substring(0, 200) + '...' : msg.content;
+        const preview = msg.content.length > 350 ? msg.content.substring(0, 350) + '...' : msg.content;
         userMessage += `[${msg.role}]: ${preview}\n`;
+      }
+      userMessage += '\n';
+    }
+
+    // Latest executed actions (most-recent first) - for resolving "it/that/זה" references
+    if (state.latestActions && state.latestActions.length > 0) {
+      userMessage += `## Latest Actions (most-recent first)\n`;
+      for (const action of state.latestActions) {
+        const whenPart = action.when ? ` | ${action.when}` : '';
+        userMessage += `- [${action.capability}] ${action.action}: "${action.summary}"${whenPart}\n`;
       }
       userMessage += '\n';
     }

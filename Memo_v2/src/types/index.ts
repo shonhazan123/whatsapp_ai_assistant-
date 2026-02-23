@@ -175,6 +175,19 @@ export interface RecentTaskSnapshot {
 }
 
 // ============================================================================
+// LATEST ACTIONS (per-session action memory for referential follow-ups)
+// ============================================================================
+
+export interface LatestAction {
+	createdAt: string; // ISO timestamp of when the action was executed
+	capability: string; // "calendar" | "database" | "gmail" | "second-brain" | ...
+	action: string; // semantic hint from PlanStep.action (e.g. "create reminder")
+	summary: string; // short human label: event summary / task text / email subject
+	when?: string; // ISO datetime or date range if applicable
+	externalIds?: Record<string, string | string[]>; // eventId, taskId, etc.
+}
+
+// ============================================================================
 // PLANNER OUTPUT
 // ============================================================================
 
