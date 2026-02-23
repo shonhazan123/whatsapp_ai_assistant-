@@ -222,8 +222,7 @@ export class MemoryService {
     return {
       type: ctx.entityType as DisambiguationContext['type'],
       candidates: ctx.candidates,
-      resolverStepId: '', // Will be filled by EntityResolutionNode
-      question: undefined,
+      resolverStepId: '',
       allowMultiple: false,
     };
   }

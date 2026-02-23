@@ -21,16 +21,25 @@ alwaysApply: false
 - `EntityResolutionNode` is responsible for producing **ID-resolved args** into `state.executorArgs`.
 - `ExecutorNode` must prefer `executorArgs` over `resolverResults` when both exist.
 
-## HITL contract
+## HITL contract (canonical control-plane)
 
-- Use LangGraph `interrupt()` only through:
-  - `HITLGateNode` (Planner HITL + entity disambiguation HITL)
-- Disambiguation HITL must flow:
-  - Entity resolver returns `type:'disambiguation'`
-  - `EntityResolutionNode` sets `needsHITL + hitlReason='disambiguation' + disambiguation payload`
-  - Graph routes to HITL
-  - Resume writes `disambiguation.userSelection`
-  - Entity resolver `applySelection(...)` produces resolved IDs/args
+- Single contract: **one `pendingHITL` at a time** in state.
+- `interrupt()` is called only by `HITLGateNode`.
+- Resume routing is deterministic via `Command({ update, goto })` derived from `pendingHITL.returnTo`.
+- All HITL results stored in `state.hitlResults[hitlId]`.
+- Canonical types in `Memo_v2/src/types/hitl.ts`.
+- Disambiguation HITL flow:
+  - Entity resolver returns `type:'disambiguation'` (machine-only, no user-facing text)
+  - `EntityResolutionNode` sets `state.disambiguation` (candidates + metadata)
+  - `entityResolutionRouter` routes to `hitl_gate`
+  - `HITLGateNode` creates `pendingHITL` with `kind:'disambiguation'`, interrupts
+  - On resume: `HITLGateNode` validates, writes `hitlResults`, `Command({ goto: 'entity_resolution' })`
+  - `EntityResolutionNode` reads selection from `hitlResults` + `disambiguation.userSelection`, calls `applySelection()`
+- Planner HITL flow:
+  - `HITLGateNode` checks planner conditions (confidence, missingFields, risk, approval)
+  - Creates `pendingHITL` with `kind:'clarification'|'approval'`, interrupts
+  - On resume: routes to `planner` (replan) or `resolver_router` (continue)
+- Executor idempotency: `operationId = traceId + ':' + stepId` checked in `executedOperations` ledger.
 
 See: `Memo_v2/docs/PLANNER_AND_HITL_FLOW.md`.
 

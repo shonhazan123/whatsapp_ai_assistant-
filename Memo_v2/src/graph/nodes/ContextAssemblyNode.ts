@@ -12,6 +12,7 @@
  * ✅ Deterministic
  */
 
+import { randomUUID } from 'crypto';
 import { GoogleTokenManager } from '../../legacy/services/auth/GoogleTokenManager.js';
 import { getMemoryService } from '../../services/memory/index.js';
 import { getUserService } from '../../services/v1-services.js';
@@ -52,6 +53,11 @@ export class ContextAssemblyNode extends CodeNode {
     // 6. Build time context
     const now = this.buildTimeContext();
 
+    // threadId = conversation identity (WhatsApp phone / session key)
+    const threadId = this.input.userPhone;
+    // traceId = per-request chain, stable across resume (immutable once set)
+    const traceId = state.traceId || this.input.whatsappMessageId || randomUUID();
+
     return createInitialState({
       user,
       authContext,
@@ -67,6 +73,8 @@ export class ContextAssemblyNode extends CodeNode {
       now,
       recentMessages,
       longTermSummary,
+      threadId,
+      traceId,
     });
   }
 

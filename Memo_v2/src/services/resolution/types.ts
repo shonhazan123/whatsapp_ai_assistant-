@@ -25,26 +25,32 @@ export interface ResolutionCandidate {
 }
 
 /**
- * Output from entity resolution
+ * Output from entity resolution.
+ * Machine-only: no user-facing question text.
+ * HITLGateNode is responsible for building the user-facing question.
  */
 export interface ResolutionOutput {
   type: ResolutionOutputType;
-  
-  // For 'resolved' - can be single or multiple IDs
+
+  // For 'resolved'
   resolvedIds?: string[];
   args?: Record<string, any>;
-  
-  // For 'disambiguation'
+
+  // For 'disambiguation' (machine-only: candidates + metadata)
   candidates?: ResolutionCandidate[];
+  /** @deprecated — HITLGateNode builds user-facing question. Kept for backward compat. */
   question?: string;
-  allowMultiple?: boolean;  // "which one or both?"
-  
+  allowMultiple?: boolean;
+  disambiguationKind?: 'pick_one' | 'pick_many' | 'recurring_scope' | 'conflict_override';
+
   // For 'not_found' / 'clarify_query'
   error?: string;
   searchedFor?: string;
   suggestions?: string[];
-  
-  // For calendar - additional info
+  /** @deprecated — Kept for backward compat. Use machine codes instead. */
+  validationErrorCode?: 'invalid_selection';
+
+  // For calendar
   isRecurring?: boolean;
   recurringEventId?: string;
 }
@@ -138,30 +144,26 @@ export interface IEntityResolver {
 // ============================================================================
 
 /**
- * Disambiguation context stored in MemoState
+ * Disambiguation context stored in MemoState (machine-only).
+ * User-facing question/options are built by HITLGateNode.
  */
 export interface DisambiguationState {
   type: EntityDomain | 'error';
-  
-  // For disambiguation
+
+  // Machine-only disambiguation
   candidates?: ResolutionCandidate[];
-  question?: string;
   allowMultiple?: boolean;
-  
+  disambiguationKind?: 'pick_one' | 'pick_many' | 'recurring_scope' | 'conflict_override';
+
   // For errors
   error?: string;
   searchedFor?: string;
   suggestions?: string[];
-  
+
   // State tracking
   stepId: string;
   originalArgs: Record<string, any>;
   userSelection?: number | number[] | string;
   resolved?: boolean;
 }
-
-/**
- * HITL reason for tracking
- */
-export type HITLReason = 'disambiguation' | 'not_found' | 'clarify_query' | 'confirmation' | 'approval';
 

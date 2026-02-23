@@ -431,11 +431,12 @@ export class PlannerNode extends LLMNode {
     const modelConfig = getNodeModel('planner');
     const message = state.input.enhancedMessage || state.input.message;
 
-    // Check if we're re-planning after intent_unclear HITL
-    const isReplanning = state.hitlType === 'intent_unclear' && !!state.plannerHITLResponse;
-    
+    // Check if we're re-planning after intent_unclear HITL via canonical hitlResults
+    const replanEntry = this.findReplanHITLResult(state);
+    const isReplanning = !!replanEntry;
+
     if (isReplanning) {
-      console.log(`[PlannerNode] Re-planning after intent clarification: "${state.plannerHITLResponse}"`);
+      console.log(`[PlannerNode] Re-planning after intent clarification: "${replanEntry!.raw}"`);
     }
 
     // Get routing suggestions for disambiguation context (used by HITLGateNode)
@@ -447,13 +448,9 @@ export class PlannerNode extends LLMNode {
     // Make LLM call for planning
     const plannerOutput = await this.callLLM(userMessage, state, modelConfig);
 
-    // Clear hitlType and plannerHITLResponse after re-planning to avoid loops
     return {
       plannerOutput,
-      routingSuggestions, // Pass to HITLGateNode for contextual clarification messages
-      // Clear HITL state after re-planning
-      hitlType: isReplanning ? undefined : state.hitlType,
-      plannerHITLResponse: isReplanning ? undefined : state.plannerHITLResponse,
+      routingSuggestions,
     };
   }
 
@@ -467,15 +464,19 @@ export class PlannerNode extends LLMNode {
     let userMessage = `Current time: ${state.now.formatted}\n\n`;
 
     // If re-planning after intent clarification, include the clarification prominently
-    if (isReplanning && state.plannerHITLResponse) {
-      userMessage += `## INTENT CLARIFICATION (User was asked what they want to do)\n`;
-      userMessage += `Original message: "${message}"\n`;
-      userMessage += `User clarified they want: **${state.plannerHITLResponse}**\n`;
-      userMessage += `\nIMPORTANT: The user has clarified their intent. Plan accordingly with HIGH confidence.\n`;
-      userMessage += `- If they said "יומן" / "calendar" → route to calendar capability\n`;
-      userMessage += `- If they said "תזכורת" / "reminder" → route to database capability\n`;
-      userMessage += `- If they said "לשמור בזכרון" / "save to memory" / "remember" / "שמור בזכרון" → route to second-brain capability\n`;
-      userMessage += `- Otherwise interpret their response as the desired action\n\n`;
+    if (isReplanning) {
+      const clarification = this.findReplanHITLResult(state);
+      if (clarification) {
+        userMessage += `## INTENT CLARIFICATION (User was asked what they want to do)\n`;
+        userMessage += `Original message: "${message}"\n`;
+        userMessage += `User clarified they want: **${clarification.raw}**\n`;
+        userMessage += `\nIMPORTANT: The user has clarified their intent. Plan accordingly with HIGH confidence.\n`;
+        userMessage += `- If they said "יומן" / "calendar" / "מה יש לי" → route to calendar capability\n`;
+        userMessage += `- If they said "תזכורת" / "תזכורות" / "reminder" / "reminders" / "מה יש בתזכורות" / "מה התזכורות" / "what's in my reminders" → route to **database** capability, action **list tasks**\n`;
+        userMessage += `- If they said "משימות" / "tasks" and want to see them → database, action **list tasks**\n`;
+        userMessage += `- If they said "לשמור בזכרון" / "save to memory" / "remember" / "שמור בזכרון" → route to second-brain capability\n`;
+        userMessage += `- Otherwise interpret their response as the desired action\n\n`;
+      }
     }
 
     // PRE-ROUTING HINTS - Pattern matching results to guide LLM
@@ -514,6 +515,16 @@ export class PlannerNode extends LLMNode {
     userMessage += `## User Message\n${message}`;
 
     return userMessage;
+  }
+
+  /**
+   * Find the most recent hitlResult that triggered a replan (returnTo planner+replan).
+   */
+  private findReplanHITLResult(state: MemoState): { raw: string; parsed: any } | null {
+    if (!state.hitlResults) return null;
+    const entries = Object.values(state.hitlResults);
+    const replan = entries.find(e => e.returnTo?.node === 'planner' && e.returnTo?.mode === 'replan');
+    return replan || null;
   }
 
   private async callLLM(

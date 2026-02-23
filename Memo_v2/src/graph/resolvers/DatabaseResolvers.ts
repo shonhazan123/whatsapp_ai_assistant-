@@ -692,10 +692,11 @@ Output only the JSON, no explanation. NEVER include IDs you don't have.`;
       );
     }
 
-    // Include user's clarification response if resumed HITL
-    if (state.plannerHITLResponse) {
+    // Include user's clarification response from canonical hitlResults
+    const clarification = this.findClarificationResult(state);
+    if (clarification) {
       userMessage += `## User Clarification\n`;
-      userMessage += `The user was asked for more information and responded: "${state.plannerHITLResponse}"\n`;
+      userMessage += `The user was asked for more information and responded: "${clarification}"\n`;
       userMessage += `This clarification applies to the original request below. Extract all relevant info from BOTH messages.\n\n`;
     }
 
@@ -728,10 +729,17 @@ Output only the JSON, no explanation. NEVER include IDs you don't have.`;
       
       const args = await this.callLLM(step, state);
       
-      // Validate that we got an operation
+      // Validate that we got an operation (required for TaskServiceAdapter)
       if (!args.operation) {
-        console.warn(`[${this.name}] LLM did not return operation, defaulting to 'getAll'`);
-        args.operation = 'getAll';
+        const listActions = ['list tasks', 'list_tasks', 'list reminders', 'list_reminders'];
+        const action = (step.action || '').toLowerCase().replace(/\s+/g, '_');
+        if (listActions.includes(step.action || '') || listActions.includes(action)) {
+          args.operation = 'getAll';
+          console.log(`[${this.name}] No operation from LLM; step action "${step.action}" → operation getAll`);
+        } else {
+          console.warn(`[${this.name}] LLM did not return operation, defaulting to 'getAll'`);
+          args.operation = 'getAll';
+        }
       }
       
       console.log(`[${this.name}] LLM determined operation: ${args.operation}`);
@@ -781,7 +789,7 @@ Output only the JSON, no explanation. NEVER include IDs you don't have.`;
       operation = 'delete';
     } else if (/סיימתי|עשיתי|בוצע|done|complete|finish/i.test(message)) {
       operation = 'delete'; // Completion = deletion for reminders
-    } else if (/מה יש|מה התזכורות|הראה|show|list|what.*remind/i.test(message)) {
+    } else if (/מה יש|מה התזכורות|מה יש בתזכורות|הראה|show|list|what.*remind/i.test(message)) {
       operation = 'getAll';
     } else if (/תזכיר|תזכורת|remind|create|add/i.test(message)) {
       operation = 'create';

@@ -24,13 +24,16 @@
  * 11. END
  */
 
-import { Command, END, MemorySaver, StateGraph } from "@langchain/langgraph";
+import { END, MemorySaver, StateGraph } from "@langchain/langgraph";
+import { Command } from "@langchain/langgraph";
+import { HITL_TTL_MS } from "../types/hitl.js";
 
 // ============================================================================
 // INITIALIZE V1 SERVICES AT MODULE LOAD TIME
 // This MUST happen before any graph execution to avoid TDZ errors
 // ============================================================================
 import { initializeServices } from "../services/v1-services.js";
+import { sendTypingIndicator } from "../services/whatsapp.js";
 import type { InterruptPayload, TriggerInput } from "../types/index.js";
 import type { MemoState } from "./state/MemoState.js";
 import { createInitialState, MemoStateAnnotation } from "./state/MemoState.js";
@@ -127,14 +130,11 @@ export function buildMemoGraph(input: TriggerInput) {
 		.addEdge("context_assembly", "reply_context")
 		.addEdge("reply_context", "planner")
 		.addConditionalEdges("planner", plannerRouter)
-		// Capability check routes based on whether capabilities are missing
 		.addConditionalEdges("capability_check", capabilityCheckRouter)
-		// HITL Gate routes based on hitlType after resume:
-		// - intent_unclear: re-route to planner for re-planning
-		// - missing_fields/confirmation: continue to resolver_router
-		.addConditionalEdges("hitl_gate", hitlGateRouter)
+		// HITLGateNode handles resume routing via Command({ goto }).
+		// Default forward path: no pendingHITL → resolver_router.
+		.addEdge("hitl_gate", "resolver_router")
 		.addEdge("resolver_router", "entity_resolution")
-		// Entity Resolution can trigger HITL for disambiguation
 		.addConditionalEdges("entity_resolution", entityResolutionRouter)
 		.addEdge("executor", "join")
 		.addEdge("join", "response_formatter")
@@ -190,49 +190,23 @@ function capabilityCheckRouter(state: MemoState): string {
 }
 
 /**
- * Route from EntityResolution based on HITL needs
- *
- * ONLY disambiguation should trigger HITL (user needs to choose between options)
- * not_found and errors should continue to executor -> ResponseWriter for explanation
+ * Route from EntityResolution based on disambiguation state.
+ * When machine disambiguation exists (candidates present, not yet resolved),
+ * route to hitl_gate so it can create a PendingHITL.
  */
 function entityResolutionRouter(state: MemoState): string {
-	// ONLY route to HITL for actual disambiguation (multiple candidates requiring user choice)
-	if (state.needsHITL && state.hitlReason === "disambiguation") {
+	if (
+		state.disambiguation?.candidates &&
+		state.disambiguation.candidates.length > 0 &&
+		!state.disambiguation.resolved
+	) {
 		console.log(`[Graph] EntityResolution needs HITL for disambiguation`);
 		return "hitl_gate";
-	}
-
-	// For not_found, errors, and resolved - continue to executor
-	// Executor will skip failed steps, ResponseFormatter/Writer will explain
-	if (state.needsHITL) {
-		console.log(
-			`[Graph] EntityResolution had ${state.hitlReason} but NOT interrupting - will end with explanation`,
-		);
 	}
 
 	return "executor";
 }
 
-/**
- * Route from HITLGate based on hitlType after resume
- *
- * Two-stage disambiguation:
- * 1. intent_unclear: User clarified what action they want -> re-route to planner for re-planning
- * 2. missing_fields/confirmation: Continue to resolver with updated constraints
- */
-function hitlGateRouter(state: MemoState): string {
-	// If intent_unclear was resolved, re-plan with clarified intent
-	if (state.hitlType === "intent_unclear" && state.plannerHITLResponse) {
-		console.log(
-			`[hitlGateRouter] Intent clarified ("${state.plannerHITLResponse}"), re-routing to planner`,
-		);
-		return "planner";
-	}
-
-	// All other cases (missing_fields, confirmation, no HITL) continue to resolver
-	console.log(`[hitlGateRouter] Continuing to resolver_router`);
-	return "resolver_router";
-}
 
 // ============================================================================
 // PUBLIC API
@@ -322,13 +296,8 @@ export async function invokeMemoGraph(
 	const threadId = userPhone;
 	const config = { configurable: { thread_id: threadId } };
 
-	// Check if this is a resume from a pending interrupt
 	let isPendingInterrupt = await hasPendingInterrupt(threadId);
 
-	// 1-minute timeout for HITL interrupts
-	const INTERRUPT_TIMEOUT_MS = 1 * 60 * 1000;
-
-	// Result type per LangGraph docs - __interrupt__ contains interrupt payloads
 	let result: MemoState & {
 		__interrupt__?: Array<{
 			value: InterruptPayload;
@@ -338,24 +307,21 @@ export async function invokeMemoGraph(
 	};
 
 	if (isPendingInterrupt) {
-		// Check if the interrupt has timed out
 		const graph = buildMemoGraph({
 			userPhone,
 			message,
 			triggerType: options.triggerType || "user",
 		});
 
-		// Use timeout wrapper to prevent hangs
 		const state = await getStateWithTimeout(graph, config, 5000);
 
-		// Handle getState timeout
 		if (state === null) {
 			console.warn(
 				`[MemoGraph] getState timed out when checking interrupt, treating as fresh invocation`,
 			);
 			isPendingInterrupt = false;
 		} else {
-			// Check for HITL timeout using interruptedAt from payload metadata
+			// Check expiry via interruptedAt in payload metadata (5 min TTL)
 			const interruptPayload = state?.tasks?.[0]?.interrupts?.[0]?.value as
 				| InterruptPayload
 				| undefined;
@@ -363,27 +329,71 @@ export async function invokeMemoGraph(
 				| number
 				| undefined;
 
-			if (interruptedAt && Date.now() - interruptedAt > INTERRUPT_TIMEOUT_MS) {
-				console.log(
-					`[MemoGraph] Interrupt timed out after ${INTERRUPT_TIMEOUT_MS}ms, cleaning up stale thread`,
-				);
-				// Cleanup stale interrupt state
+			if (interruptedAt && Date.now() - interruptedAt > HITL_TTL_MS) {
+				console.log(JSON.stringify({
+					event: "HITL_EXPIRED",
+					threadId,
+					hitlId: interruptPayload?.metadata?.hitlId,
+					elapsedMs: Date.now() - interruptedAt,
+				}));
 				try {
 					await checkpointer.deleteThread(threadId);
-					console.log(`[MemoGraph] Cleaned up stale thread ${threadId}`);
+					console.log(`[MemoGraph] Cleaned up expired thread ${threadId}`);
 				} catch (e) {
 					console.warn(`[MemoGraph] Failed to cleanup stale thread:`, e);
 				}
-				// Timeout - treat this as a fresh invocation
 				isPendingInterrupt = false;
+
+				const lang = detectLanguageSimple(message);
+				return {
+					response: lang === "he"
+						? "הבקשה פגה — רוצה לנסות שוב?"
+						: "That request expired — want to try again?",
+					interrupted: false,
+					metadata: {
+						startTime: Date.now(),
+						nodeExecutions: [],
+						llmCalls: 0,
+						totalTokens: 0,
+						totalCost: 0,
+					},
+				};
 			}
 		}
 	}
 
+	// Stale reply guard: pendingInterrupt was already consumed or never existed,
+	// but the message looks like a HITL answer (short "yes"/"no"/"1"/"2"/etc.)
+	if (!isPendingInterrupt && isLikelyHITLAnswer(message)) {
+		console.log(JSON.stringify({
+			event: "HITL_STALE_REPLY",
+			threadId,
+			rawUserMessage: message,
+		}));
+
+		const lang = detectLanguageSimple(message);
+		return {
+			response: lang === "he"
+				? "אני לא מחכה לתשובה כרגע — מה תרצה לעשות?"
+				: "I'm not waiting on a question right now — what would you like to do?",
+			interrupted: false,
+			metadata: {
+				startTime: Date.now(),
+				nodeExecutions: [],
+				llmCalls: 0,
+				totalTokens: 0,
+				totalCost: 0,
+			},
+		};
+	}
+
 	if (isPendingInterrupt) {
-		// Resume from interrupt with user's message as the response
-		// Per docs: "Command({ resume }) returns that value from interrupt() in the node"
 		console.log(`[MemoGraph] Resuming from interrupt for thread ${threadId}`);
+
+		// Send typing indicator so the user knows their reply was received
+		if (options.whatsappMessageId) {
+			sendTypingIndicator(userPhone, options.whatsappMessageId).catch(() => {});
+		}
 
 		const graph = buildMemoGraph({
 			userPhone,
@@ -504,6 +514,28 @@ export async function invokeMemoGraphSimple(
 ): Promise<string> {
 	const result = await invokeMemoGraph(userPhone, message, options);
 	return result.response;
+}
+
+// ============================================================================
+// HELPERS
+// ============================================================================
+
+/**
+ * Simple language detection for short responses (used in stale/expiry messages).
+ */
+function detectLanguageSimple(msg: string): "he" | "en" {
+	return /[\u0590-\u05FF]/.test(msg) ? "he" : "en";
+}
+
+/**
+ * Heuristic: does the message look like a typical HITL answer?
+ * Used to guard against treating stale HITL replies as new user intent.
+ */
+function isLikelyHITLAnswer(msg: string): boolean {
+	const trimmed = msg.trim().toLowerCase();
+	if (trimmed.length > 30) return false; // Long messages are likely new intent
+	const hitlPatterns = /^(yes|no|y|n|כן|לא|1|2|3|4|5|6|7|8|9|ok|okay|sure|בטוח|שניהם|כולם|both|all|אישור|ביטול|cancel)$/i;
+	return hitlPatterns.test(trimmed) || /^\d[\s,\d]*$/.test(trimmed);
 }
 
 // Export types and state
