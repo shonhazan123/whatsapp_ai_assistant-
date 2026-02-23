@@ -64,7 +64,6 @@ The graph wires `hitl_gate` with a normal edge (default: `resolver_router`). Whe
 ## Other changes
 
 - **TTL**: Changed from 1 minute to **5 minutes** (WhatsApp replies are often late).
-- **Stale reply guard**: Short HITL-like messages ("yes"/"no"/"1") without a pending interrupt are caught and responded to with a friendly "I'm not waiting on a question right now" message.
 - **Multi-HITL guard**: If `pendingHITL !== null` and a new HITL is triggered, the new request is ignored and logged as `HITL_DUPLICATE_ATTEMPT`.
 - **LLM guardrails**: LLM generates question text only; options/ids/expectedInput are machine-controlled.
 - **Disambiguation is machine-only**: `DisambiguationContext` no longer contains `question`. HITLGateNode builds the user-facing question from candidates.
@@ -75,7 +74,7 @@ The graph wires `hitl_gate` with a normal edge (default: `resolver_router`). Whe
 - `Memo_v2/src/types/hitl.ts` (new)
 - `Memo_v2/src/types/index.ts` (re-exports + InterruptPayload metadata extension)
 - `Memo_v2/src/graph/state/MemoState.ts` (new fields, removed legacy)
-- `Memo_v2/src/graph/index.ts` (removed hitlGateRouter, updated entityResolutionRouter, 5min TTL, stale reply)
+- `Memo_v2/src/graph/index.ts` (removed hitlGateRouter, updated entityResolutionRouter, 5min TTL)
 - `Memo_v2/src/graph/nodes/ContextAssemblyNode.ts` (threadId + traceId)
 - `Memo_v2/src/graph/nodes/HITLGateNode.ts` (complete rewrite)
 - `Memo_v2/src/graph/nodes/EntityResolutionNode.ts` (machine-only disambiguation, hitlResults)

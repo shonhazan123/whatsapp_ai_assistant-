@@ -2219,9 +2219,8 @@ When a user message contains multiple events with different times/summaries in a
   
   Greeting templates:
   Hebrew:
-  "בוקר טוב! ☀️"
   If date exists:
-  "בוקר טוב! ☀️\\nזה מה שמחכה לך היום, [date in Hebrew or as-is]:"
+  "בוקר טוב! ☀️\\nזה מה שמחכה לך היום, [date in Hebrew]:"
   
   English:
   "Good morning! ☀️"

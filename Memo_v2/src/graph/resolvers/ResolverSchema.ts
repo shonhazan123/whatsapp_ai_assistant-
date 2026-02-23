@@ -538,20 +538,21 @@ export const SECONDBRAIN_SCHEMA: ResolverSchema = {
 
 /**
  * GeneralResolver Schema
- * Handles: Conversational responses, advice, brainstorming (fallback)
+ * Handles: Informative responses only — user (name, account, capabilities), what the assistant did (last/recent actions), acknowledgments. Not for general knowledge or open-ended advice.
  */
 export const GENERAL_SCHEMA: ResolverSchema = {
   name: 'general_resolver',
   capability: 'general',
-  summary: 'Conversational responses for questions, advice, brainstorming, and general chat. Used when no specific tool/capability is needed.',
+  summary: 'Answer questions only about the user (name, account, capabilities), about what the assistant did (last/recent actions, created missions/tasks/events), and acknowledgments (thank you, okay). Not for general knowledge or open-ended advice.',
   actionHints: [
     'respond',
-    'chat',
     'greet',
-    'clarify',
     'acknowledge',
-    'advise',
-    'brainstorm',
+    'ask_about_recent_actions',
+    'ask_about_user',
+    'ask_about_what_i_did',
+    'clarify',
+    'unknown',
   ],
   triggerPatterns: {
     hebrew: [
@@ -560,9 +561,13 @@ export const GENERAL_SCHEMA: ResolverSchema = {
       'בוקר טוב',
       'ערב טוב',
       'תודה',
-      'מה שלומך',
-      'עזור לי לחשוב',
-      'תן לי עצה',
+      'מה השם שלי',
+      'מה יצרת',
+      'האם יצרת',
+      'מה עשית לאחרונה',
+      'מה הדברים האחרונים',
+      'האם יצרת את',
+      'בסדר',
     ],
     english: [
       'hello',
@@ -572,18 +577,27 @@ export const GENERAL_SCHEMA: ResolverSchema = {
       'good evening',
       'thanks',
       'thank you',
-      'how are you',
-      'help me think',
-      'give me advice',
+      "what's my name",
+      'what is my name',
+      'did you create',
+      'what did you create',
+      'last mission',
+      'recent things',
+      'what are the recent',
+      'ok',
+      'okay',
     ],
   },
   examples: [
     { input: 'שלום!', action: 'greet' },
     { input: 'תודה על העזרה', action: 'acknowledge' },
-    { input: 'עזור לי לחשוב על רעיונות לפרויקט', action: 'brainstorm' },
+    { input: 'האם יצרת את המשימה האחרונה?', action: 'ask_about_recent_actions' },
+    { input: 'מה השם שלי?', action: 'ask_about_user' },
     { input: 'Hello!', action: 'greet' },
     { input: 'Thanks for your help', action: 'acknowledge' },
-    { input: 'Help me brainstorm ideas', action: 'brainstorm' },
+    { input: 'Did you create the last mission?', action: 'ask_about_recent_actions' },
+    { input: "What's my name?", action: 'ask_about_user' },
+    { input: 'What are the recent things you created?', action: 'ask_about_recent_actions' },
   ],
   priority: 10, // Lowest priority - fallback
 };

@@ -113,7 +113,7 @@ Patterns: "מייל", "email", "inbox", "שלח מייל"
 - User asks about their schedule: "מה יש לי מחר", "what do I have"
 
 ### Step 5: Fallback to GENERAL
-If none of the above match → capability = **general** (conversation/advice)
+Route to **general** when the user asks about **themselves** (name, account), about **what the assistant did** (last/recent actions, "did you create X?"), or sends **acknowledgments** (thank you, okay). If none of the above capabilities match and the message fits this scope → capability = **general**. General is NOT for general knowledge or open-ended advice.
 
 ## CORE PRINCIPLES
 
@@ -128,25 +128,35 @@ Examples: delete + create, find + update, calendar + database.
 Add dependency ONLY when step B needs step A's RESULT (e.g. find→act).
 Do NOT add dependency when both steps can be decided from the original message (parallel is OK).
 
-### 4) Action hints MUST match resolver actionHints
+### 4) Action hints MUST match resolver actionHints + Reminder vs Task
 Use action hints from the RESOLVER CAPABILITIES section above. Examples:
 - calendar_find_resolver: "list events", "find event", "check availability"
 - calendar_mutate_resolver: "create event", "update event", "delete event"
 - database_task_resolver: "create task", "create reminder", "list tasks", "complete task", "delete_all_tasks", "delete_multiple_tasks", "update_all_tasks", "update_multiple_tasks"
 - database_list_resolver: "create list", "add to list" (ONLY when "list/רשימה" is mentioned)
+- general_resolver: "respond", "greet", "acknowledge", "ask_about_recent_actions", "ask_about_user", "ask_about_what_i_did" (when user asks about themselves or what the assistant did; use Latest Actions section)
+
+**Reminder vs Task (database):**
+- **create reminder** = user wants to be notified at a specific date+time ("תזכיר לי מחר בשמונה", "remind me at 5pm"). Requires BOTH date AND time; if either is missing → missingFields: ["reminder_time_required"].
+- **create task** = user lists things to do with NO time (e.g. "משימות שאני צריך לעשות", "להתקשר לבנק", "לקבוע עם אמא פגישה", "תוסיפי משימה X"). No time required; do NOT set missingFields for time.
+- If user said "תזכיר לי היום X" or "תזכיר לי מחר X" but did not give a time → action "create reminder" + missingFields: ["reminder_time_required"].
 
 ### 5) HITL signals (missingFields)
 If critical info is unclear, keep confidence low and include:
+- "reminder_time_required" - **CRITICAL for reminders**: A REMINDER must have BOTH a specific date AND a specific time. Use when:
+  * User said "תזכיר לי" / "remind me" and gave a day/date (e.g. היום, מחר, ברביעי) but did NOT specify a time → set missingFields: ["reminder_time_required"].
+  * User said "תזכיר לי" / "remind me" with no date and no time at all → set missingFields: ["reminder_time_required"].
+  * Do NOT use "create reminder" when the user has no time at all and is just listing things to do; use "create task" instead (see Reminder vs Task below).
 - "target_unclear" - ONLY when user says "delete the reminders/events" WITHOUT specifying EITHER:
   * Names/titles of specific items to delete, OR
   * Time window (tomorrow, next week, etc.) to search within
   * If user provides EITHER names OR time window, DO NOT use "target_unclear"
-- "time_unclear" - when time is ambiguous
+- "time_unclear" - when time is ambiguous (non-reminder cases)
 - "which_one" - multiple matches possible
 - "intent_unclear" - CRITICAL: Use when user provides information but it's unclear WHAT ACTION they want:
   * User mentions multiple activities but no clear verb indicating what to DO with them
   * Example: "מחר יש לי אימון בשמונה, חלאקה ב10, טיול ב12" - unclear if they want calendar events, reminders, or just sharing info
-  * When intent_unclear: set confidence < 0.6 and route to "general" capability
+  * When intent_unclear: set confidence < 0.6 and missingFields: ["intent_unclear"]
 
 CRITICAL RULE: "target_unclear" should ONLY be used when BOTH conditions are true:
 1. User wants to delete items (tasks/events/reminders)
@@ -168,6 +178,7 @@ When the user's message uses referential language (e.g., "תכניסי לי את
   * None of the latest actions are plausible referents, OR
   * The desired action itself is genuinely ambiguous (not just referential)
 - NEVER create a brand-new entity from thin air when the user is clearly referring to a prior action.
+- For "what did you do?" / "what did I ask you to create?" / "did you create the last mission?" type questions, use the **Latest Actions** section in context and route to **general** with action hint e.g. ask_about_recent_actions.
 
 ### 7) Risk/approval
 - riskLevel: low=create/read, medium=update, high=delete/send email/bulk delete.
@@ -193,7 +204,7 @@ User: "מה המשימות שלי?"
   }]
 }
 
-### B) Reminder creation → database_task_resolver
+### B) Reminder creation (date + time) → database_task_resolver
 User: "תזכיר לי מחר בשמונה לקנות חלב"
 {
   "intentType": "operation",
@@ -206,6 +217,44 @@ User: "תזכיר לי מחר בשמונה לקנות חלב"
     "capability": "database",
     "action": "create reminder",
     "constraints": { "rawMessage": "תזכיר לי מחר בשמונה לקנות חלב" },
+    "changes": {},
+    "dependsOn": []
+  }]
+}
+
+### B2) Reminder with day but NO time → missingFields, HITL
+User said "תזכיר לי" with a day (היום/מחר/יום X) but did not specify WHEN. Reminder requires exact date+time.
+User: "תזכיר לי היום לצאת לחתונה"
+{
+  "intentType": "operation",
+  "confidence": 0.85,
+  "riskLevel": "low",
+  "needsApproval": false,
+  "missingFields": ["reminder_time_required"],
+  "plan": [{
+    "id": "A",
+    "capability": "database",
+    "action": "create reminder",
+    "constraints": { "rawMessage": "תזכיר לי היום לצאת לחתונה" },
+    "changes": {},
+    "dependsOn": []
+  }]
+}
+
+### B3) Task without time (no reminder wording) → database_task_resolver, create task
+User lists things to do with no time. Use "create task", not "create reminder". No missingFields.
+User: "תוסיפי משימה להתקשר לבנק" or "משימות: להתקשר לבנק, לקבוע עם אמא פגישה"
+{
+  "intentType": "operation",
+  "confidence": 0.9,
+  "riskLevel": "low",
+  "needsApproval": false,
+  "missingFields": [],
+  "plan": [{
+    "id": "A",
+    "capability": "database",
+    "action": "create task",
+    "constraints": { "rawMessage": "תוסיפי משימה להתקשר לבנק" },
     "changes": {},
     "dependsOn": []
   }]
@@ -319,14 +368,14 @@ User: "תיצור רשימת קניות: חלב, לחם, ביצים"
   }]
 }
 
-### G) Mixed ops → TWO steps
+### G) Mixed ops → TWO steps (step B has day but no time → missingFields)
 User: "תמחק את התזכורת של מחר ותזכיר לי לעשות בדיקה בחמישי"
 {
   "intentType": "operation",
   "confidence": 0.8,
   "riskLevel": "high",
   "needsApproval": true,
-  "missingFields": [],
+  "missingFields": ["reminder_time_required"],
   "plan": [
     { "id": "A", "capability": "database", "action": "delete reminder", "constraints": { "rawMessage": "תמחק את התזכורת של מחר" }, "changes": {}, "dependsOn": [] },
     { "id": "B", "capability": "database", "action": "create reminder", "constraints": { "rawMessage": "תזכיר לי לעשות בדיקה בחמישי" }, "changes": {}, "dependsOn": [] }
@@ -429,6 +478,42 @@ Latest Actions shows: [database] create reminder: "לקנות חלב" | 2026-02-
     "capability": "calendar",
     "action": "create event",
     "constraints": { "rawMessage": "תכניסי לי את זה גם ליומן", "extractedInfo": { "summary": "לקנות חלב", "when": "2026-02-24T08:00", "source": "latestAction_reference" } },
+    "changes": {},
+    "dependsOn": []
+  }]
+}
+
+### M) Ask about what assistant did → general
+User: "Did you create the last mission?" or "What are the recent things you created?"
+{
+  "intentType": "conversation",
+  "confidence": 0.9,
+  "riskLevel": "low",
+  "needsApproval": false,
+  "missingFields": [],
+  "plan": [{
+    "id": "A",
+    "capability": "general",
+    "action": "ask_about_recent_actions",
+    "constraints": { "rawMessage": "Did you create the last mission?" },
+    "changes": {},
+    "dependsOn": []
+  }]
+}
+
+### N) Ask about user (name, self) → general
+User: "What's my name?" or "מה השם שלי?"
+{
+  "intentType": "conversation",
+  "confidence": 0.9,
+  "riskLevel": "low",
+  "needsApproval": false,
+  "missingFields": [],
+  "plan": [{
+    "id": "A",
+    "capability": "general",
+    "action": "ask_about_user",
+    "constraints": { "rawMessage": "What's my name?" },
     "changes": {},
     "dependsOn": []
   }]

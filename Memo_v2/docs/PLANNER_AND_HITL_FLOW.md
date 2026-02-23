@@ -53,7 +53,7 @@ Planner writes `state.plannerOutput`:
 - `confidence`: \(0..1\)
 - `riskLevel`: `"low" | "medium" | "high"`
 - `needsApproval`: boolean
-- `missingFields`: string[]
+- `missingFields`: string[] — when non-empty, triggers `reason:'missing_fields'` HITL. Known values (see PlannerNode system prompt): `reminder_time_required` (reminder needs specific date+time; use when user said "תזכיר לי" with day but no time, or no date/time), `target_unclear`, `time_unclear`, `which_one`, `intent_unclear`.
 - `plan`: `PlanStep[]`
 
 Planner also writes `state.routingSuggestions` (pattern hints) used for HITL clarification wording.
@@ -138,7 +138,7 @@ If `pendingHITL !== null` and a new HITL condition is triggered in the same run:
 
 This prevents race-like behavior if planner + resolver both request HITL in the same tick.
 
-## 7) Expiry and stale reply policies
+## 7) Expiry policy
 
 ### Expiry (pendingHITL.expiresAt)
 
@@ -149,11 +149,7 @@ This prevents race-like behavior if planner + resolver both request HITL in the 
   - Log `HITL_EXPIRED`
   - Do not resume tool execution
 
-### Stale reply (pendingHITL === null)
-
-- If user replies but no pending interrupt exists, and the message looks like a typical HITL answer:
-  - Respond: "I'm not waiting on a question right now — what would you like to do?"
-  - Log `HITL_STALE_REPLY`
+When there is no pending interrupt, every user message is treated as a fresh invocation (planner runs with full context). No stale-reply guard is applied.
 
 ## 8) Resolver caching on resume
 
@@ -176,5 +172,4 @@ All HITL events use JSON-structured logs with `traceId` and `threadId`:
 - `HITL_RESUME_VALID`: `{ traceId, threadId, hitlId, parsedResult, returnTo }`
 - `HITL_INVALID_REPLY`: `{ traceId, threadId, hitlId, expectedInput, rawReply }`
 - `HITL_EXPIRED`: `{ traceId, threadId, hitlId, originStepId }`
-- `HITL_STALE_REPLY`: `{ threadId, rawUserMessage }`
 - `HITL_DUPLICATE_ATTEMPT`: `{ traceId, threadId, existingHitlId, newSource }`

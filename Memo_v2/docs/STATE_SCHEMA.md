@@ -153,7 +153,7 @@ Canonical code: `Memo_v2/src/graph/nodes/ExecutorNode.ts`
 - **Storage**: `ConversationWindow` in-memory map, per userPhone, 12h session scope, FIFO max 10.
 - **Written by**: `MemoryUpdateNode` — iterates all plan steps; for each `executionResults.get(stepId).success === true`, builds and pushes a `LatestAction`.
 - **Read by**: `ContextAssemblyNode` — fetches last 3 (most-recent first) into `state.latestActions`.
-- **Consumed by**: `PlannerNode` — injected as a tiny `## Latest Actions` block in the user message; used to resolve referential language ("it/that/זה").
+- **Consumed by**: `PlannerNode` — injected as a tiny `## Latest Actions` block in the user message; used to resolve referential language ("it/that/זה"). **GeneralResolver** — receives `state.latestActions`, `state.user`, and `state.recentMessages` in its prompt to answer questions about the user and what the assistant did (informative scope only).
 - **Planner rule**: most-recent action is the strongest candidate when user uses referential language. Only triggers `intent_unclear` HITL when no latestAction is plausible.
 
 ## HITL timeout (current behavior)
@@ -163,6 +163,4 @@ Canonical code: `Memo_v2/src/graph/nodes/ExecutorNode.ts`
 - If timed out → deletes thread checkpoints, responds with expiry message.
 - Also enforced defense-in-depth in `HITLGateNode`: if `pendingHITL.expiresAt` is past, clears and routes to expiry response.
 
-## Stale reply guard
-
-- If no pending interrupt exists but the user's message looks like a HITL answer (short "yes"/"no"/"1"/"2"/etc.), `invokeMemoGraph()` responds with "I'm not waiting on a question right now — what would you like to do?" and logs `HITL_STALE_REPLY`.
+When there is no pending interrupt, every user message is passed to the graph as a fresh invocation (no stale-reply guard).

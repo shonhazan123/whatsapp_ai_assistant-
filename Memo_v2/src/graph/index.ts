@@ -362,31 +362,6 @@ export async function invokeMemoGraph(
 		}
 	}
 
-	// Stale reply guard: pendingInterrupt was already consumed or never existed,
-	// but the message looks like a HITL answer (short "yes"/"no"/"1"/"2"/etc.)
-	if (!isPendingInterrupt && isLikelyHITLAnswer(message)) {
-		console.log(JSON.stringify({
-			event: "HITL_STALE_REPLY",
-			threadId,
-			rawUserMessage: message,
-		}));
-
-		const lang = detectLanguageSimple(message);
-		return {
-			response: lang === "he"
-				? "אני לא מחכה לתשובה כרגע — מה תרצה לעשות?"
-				: "I'm not waiting on a question right now — what would you like to do?",
-			interrupted: false,
-			metadata: {
-				startTime: Date.now(),
-				nodeExecutions: [],
-				llmCalls: 0,
-				totalTokens: 0,
-				totalCost: 0,
-			},
-		};
-	}
-
 	if (isPendingInterrupt) {
 		console.log(`[MemoGraph] Resuming from interrupt for thread ${threadId}`);
 
@@ -521,21 +496,10 @@ export async function invokeMemoGraphSimple(
 // ============================================================================
 
 /**
- * Simple language detection for short responses (used in stale/expiry messages).
+ * Simple language detection for short responses (used in expiry messages).
  */
 function detectLanguageSimple(msg: string): "he" | "en" {
 	return /[\u0590-\u05FF]/.test(msg) ? "he" : "en";
-}
-
-/**
- * Heuristic: does the message look like a typical HITL answer?
- * Used to guard against treating stale HITL replies as new user intent.
- */
-function isLikelyHITLAnswer(msg: string): boolean {
-	const trimmed = msg.trim().toLowerCase();
-	if (trimmed.length > 30) return false; // Long messages are likely new intent
-	const hitlPatterns = /^(yes|no|y|n|כן|לא|1|2|3|4|5|6|7|8|9|ok|okay|sure|בטוח|שניהם|כולם|both|all|אישור|ביטול|cancel)$/i;
-	return hitlPatterns.test(trimmed) || /^\d[\s,\d]*$/.test(trimmed);
 }
 
 // Export types and state

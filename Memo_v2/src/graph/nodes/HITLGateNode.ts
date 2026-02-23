@@ -60,6 +60,7 @@ Generate a SHORT, conversational message asking the user to clarify their intent
 - second-brain: When asking if user wants to SAVE/REMEMBER something, use exactly: "לשמור בזכרון?" (Hebrew) / "save to memory?" (English). For search/recall: "לחפש בזכרון?" / "search memory?"
 
 ## Missing Field Translations
+- reminder_time_required: Ask at what time (and date if missing). Reminders need a specific date and time.
 - target_unclear: Ask WHICH specific items (by name or time window)
 - time_unclear: Ask WHEN
 - intent_unclear: Ask WHAT they want to do. Always offer second-brain as an option when it could apply.
@@ -906,6 +907,10 @@ Generate a friendly, conversational clarification message in ${language === 'he'
 
   private describeField(field: string, language: 'he' | 'en' | 'other'): string {
     const descriptions: Record<string, Record<string, string>> = {
+      reminder_time_required: {
+        he: 'באיזו שעה? (תזכורת חייבת תאריך ושעה מדויקים)',
+        en: 'What time? (A reminder needs a specific date and time)',
+      },
       date: { he: 'תאריך', en: 'date' },
       time: { he: 'שעה', en: 'time' },
       title: { he: 'כותרת', en: 'title' },
