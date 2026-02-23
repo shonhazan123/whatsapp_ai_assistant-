@@ -139,6 +139,13 @@ Whenever you see **time on the calendar** (events, meetings), it’s the calenda
   - Returns list of deleted IDs, summaries, and **events array with start/end times** for response formatting.
   - The events array ensures time information is always available in delete responses.
 
+- **`deleteBySummary`** – delete all events matching a summary (fuzzy match, no strict time window):
+  - Requires `summary` from the resolver.
+  - `CalendarEntityResolver.resolveDeleteBySummary()` fetches events in a wide default window (1 day back, 90 days forward), then fuzzy-matches on summary.
+  - Smart grouping: identical summaries or same recurring series → auto-resolve all. Ambiguous matches → HITL disambiguation (`allowMultiple: true`).
+  - `CalendarServiceAdapter.deleteBySummary()` handles single, bulk, or recurring series deletion.
+  - Returns `{ deleted: N, events: [...], summaries: [...] }` for response formatting.
+
 - **`updateByWindow`** – explicit operation for updating ALL events in a time window:
   - Requires `timeMin` and `timeMax` to define the window.
   - Uses `updateFields` for the changes (e.g., new start date).
@@ -216,6 +223,21 @@ Whenever you see **time on the calendar** (events, meetings), it’s the calenda
   - CalendarEntityResolver resolves all event IDs in window.
   - CalendarServiceAdapter.deleteByWindow() deletes each event.
   - Reply: "✅ ניקיתי את מחר ביומן!"
+
+#### 7. Delete event by name (deleteBySummary)
+
+- **User**: "תמחק את האירוע של שון"
+- **Flow**:
+  - Planner → action: `delete_event`, capability: `calendar`.
+  - CalendarMutateResolver → `operation: "deleteBySummary"`, `summary: "שון"`.
+  - CalendarEntityResolver.resolveDeleteBySummary():
+    - Fetches events in wide window (1 day back, 90 days forward).
+    - Fuzzy matches on "שון" → finds 1 event "פגישה עם שון".
+    - Single match → resolves with `eventId`, checks for recurring HITL.
+  - CalendarServiceAdapter.deleteBySummary() deletes the single event.
+  - Reply: "✅ מחקתי את הפגישה עם שון!"
+
+- **Ambiguous case**: If fuzzy match returns "פגישה עם שון" (0.82) and "שוני יום הולדת" (0.78), score gap < 0.15 → HITL disambiguation asks user to choose.
 
 ---
 

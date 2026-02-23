@@ -1,107 +1,120 @@
-## Second-Brain Agent (Unstructured Memory)
+## Second-Brain Capability (Semantic Memory Vault)
 
 ### High-Level Role
 
-The second-brain agent is the **long-term, unstructured memory system**. It stores, retrieves, and summarizes arbitrary notes, thoughts, observations, and narrative feedback from the user.
+The second-brain capability is a **standalone semantic long-term memory vault**. It stores, retrieves, and manages three types of personal knowledge: **notes**, **contacts**, and **key-value facts**.
 
-Under the hood, it uses `SecondBrainService`, which itself uses `OpenAIService.createEmbedding` for vector search.
-
----
-
-### What the Second-Brain Agent CAN Do
-
-- **Store notes/memories**
-  - Any free-text content: ideas, meeting notes, bug reports, life events, project logs.
-  - Can add metadata (tags, timestamps, inferred topic) as the implementation evolves.
-
-- **Retrieve notes by semantic similarity**
-  - Given a query (“what did I say about my mortgage broker?”), it:
-    - Embeds the query using OpenAI embeddings.
-    - Performs vector search over stored notes.
-    - Returns best matches.
-
-- **Summarize or restate memory**
-  - Summarize one or multiple stored notes into shorter digests.
-  - Restate in different style or language if explicitly requested.
-
-- **Update or delete notes**
-  - Modify existing entries when the user asks to correct or refine something they already stored.
-  - Delete entries if user asks to forget specific items.
+It is **fully isolated** from working memory, fact memory, agent reasoning memory, and ConversationWindow.
 
 ---
 
-### What the Second-Brain Agent CANNOT / MUST NOT Do
+### Memory Types
 
-- **No scheduling or reminders** – anything involving dates/times and future actions belongs to calendar or database agents.
-- **No email or calendar operations** – cannot send email, create events, or touch Google APIs.
-- **No authoritative data store** – it is not a source of record for financial/critical data; treat it as user-owned notes, not verified truth.
-- **No hallucinated facts** – cannot invent “memories” that were never stored or implied by the user.
+#### 1. Note
+- **Used for**: Ideas, brain dumps, meeting summaries, observations, general context.
+- **Behavior**: Immediately embedded and inserted. No similarity check. No validation. Append-only.
+- **HITL**: Never triggered for notes.
 
----
+#### 2. Contact
+- **Used for**: Business cards, person/company contacts (name + phone/email/role).
+- **Behavior**: Extracts structured fields (name, phone, email, description). Runs hybrid retrieval. If strong match found → HITL asks user to update existing or keep both.
+- **Override**: DELETE existing + INSERT new (no version history).
 
-### Execution Flow
-
-1. Intent classifier routes descriptive/narrative content to second-brain:
-   - E.g., “here are some bugs I noticed…”, “what we discussed last week…”.
-2. `SecondBrainAgent` calls `executeWithAI` with:
-   - `systemPrompt = SystemPrompts.getSecondBrainAgentPrompt()` (or equivalent).
-   - `functions = [secondBrainOperations]` (via `SecondBrainFunction`).
-3. LLM chooses an operation such as:
-   - `storeMemory`, `searchMemory`, `updateMemory`, `deleteMemory`, etc. (exact names in `SecondBrainFunction.ts`).
-4. `SecondBrainFunction` invokes `SecondBrainService`, which:
-   - For **store**:
-     - Optionally embeds the text and saves it with vector + metadata.
-   - For **search**:
-     - Embeds the query, does vector search, returns ranked notes.
-5. Agent performs a final LLM call if needed to:
-   - Summarize the top results.
-   - Combine multiple notes into a cohesive answer.
+#### 3. KV (Key-Value)
+- **Used for**: Factual data points like "electricity bill is 500", "WiFi password is 1234".
+- **Behavior**: Extracts subject + value. Runs hybrid retrieval. If strong match → HITL.
+- **Override**: DELETE existing + INSERT new (no version history).
 
 ---
 
-### Data & LLM Behavior
+### What the Second-Brain CAN Do
 
-- **Storage model**
-  - Each memory is a record with:
-    - Raw text.
-    - Embedding vector.
-    - Timestamps.
-    - Optional tags/metadata.
-
-- **Retrieval model**
-  - Vector similarity (cosine or similar) over embeddings.
-  - May also apply simple keyword filters on top of vector ranking.
-
-- **Language handling**
-  - Always reply in **the same language** the user used (Heb/En).
-  - When summarizing, preserve important names, numbers, and actionable points.
+- **Store memories** (note/contact/kv) with automatic type classification
+- **Search memories** using hybrid retrieval (vector similarity + keyword matching)
+- **Update/delete memories** with entity resolution and disambiguation
+- **List all memories** with optional type filter
+- **Conflict detection**: For contacts and kv, detects duplicates via hybrid retrieval and asks user before overriding
 
 ---
 
-### Example Flows
+### What the Second-Brain CANNOT / MUST NOT Do
 
-- **“I had a meeting with the bank today, we discussed refinancing options.”**
-  - Second-brain agent stores a note about this event for later recall.
-
-- **“What did I say about my mortgage refi?”**
-  - Embeds the query, finds the bank meeting note, and summarizes the core content.
-
-- **“Update what I wrote about the refi: the interest rate is now 4.2%”**
-  - Locates prior note(s) and appends/edits with the new detail.
-
-- **“Forget everything about that contractor I told you about”**
-  - Searches for notes referencing that contractor and deletes them.
+- **No scheduling or reminders** — dates/times/future actions belong to calendar or database
+- **No email or calendar operations** — cannot touch Google APIs
+- **No silent overwrites** — any override requires explicit HITL confirmation
+- **No hallucinated memories** — cannot invent memories never stored by the user
+- **No version history** — override is delete + insert, no tracking of previous values
 
 ---
 
-### When to Prefer Second-Brain Over Other Agents
+### Execution Flow (Memo_v2 Architecture)
 
-- User is **describing** something (past/future) and just wants it remembered or analyzed:
-  - “Let me tell you what’s going on with my landlord…”
-  - “Here’s feedback about the app that I want you to remember.”
-- User asks conceptual, cross-time questions:
-  - “What have I told you so far about my side project?”
+1. **PlannerNode** routes to `capability: "second-brain"` based on trigger patterns
+2. **SecondBrainResolver** uses LLM to:
+   - Determine operation (storeMemory / searchMemory / etc.)
+   - Classify memory type (note / contact / kv)
+   - Extract structured fields per type
+3. **EntityResolutionNode** via `SecondBrainEntityResolver`:
+   - For `storeMemory` with contact/kv → runs hybrid conflict detection
+   - If strong match found → HITL disambiguation (override vs keep both)
+   - For update/delete → entity lookup via hybrid search
+4. **ExecutorNode** via `SecondBrainServiceAdapter`:
+   - Calls `SecondBrainVaultService` methods
+   - Insert, override (delete+insert), search, delete, list
+5. **ResponseFormatterNode** + **ResponseWriterNode**:
+   - Formats results with `SecondBrainResponseContext`
 
-If the request is **narrative, informational, or reflective**, and not about email/calendar/tasks, second-brain is often the right choice.
+---
 
+### Hybrid Retrieval
 
+The core retrieval mechanism combines:
+- **Vector similarity** (pgvector cosine distance on 1536-dim embeddings)
+- **Keyword matching** (PostgreSQL full-text search via tsvector/tsquery)
+- **Metadata filtering** (user_id, memory type)
+
+**For general search**: similarity ≥ 0.5, ranked by 70% vector + 30% keyword score.
+
+**For conflict detection** (contact/kv only): similarity ≥ 0.85 AND keyword overlap must be present. Both conditions required to trigger HITL.
+
+---
+
+### JSON Data Structure
+
+All memory inserts follow this structure:
+
+```json
+{
+  "type": "note | contact | kv",
+  "content": "Full text content",
+  "summary": "1-sentence summary",
+  "tags": ["keyword1", "keyword2"],
+  "metadata": { ... }
+}
+```
+
+Type-specific metadata:
+- **note**: `{ "source": "text", "entities": ["extracted names/topics"] }`
+- **contact**: `{ "name": "...", "phone": "...", "email": "...", "description": "..." }`
+- **kv**: `{ "subject": "...", "value": "..." }`
+
+---
+
+### HITL Behavior
+
+When conflict is detected for contact/kv:
+- Bot presents existing entry and asks user
+- Two options: "Update existing (override)" or "Keep both (insert new)"
+- Only structured types (contact, kv) trigger HITL
+- Note type NEVER triggers HITL
+
+---
+
+### When to Prefer Second-Brain Over Other Capabilities
+
+- User wants to **remember/save** general information, contacts, or facts
+- User provides structured data (name+phone, subject=value)
+- User asks **"what did I save about..."** or **"what's my wifi password?"**
+- Content is **narrative, informational, or reflective** (not about scheduling/email/tasks)
+
+If the request involves dates/times for future actions → calendar or database, not second-brain.
