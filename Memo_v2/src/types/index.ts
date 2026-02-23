@@ -4,6 +4,21 @@
  * Defines all interfaces used across the LangGraph nodes.
  */
 
+// Re-export canonical HITL contract types
+export type {
+	ExecutedOperation,
+	HITLExpectedInput,
+	HITLKind,
+	HITLPolicySource,
+	HITLResultEntry,
+	HITLReturnTo,
+	HITLSource,
+	PendingHITL,
+	PendingHITLOption,
+} from './hitl.js';
+export { HITL_TTL_MS } from './hitl.js';
+export type { HITLReason as HITLReasonCanonical } from './hitl.js';
+
 // ============================================================================
 // USER CONTEXT
 // ============================================================================
@@ -89,7 +104,7 @@ export interface ConversationMessage {
 export interface DisambiguationContext {
 	type: "calendar" | "database" | "gmail" | "second-brain" | "error";
 
-	// For disambiguation
+	// Machine-only disambiguation (candidates + metadata)
 	candidates?: Array<{
 		id: string;
 		displayText: string;
@@ -98,8 +113,12 @@ export interface DisambiguationContext {
 		metadata?: Record<string, any>;
 		[key: string]: any;
 	}>;
-	question?: string;
-	allowMultiple?: boolean; // "which one or both?"
+	allowMultiple?: boolean;
+	disambiguationKind?:
+		| "pick_one"
+		| "pick_many"
+		| "recurring_scope"
+		| "conflict_override";
 
 	// For errors
 	error?: string;
@@ -109,8 +128,8 @@ export interface DisambiguationContext {
 	// State tracking
 	resolverStepId: string;
 	originalArgs?: Record<string, any>;
-	userSelection?: string | number | number[]; // Filled after interrupt() resumes
-	resolved?: boolean; // True after user responds
+	userSelection?: string | number | number[];
+	resolved?: boolean;
 }
 
 // ============================================================================
@@ -139,7 +158,12 @@ export interface InterruptPayload {
 		stepId?: string;
 		entityType?: string;
 		candidates?: Array<{ id: string; displayText: string }>;
-		interruptedAt?: number; // Timestamp when interrupt was triggered, for timeout tracking
+		interruptedAt?: number;
+		hitlId?: string;
+		kind?: import('./hitl.js').HITLKind;
+		source?: import('./hitl.js').HITLSource;
+		expectedInput?: import('./hitl.js').HITLExpectedInput;
+		returnTo?: import('./hitl.js').HITLReturnTo;
 	};
 }
 
@@ -148,6 +172,19 @@ export interface RecentTaskSnapshot {
 	text: string;
 	category?: string;
 	updatedAt: number;
+}
+
+// ============================================================================
+// LATEST ACTIONS (per-session action memory for referential follow-ups)
+// ============================================================================
+
+export interface LatestAction {
+	createdAt: string; // ISO timestamp of when the action was executed
+	capability: string; // "calendar" | "database" | "gmail" | "second-brain" | ...
+	action: string; // semantic hint from PlanStep.action (e.g. "create reminder")
+	summary: string; // short human label: event summary / task text / email subject
+	when?: string; // ISO datetime or date range if applicable
+	externalIds?: Record<string, string | string[]>; // eventId, taskId, etc.
 }
 
 // ============================================================================

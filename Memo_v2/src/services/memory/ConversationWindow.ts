@@ -45,6 +45,15 @@ export interface RecentTaskSnapshot {
   createdAt?: string | number | null;
 }
 
+export interface LatestActionRecord {
+  createdAt: string;
+  capability: string;
+  action: string;
+  summary: string;
+  when?: string;
+  externalIds?: Record<string, string | string[]>;
+}
+
 /**
  * ConversationWindow - ChatGPT-style local conversation memory
  * 
@@ -65,6 +74,7 @@ export class ConversationWindow {
   // In-memory storage: userPhone -> array of messages
   private memory = new Map<string, ConversationMessage[]>();
   private recentTaskContext = new Map<string, RecentTaskSnapshot[]>();
+  private latestActionsContext = new Map<string, LatestActionRecord[]>();
   
   // ============================================================================
   // CONFIGURABLE CONSTANTS - Adjust these to tune context management
@@ -78,6 +88,9 @@ export class ConversationWindow {
   
   /** Maximum recent tasks to store per user */
   public readonly MAX_RECENT_TASKS = 4;
+  
+  /** Maximum latest actions to keep per user (FIFO) */
+  public readonly MAX_LATEST_ACTIONS = 10;
   
   /** Maximum system messages to keep in context (to prevent system message bloat) */
   public readonly MAX_SYSTEM_MESSAGES = 3;
@@ -549,14 +562,48 @@ export class ConversationWindow {
   public clearRecentTasks(userPhone: string): void {
     this.recentTaskContext.delete(userPhone);
   }
-  
-  
+
+  // ============================================================================
+  // LATEST ACTIONS (FIFO, max 10, for referential follow-ups)
+  // ============================================================================
+
+  /**
+   * Append one or more actions. Keeps most-recent last; trims to MAX_LATEST_ACTIONS.
+   */
+  public pushLatestActions(userPhone: string, actions: LatestActionRecord[]): void {
+    if (!actions || actions.length === 0) return;
+
+    const existing = this.latestActionsContext.get(userPhone) || [];
+    const combined = [...existing, ...actions];
+    const trimmed = combined.slice(-this.MAX_LATEST_ACTIONS);
+
+    this.latestActionsContext.set(userPhone, trimmed);
+
+    logger.debug(`[ConversationWindow] latestActions for ${userPhone}: ${trimmed.length} stored`);
+  }
+
+  /**
+   * Get latest actions, most-recent last. Caller can reverse for "most recent first".
+   */
+  public getLatestActions(userPhone: string, limit?: number): LatestActionRecord[] {
+    const all = this.latestActionsContext.get(userPhone) || [];
+    if (limit && limit < all.length) {
+      return all.slice(-limit);
+    }
+    return [...all];
+  }
+
+  public clearLatestActions(userPhone: string): void {
+    this.latestActionsContext.delete(userPhone);
+  }
+
   /**
    * Clear conversation for a user
    */
   public clear(userPhone: string): void {
     this.memory.delete(userPhone);
     this.recentTaskContext.delete(userPhone);
+    this.latestActionsContext.delete(userPhone);
     logger.info(`Cleared conversation for ${userPhone}`);
   }
   

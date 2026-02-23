@@ -1,8 +1,9 @@
 /**
  * General Resolver
- * 
- * Handles conversational responses without tools.
- * Used for greetings, general questions, or when no specific capability is needed.
+ *
+ * Informative capability only: answers about the user (name, account, capabilities),
+ * about what the assistant did (last/recent actions), and acknowledgments.
+ * Does not answer general-knowledge or open-ended advice outside program/user state.
  */
 
 import type { Capability, PlanStep } from '../../types/index.js';
@@ -13,49 +14,62 @@ import { getPlanTiers } from '../../config/plan-tiers.js';
 import { LLMResolver, type ResolverOutput } from './BaseResolver.js';
 
 // ============================================================================
-// GENERAL RESOLVER (LLM-based)
+// GENERAL RESOLVER (LLM-based, context-bound)
 // ============================================================================
 
 /**
- * GeneralResolver - Conversational responses
- * 
- * Actions: respond, greet, clarify, acknowledge
+ * GeneralResolver - Informative responses from user state and latest actions only
+ *
+ * Actions: respond, greet, acknowledge, ask_about_recent_actions, ask_about_user,
+ * ask_about_what_i_did, clarify, unknown; plus fallback strings from planner.
  */
 export class GeneralResolver extends LLMResolver {
   readonly name = 'general_resolver';
   readonly capability: Capability = 'general';
-  readonly actions = ['respond', 'greet', 'clarify', 'acknowledge', 'unknown'];
-  
+  readonly actions = [
+    'respond',
+    'greet',
+    'acknowledge',
+    'ask_about_recent_actions',
+    'ask_about_user',
+    'ask_about_what_i_did',
+    'clarify',
+    'unknown',
+    'greeting response',
+    'process request',
+  ];
+
   getSystemPrompt(): string {
-    return `You are Memo, a friendly and helpful personal assistant.
+    return `You are Memo. You answer ONLY from the provided context below.
 
-Your job is to generate a natural response to the user's message.
+CONTEXT YOU RECEIVE:
+- User profile (name, capabilities, language, timezone, plan, connected services)
+- Latest Actions (what was created/updated/deleted recently by the assistant)
+- Recent conversation
 
-CONTEXT:
-- User language preference is provided
-- Recent conversation context is available
-- You should be warm, concise, and helpful
+YOU MAY:
+- Answer "what's my name?", "did you create X?", "what are the recent things you created?"
+- Acknowledge the user: thank you, okay, בסדר, תודה
+- Greet and guide the user within the app based on the provided data
+- Match the user's language (Hebrew or English)
 
-RESPONSE GUIDELINES:
-1. Match the user's language (Hebrew or English)
-2. Be friendly but professional
-3. Keep responses concise unless detailed explanation is needed
-4. If you don't understand, ask for clarification politely
+YOU MUST NOT:
+- Answer general-knowledge questions or give advice on topics outside this app
+- Invent information not present in the provided context
+If the question is outside program/user state, respond politely that you can only help with their account and recent actions.
 
 OUTPUT FORMAT (MUST BE VALID JSON):
-You MUST respond with ONLY valid JSON, no additional text or explanation.
+Respond with ONLY valid JSON, no additional text.
 {
-  "response": "Your natural language response here",
+  "response": "Your message here",
   "language": "he" | "en"
 }
 
 RULES:
-1. Never mention internal systems or capabilities
-2. Never expose technical details
-3. Always be helpful and encouraging
-4. Output only the JSON, no explanation`;
+- Never mention internal systems or technical details
+- Output only the JSON, no explanation`;
   }
-  
+
   getSchemaSlice(): object {
     return {
       name: 'generalResponse',
@@ -69,20 +83,83 @@ RULES:
       },
     };
   }
-  
+
+  protected override buildUserMessage(step: PlanStep, state: MemoState): string {
+    const message = state.input.enhancedMessage || state.input.message;
+    const lines: string[] = [];
+
+    lines.push(`Current time: ${state.now.formatted}`);
+    lines.push('');
+
+    const clarification = this.findClarificationResult(state);
+    if (clarification) {
+      lines.push('## User Clarification');
+      lines.push(`The user was asked for more information and responded: "${clarification}"`);
+      lines.push('Use this together with the user message below.');
+      lines.push('');
+    }
+
+    lines.push('## Latest Actions (most-recent first)');
+    if (state.latestActions && state.latestActions.length > 0) {
+      for (const action of state.latestActions) {
+        const whenPart = action.when ? ` | when: ${action.when}` : '';
+        lines.push(`- [${action.capability}] ${action.action}: "${action.summary}"${whenPart}`);
+      }
+    } else {
+      lines.push('(none)');
+    }
+    lines.push('');
+
+    const u = state.user;
+    const caps = u.capabilities;
+    const enabled = [
+      caps.calendar && 'calendar',
+      caps.gmail && 'gmail',
+      caps.database && 'tasks/reminders',
+      caps.secondBrain && 'second brain',
+    ].filter(Boolean);
+    lines.push('## User');
+    lines.push(`- Name: ${u.userName ?? '(not set)'}`);
+    lines.push(`- Language: ${u.language}`);
+    lines.push(`- Timezone: ${u.timezone}`);
+    lines.push(`- Plan: ${u.planTier}`);
+    lines.push(`- Google connected: ${u.googleConnected}`);
+    lines.push(`- Enabled capabilities: ${enabled.join(', ') || 'none'}`);
+    lines.push('');
+
+    lines.push('## Recent conversation');
+    if (state.recentMessages && state.recentMessages.length > 0) {
+      const recent = state.recentMessages.slice(-10);
+      for (const msg of recent) {
+        const preview = msg.content.length > 350 ? msg.content.substring(0, 350) + '...' : msg.content;
+        lines.push(`[${msg.role}]: ${preview}`);
+      }
+    } else {
+      lines.push('(none)');
+    }
+    lines.push('');
+
+    lines.push('## User message');
+    lines.push(`Action hint: ${step.action}`);
+    if (Object.keys(step.constraints).length > 0) {
+      lines.push(`Constraints: ${JSON.stringify(step.constraints)}`);
+    }
+    lines.push('');
+    lines.push(message);
+
+    return lines.join('\n');
+  }
+
   async resolve(step: PlanStep, state: MemoState): Promise<ResolverOutput> {
-    // Use LLM to generate the conversational response
-    // This follows the architecture: Resolver uses LLM, Executor just returns the result
     try {
       const llmResult = await this.callLLM(step, state);
-      
-      // LLM returns { response: string, language: string } via function calling
+
       const args: Record<string, any> = {
         action: step.action,
         response: llmResult.response,
         language: llmResult.language || state.user.language,
       };
-      
+
       return {
         stepId: step.id,
         type: 'execute',
@@ -90,11 +167,11 @@ RULES:
       };
     } catch (error: any) {
       console.error(`[${this.name}] LLM call failed, using fallback:`, error);
-      // Fallback: return generic response
-      const fallbackResponse = state.user.language === 'he' 
-        ? 'לא הבנתי. אפשר לנסח אחרת?'
-        : "I didn't understand. Could you rephrase?";
-      
+      const fallbackResponse =
+        state.user.language === 'he'
+          ? 'לא הבנתי. אפשר לנסח אחרת?'
+          : "I didn't understand. Could you rephrase?";
+
       return {
         stepId: step.id,
         type: 'execute',
@@ -105,12 +182,6 @@ RULES:
         },
       };
     }
-  }
-  
-  private extractRecentContext(state: MemoState): string {
-    // Extract last few messages for context
-    const recent = state.recentMessages.slice(-3);
-    return recent.map(m => `${m.role}: ${m.content}`).join('\n');
   }
 }
 

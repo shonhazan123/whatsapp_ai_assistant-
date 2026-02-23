@@ -8,13 +8,15 @@ If something here contradicts code, **code wins** and this doc must be updated.
 
 - **Runtime LangGraph state**: `Memo_v2/src/graph/state/MemoState.ts` (`MemoStateAnnotation`)
 - **Cross-node contracts (types imported by nodes)**: `Memo_v2/src/types/index.ts`
+- **Canonical HITL types**: `Memo_v2/src/types/hitl.ts`
 - **Entity-resolution subsystem types**: `Memo_v2/src/services/resolution/types.ts`
 
 This doc intentionally **references** these files rather than copying full type definitions to avoid drift.
 
 ## High-level state lifecycle (current implementation)
 
-- **Thread identity**: `thread_id = userPhone` (LangGraph checkpointer key)
+- **Thread identity**: `thread_id = userPhone` (LangGraph checkpointer key), also stored as `state.threadId`.
+- **Trace identity**: `state.traceId` — per-request chain, stable across resume, immutable once set. Set from `whatsappMessageId` or generated UUID.
 - **Persistence strategy**:
   - During **HITL interrupts**, LangGraph persists state in the checkpointer.
   - After a **successful completion**, `invokeMemoGraph()` deletes the thread checkpoints (`checkpointer.deleteThread(threadId)`), so LangGraph state is **not** meant to persist across normal requests.
@@ -28,17 +30,20 @@ Canonical code: `Memo_v2/src/graph/index.ts`
 
 Writes:
 - `state.authContext`: hydrated once (user record + Google tokens + capability flags)
-- `state.user`: lightweight prompt-facing context derived from `authContext` (includes optional `userName` from `users.settings.user_name`, set when non-empty)
+- `state.user`: lightweight prompt-facing context derived from `authContext` (includes optional `userName`)
 - `state.input`: includes `message`, `userPhone`, `timezone`, `language`, message IDs
 - `state.recentMessages`: pulled from `MemoryService`
+- `state.latestActions`: last 3 executed actions (most-recent first) from `MemoryService`, used by PlannerNode to resolve referential follow-ups ("it/that/זה")
 - `state.now`
+- `state.threadId`: conversation identity (WhatsApp phone)
+- `state.traceId`: per-request chain ID, immutable once set
 
 Canonical code: `Memo_v2/src/graph/nodes/ContextAssemblyNode.ts`
 
 ### 2) `ReplyContextNode` (code)
 
 Writes:
-- `state.input.enhancedMessage`: enriched with reply-to context (including numbered-list selection context) and recent image context if present
+- `state.input.enhancedMessage`: enriched with reply-to context and recent image context if present
 - `state.input.imageContext` (when applicable)
 
 Canonical code: `Memo_v2/src/graph/nodes/ReplyContextNode.ts`
@@ -50,7 +55,7 @@ Writes:
 - `state.routingSuggestions`: pattern-based hints used for natural clarification messages in HITL
 
 Special re-plan behavior:
-- If the prior HITL was `intent_unclear`, the planner re-plans using `state.plannerHITLResponse` (and then clears HITL fields to avoid loops).
+- If the prior HITL was `intent_unclear`, the planner re-plans using the clarification from `state.hitlResults` (looks for `returnTo.node === 'planner'` with `mode === 'replan'`).
 
 Canonical code: `Memo_v2/src/graph/nodes/PlannerNode.ts`
 
@@ -60,61 +65,46 @@ Purpose:
 - Blocks execution if the plan requires capabilities the user does not have (currently calendar/gmail).
 
 Writes (when blocked):
-- `state.finalResponse`: a fixed “connect Google” message
+- `state.finalResponse`: a fixed "connect Google" message
 
 Canonical code: `Memo_v2/src/graph/nodes/CapabilityCheckNode.ts`
 
-### 5) `HITLGateNode` (code, uses `interrupt()`)
+### 5) `HITLGateNode` (code, uses `interrupt()` + `Command({ update, goto })`)
 
-There are **two distinct HITL families**. They use different state fields and resume behavior.
+Single canonical HITL control-plane. One `pendingHITL` at a time.
 
-#### A) Planner HITL (clarification / confirmation / approval / intent_unclear)
+#### A) Forward path: creates `pendingHITL`
 
-Triggers when (priority order):
-- `missingFields` contains `intent_unclear` (special case)
-- `confidence < 0.7`
-- `missingFields.length > 0`
-- `riskLevel === 'high'`
-- `needsApproval === true`
+- **Entity disambiguation**: if `state.disambiguation` has unresolved candidates, creates `PendingHITL` with `kind:'disambiguation'`, `source:'entity_resolution'`, `returnTo:{ node:'entity_resolution', mode:'apply_selection' }`.
+- **Planner HITL**: checks planner conditions (confidence, missingFields, risk, approval), creates `PendingHITL` with appropriate `kind`/`returnTo`.
+- **Multi-HITL guard**: if `pendingHITL !== null` and a new HITL trigger occurs, logs `HITL_DUPLICATE_ATTEMPT` and ignores the new request.
 
-Interrupt/resume fields:
-- On interrupt: sets `state.hitlType` and tracks `interruptedAt` for timeout handling.
-- On resume: stores the raw user reply in **`state.plannerHITLResponse`** (planner HITL only).
+#### B) Resume path: validates, stores result, routes via Command
 
-Routing after resume (graph router):
-- If `hitlType === 'intent_unclear'` and `plannerHITLResponse` exists → route back to `PlannerNode` (re-plan).
-- Otherwise → continue to `ResolverRouterNode`.
+- Validates user reply against `pendingHITL.expectedInput` (yes_no, single_choice, multi_choice, free_text).
+- On invalid: re-interrupts with error-prefixed question, same `hitlId`.
+- On valid: writes `hitlResults[hitlId]`, clears `pendingHITL`, returns `Command({ update, goto })`.
+- `goto` derived from `pendingHITL.returnTo`:
+  - `planner + replan` → `goto: 'planner'`
+  - `resolver_router + continue` → `goto: 'resolver_router'`
+  - `entity_resolution + apply_selection` → `goto: 'entity_resolution'`
+- Expiry check: if `pendingHITL.expiresAt` < now, clears and responds with expiry message.
 
-Canonical code:
-- `Memo_v2/src/graph/nodes/HITLGateNode.ts`
-- `Memo_v2/src/graph/index.ts` (`hitlGateRouter`)
+#### LLM guardrails
 
-#### B) Entity-Resolution HITL (disambiguation selection)
+- LLM generates **question text only** (clarification messages).
+- Options (ids, labels, order) are **machine-controlled** in code.
+- For disambiguation, LLM is not used at all — question is template-based.
 
-When an entity resolver returns `type: 'disambiguation'`, `EntityResolutionNode` sets:
-- `state.needsHITL = true`
-- `state.hitlReason = 'disambiguation'`
-- `state.disambiguation = { type, candidates, question, allowMultiple, resolverStepId, originalArgs }`
-
-Graph routing:
-- Only `hitlReason === 'disambiguation'` routes to HITL. `not_found` does **not** interrupt; it proceeds to response generation with an explanation.
-
-On resume:
-- `HITLGateNode` parses user input into `state.disambiguation.userSelection` (number/array/"both"/text)
-- `EntityResolutionNode` then applies selection via the domain resolver’s `applySelection(...)`
-
-Canonical code:
-- `Memo_v2/src/graph/nodes/EntityResolutionNode.ts`
-- `Memo_v2/src/graph/nodes/HITLGateNode.ts`
-- `Memo_v2/src/graph/index.ts` (`entityResolutionRouter`)
+Canonical code: `Memo_v2/src/graph/nodes/HITLGateNode.ts`
 
 ### 6) `ResolverRouterNode` (code)
 
 Purpose:
-- Creates execution groups from `dependsOn`, runs resolvers in parallel where safe, sequential between dependency groups.
+- Creates execution groups from `dependsOn`, runs resolvers in parallel where safe.
 
 Critical resume behavior:
-- If `state.resolverResults` already contains a step’s result (e.g., after HITL resume), the node **skips re-running** the resolver (prevents duplicate LLM calls).
+- If `state.resolverResults` already contains a step's result, the node **skips re-running** the resolver.
 
 Writes:
 - `state.resolverResults: Map<stepId, ResolverResult>`
@@ -124,43 +114,53 @@ Canonical code: `Memo_v2/src/graph/nodes/ResolverRouterNode.ts`
 ### 7) `EntityResolutionNode` (code)
 
 Purpose:
-- Converts semantic resolver args into **ID-resolved args** (or disambiguation / not_found context).
+- Converts semantic resolver args into **ID-resolved args** (or machine-only disambiguation / not_found context).
+
+On disambiguation resume:
+- Reads selection from `state.hitlResults` (canonical) or `state.disambiguation.userSelection` (set by Command).
+- Calls `resolver.applySelection()` and writes resolved args.
 
 Writes:
 - `state.executorArgs: Map<stepId, resolvedArgs>` (**authoritative for execution**)
-- In a `not_found` / `clarify_query` case: writes a failed entry into `state.executionResults` for that step and returns early so the response pipeline can explain.
+- `state.disambiguation`: machine-only (candidates + metadata, no user-facing text)
+- In a `not_found` / `clarify_query` case: writes a failed entry into `state.executionResults`
 
 Canonical code: `Memo_v2/src/graph/nodes/EntityResolutionNode.ts`
 
 ### 8) `ExecutorNode` (code)
 
-Critical contract:
-- For each step, it prefers `state.executorArgs.get(stepId)` over `state.resolverResults.get(stepId).args`.
+Critical contracts:
+- Prefers `state.executorArgs.get(stepId)` over `state.resolverResults.get(stepId).args`.
+- **Idempotency guard**: checks `state.executedOperations[operationId]` where `operationId = traceId + ':' + stepId`. If present, skips execution and reuses cached result. If ledger exists but `executionResults` is missing, returns safe failure with `IDEMPOTENCY_MISSING_RESULT`.
 
 Writes:
-- `state.executionResults: Map<stepId, ExecutionResult>`
+- `state.executionResults: Map<stepId, ExecutionResult>` (ephemeral, runtime full results)
+- `state.executedOperations: Record<operationId, ExecutedOperation>` (persistent PII-safe ledger)
 
 Canonical code: `Memo_v2/src/graph/nodes/ExecutorNode.ts`
 
 ### 9) `JoinNode` → `ResponseFormatterNode` → `ResponseWriterNode` → `MemoryUpdateNode`
 
 - `JoinNode`: detects partial/complete failures (no interrupts).
-- `ResponseFormatterNode`: normalizes adapter return shapes, formats dates, builds per-capability context, captures failures in `formattedResponse.failedOperations`.
-- `ResponseWriterNode`: writes final user message; handles complete failure/partial failure; uses `src/config/response-formatter-prompt.ts` for success formatting.
-- `MemoryUpdateNode`: updates `recentMessages` trimming; note that **assistant WhatsApp message ID** is attached by the webhook layer (not inside this node).
+- `ResponseFormatterNode`: normalizes adapter return shapes, formats dates, builds per-capability context, captures failures.
+- `ResponseWriterNode`: writes final user message.
+- `MemoryUpdateNode`: updates `recentMessages`; also extracts **all** successful execution results into `latestActions` (per-session FIFO, max 10, stored in `ConversationWindow`).
 
-Canonical code:
-- `Memo_v2/src/graph/nodes/JoinNode.ts`
-- `Memo_v2/src/graph/nodes/ResponseFormatterNode.ts`
-- `Memo_v2/src/graph/nodes/ResponseWriterNode.ts`
-- `Memo_v2/src/graph/nodes/MemoryUpdateNode.ts`
+## LatestActions contract
+
+- **Type**: `LatestAction[]` (defined in `Memo_v2/src/types/index.ts`)
+- **Fields**: `createdAt`, `capability`, `action`, `summary`, `when?`, `externalIds?`
+- **Storage**: `ConversationWindow` in-memory map, per userPhone, 12h session scope, FIFO max 10.
+- **Written by**: `MemoryUpdateNode` — iterates all plan steps; for each `executionResults.get(stepId).success === true`, builds and pushes a `LatestAction`.
+- **Read by**: `ContextAssemblyNode` — fetches last 3 (most-recent first) into `state.latestActions`.
+- **Consumed by**: `PlannerNode` — injected as a tiny `## Latest Actions` block in the user message; used to resolve referential language ("it/that/זה"). **GeneralResolver** — receives `state.latestActions`, `state.user`, and `state.recentMessages` in its prompt to answer questions about the user and what the assistant did (informative scope only).
+- **Planner rule**: most-recent action is the strongest candidate when user uses referential language. Only triggers `intent_unclear` HITL when no latestAction is plausible.
 
 ## HITL timeout (current behavior)
 
-The system enforces a timeout for stale interrupts in `invokeMemoGraph()`.
+- **TTL**: 5 minutes (`HITL_TTL_MS` from `Memo_v2/src/types/hitl.ts`).
+- Enforced in `invokeMemoGraph()`: reads `interruptedAt` from interrupt payload metadata.
+- If timed out → deletes thread checkpoints, responds with expiry message.
+- Also enforced defense-in-depth in `HITLGateNode`: if `pendingHITL.expiresAt` is past, clears and routes to expiry response.
 
-- Current value: `INTERRUPT_TIMEOUT_MS = 1 * 60 * 1000` (1 minute)
-- Source: `Memo_v2/src/graph/index.ts`
-
-If a user replies after the timeout window, the thread is cleaned up and the message is treated as a **fresh invocation**.
-
+When there is no pending interrupt, every user message is passed to the graph as a fresh invocation (no stale-reply guard).

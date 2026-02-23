@@ -314,6 +314,16 @@ export abstract class LLMResolver extends BaseResolver {
   }
 
   /**
+   * Find clarification response from canonical hitlResults (planner HITL with 'continue' mode).
+   */
+  protected findClarificationResult(state: MemoState): string | null {
+    if (!state.hitlResults) return null;
+    const entries = Object.values(state.hitlResults);
+    const cont = entries.find(e => e.returnTo?.node === 'resolver_router' && e.returnTo?.mode === 'continue');
+    return cont?.raw || null;
+  }
+
+  /**
    * Build user message for LLM call
    * Override in subclasses for custom message formatting
    */
@@ -323,20 +333,20 @@ export abstract class LLMResolver extends BaseResolver {
 
     let userMessage = `${timeContext}\n\n`;
 
-    // Include user's clarification response if this is a resumed HITL flow
-    // This is critical for extracting additional info like due dates that were requested
-    if (state.plannerHITLResponse) {
+    // Include user's clarification response from canonical hitlResults
+    const clarification = this.findClarificationResult(state);
+    if (clarification) {
       userMessage += `## User Clarification\n`;
-      userMessage += `The user was asked for more information and responded: "${state.plannerHITLResponse}"\n`;
+      userMessage += `The user was asked for more information and responded: "${clarification}"\n`;
       userMessage += `This clarification applies to the original request below. Extract all relevant info from BOTH messages.\n\n`;
     }
 
     // Add recent context if available
     if (state.recentMessages.length > 0) {
       userMessage += `Recent conversation:\n`;
-      const recent = state.recentMessages.slice(-3);
+      const recent = state.recentMessages.slice(-6);
       for (const msg of recent) {
-        userMessage += `${msg.role}: ${msg.content.substring(0, 100)}...\n`;
+        userMessage += `${msg.role}: ${msg.content.substring(0, 250)}...\n`;
       }
       userMessage += '\n';
     }

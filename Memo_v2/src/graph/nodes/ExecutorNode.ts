@@ -1,11 +1,17 @@
 /**
  * ExecutorNode
- * 
+ *
  * Unified executor node that dispatches to capability-specific executors.
  * Processes all resolver results and executes them in parallel where possible.
+ *
+ * Idempotency: checks executedOperations[operationId] before executing.
+ * operationId = traceId + ':' + stepId.
+ * If present -> skip execution and reuse executionResults.
+ * If absent -> execute, write executionResults + PII-safe ledger entry.
  */
 
-import type { AuthContext, ExecutionResult } from '../../types/index.js';
+import { createHash } from 'crypto';
+import type { AuthContext, ExecutedOperation, ExecutionResult } from '../../types/index.js';
 import type { MemoState } from '../state/MemoState.js';
 import { CodeNode } from './BaseNode.js';
 
@@ -24,40 +30,56 @@ export class ExecutorNode extends CodeNode {
 
   protected async process(state: MemoState): Promise<Partial<MemoState>> {
     const resolverResults = state.resolverResults;
-    const executorArgs = state.executorArgs; // Resolved args from EntityResolutionNode
+    const executorArgs = state.executorArgs;
     const plan = state.plannerOutput?.plan || [];
     const userPhone = state.user.phone;
-    const authContext = state.authContext; // Full hydrated auth context (tokens, user record)
-    
+    const authContext = state.authContext;
+    const traceId = state.traceId;
+    const existingLedger = state.executedOperations || {};
+
     console.log(`[ExecutorNode] Executing - resolverResults: ${resolverResults.size}, executorArgs: ${executorArgs?.size || 0}, authContext: ${authContext ? 'present' : 'missing'}`);
-    
+
     const executionResults = new Map<string, ExecutionResult>();
-    
-    // Execute all steps from the plan
+    const newLedgerEntries: Record<string, ExecutedOperation> = {};
+
     const executionPromises: Promise<void>[] = [];
-    
+
     for (const step of plan) {
       const stepId = step.id;
       const resolverResult = resolverResults.get(stepId);
-      
-      // Skip non-execute results
+
       if (resolverResult?.type !== 'execute') {
         console.log(`[ExecutorNode] Skipping step ${stepId}: type=${resolverResult?.type || 'unknown'}`);
         continue;
       }
-      
-      // IMPORTANT: Prefer executorArgs (resolved with IDs) over resolverResults (original)
-      // EntityResolutionNode stores resolved args in executorArgs after fuzzy matching
+
       const args = executorArgs?.get(stepId) || resolverResult.args;
-      
       if (!args) {
         console.warn(`[ExecutorNode] No args found for step ${stepId}`);
         continue;
       }
-      
+
+      // Idempotency guard
+      const operationId = `${traceId}:${stepId}`;
+      if (existingLedger[operationId]) {
+        console.log(`[ExecutorNode] IDEMPOTENCY_SKIP: ${operationId} already executed`);
+        const cached = state.executionResults?.get(stepId);
+        if (cached) {
+          executionResults.set(stepId, cached);
+        } else {
+          console.warn(`[ExecutorNode] IDEMPOTENCY_MISSING_RESULT: ledger exists but executionResults missing for ${operationId}`);
+          executionResults.set(stepId, {
+            stepId,
+            success: false,
+            error: 'IDEMPOTENCY_MISSING_RESULT: previously executed but result unavailable',
+            durationMs: 0,
+          });
+        }
+        continue;
+      }
+
       console.log(`[ExecutorNode] Step ${stepId} args source: ${executorArgs?.has(stepId) ? 'executorArgs (resolved)' : 'resolverResults (original)'}`);
-      
-      // Execute asynchronously
+
       const promise = this.executeStep(
         stepId,
         step.capability,
@@ -66,18 +88,35 @@ export class ExecutorNode extends CodeNode {
         authContext
       ).then(execResult => {
         executionResults.set(stepId, execResult);
+
+        // Write PII-safe ledger entry
+        const argsHash = stableHash(args);
+        const resultHash = stableHash({ success: execResult.success, stepId: execResult.stepId });
+        const externalIds = this.extractExternalIds(execResult);
+
+        newLedgerEntries[operationId] = {
+          at: new Date().toISOString(),
+          stepId,
+          capability: step.capability,
+          argsHash,
+          success: execResult.success,
+          resultHash,
+          ...(externalIds ? { externalIds } : {}),
+        };
       });
-      
+
       executionPromises.push(promise);
     }
-    
-    // Wait for all executions to complete 
+
     await Promise.all(executionPromises);
-    
+
     console.log(`[ExecutorNode] Completed ${executionResults.size} executions`);
-    
+
     return {
       executionResults,
+      ...(Object.keys(newLedgerEntries).length > 0
+        ? { executedOperations: { ...existingLedger, ...newLedgerEntries } }
+        : {}),
     };
   }
   
@@ -114,6 +153,14 @@ export class ExecutorNode extends CodeNode {
           break;
           
         case 'database':
+          // Defensive: task adapter requires operation; default to getAll (list) when missing
+          if (!this.isListOperation(args)) {
+            const taskArgs = { ...args };
+            if (taskArgs.operation === undefined || taskArgs.operation === null || taskArgs.operation === '') {
+              taskArgs.operation = 'getAll';
+            }
+            args = taskArgs;
+          }
           if (this.isListOperation(args)) {
             const listAdapter = new ListServiceAdapter(userPhone);
             result = await listAdapter.execute(args as any);
@@ -181,6 +228,25 @@ export class ExecutorNode extends CodeNode {
   }
 
   /**
+   * Extract external IDs from execution result (PII-safe: IDs only).
+   */
+  private extractExternalIds(result: ExecutionResult): Record<string, string | string[]> | undefined {
+    if (!result.success || !result.data) return undefined;
+    const ids: Record<string, string | string[]> = {};
+    const d = result.data;
+    if (d.id) ids.id = String(d.id);
+    if (d.eventId) ids.eventId = String(d.eventId);
+    if (d.taskId) ids.taskId = String(d.taskId);
+    if (d.messageId) ids.messageId = String(d.messageId);
+    if (d.memoryId) ids.memoryId = String(d.memoryId);
+    if (Array.isArray(d.events)) {
+      const eventIds = d.events.map((e: any) => e?.id).filter(Boolean);
+      if (eventIds.length > 0) ids.eventIds = eventIds;
+    }
+    return Object.keys(ids).length > 0 ? ids : undefined;
+  }
+
+  /**
    * Determine if args are for a list operation
    */
   private isListOperation(args: Record<string, any>): boolean {
@@ -210,5 +276,10 @@ export class ExecutorNode extends CodeNode {
 export function createExecutorNode() {
   const node = new ExecutorNode();
   return node.asNodeFunction();
+}
+
+function stableHash(obj: any): string {
+  const json = JSON.stringify(obj, Object.keys(obj).sort());
+  return createHash('sha256').update(json).digest('hex').substring(0, 16);
 }
 

@@ -1082,8 +1082,8 @@ export class ReminderService {
         }
         // Always start morning digest with "בוקר טוב [user_name]!" (or "בוקר טוב!" if no name)
         const greeting = user.userName
-          ? `בוקר טוב ${user.userName}!\n\n`
-          : 'בוקר טוב!\n\n';
+          ? `בוקר טוב ${user.userName} ☀️\n\n`
+          : 'בוקר טוב ☀️\n\n';
         message = greeting + message;
         await sendWhatsAppMessage(user.phone, message);
         this.loggerInstance.info(`✅ Morning digest sent successfully to ${user.phone} (attempt ${attempt + 1})`);

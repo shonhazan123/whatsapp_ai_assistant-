@@ -20,9 +20,9 @@ import { CodeNode } from './BaseNode.js';
 
 // Fixed messages for missing capabilities
 const MESSAGES = {
-  both: 'אני רואה שהיומן וה-Gmail שלך לא מחוברים, לחץ כאן כדי לקשר אותם -> https://example.com/connect',
-  calendar: 'אני רואה שהיומן שלך לא מחובר, לחץ כאן כדי לקשר אותו -> https://example.com/connect',
-  gmail: 'אני רואה שה-Gmail שלך לא מחובר, לחץ כאן כדי לקשר אותו -> https://example.com/connect',
+  both: 'אני רואה שהיומן וה-Gmail שלך לא מחוברים, לחץ כאן כדי לקשר אותם -> https://donnai.io/settings',
+  calendar: 'אני רואה שהיומן שלך לא מחובר, לחץ כאן כדי לקשר אותו -> https://donnai.io/settings',
+  gmail: 'אני רואה שה-Gmail שלך לא מחובר, לחץ כאן כדי לקשר אותו ->https://donnai.io/settings',
 };
 
 export class CapabilityCheckNode extends CodeNode {

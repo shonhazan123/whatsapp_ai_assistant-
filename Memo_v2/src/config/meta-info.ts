@@ -24,8 +24,8 @@ export const META_INFO: MetaInfo = {
   shortDescriptionHebrew:
     'דונה הופכת את WhatsApp למוח השני שלך — כך שתוכלי לחשוב פחות ולעשות יותר. מזכירה אישית חכמה ליומן, משימות, זיכרון ועוד.',
   websiteUrl:  'https://donnai.io',
-  supportUrl: undefined,
-  privacyUrl: undefined,
+  supportUrl: "donnai.help@gmail.com",
+  privacyUrl: "https://donnai.io/privacy",
   helpLinks: [
     { label: 'Pricing & plans', url: 'https://donnai.io/pricing' },
     { label: 'מחירון ותוכניות', url: 'https://donnai.io/pricing' },

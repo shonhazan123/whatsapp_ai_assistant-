@@ -363,6 +363,10 @@ Without the timezone offset, when an LLM calculates "in one hour" from "21:00" a
 - `Memo_v2/src/graph/nodes/ContextAssemblyNode.ts` - Builds time context using user's timezone
 - `users.timezone` database field - Stores user's IANA timezone (default: Asia/Jerusalem)
 
+### User name (personalization)
+
+At context assembly, `state.user` is populated with optional `userName` from `users.settings.user_name` when set. The agent may use the user's name when available: **ResponseWriterNode** (via ResponseFormatterPrompt and `_metadata.userName`) may personalize replies occasionally; the **morning digest** (ReminderService) uses the name at the beginning of the message when present (e.g. "Good morning, [name]!"). Reminder messages (one-time/recurring task reminders) do not use the name.
+
 ## Multi-Capability Response Formatting (Jan 2026)
 
 When a user request triggers multiple capabilities (e.g., "remind me to pack and add gym to calendar"), the system:

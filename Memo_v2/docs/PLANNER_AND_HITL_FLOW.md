@@ -1,24 +1,49 @@
 # Memo V2 — Planner & HITL (Current Flow Contract)
 
-This doc explains **exactly** how Planner + HITL work in the current Memo_v2 runtime, including what state fields are written and how resume routing behaves.
+This doc explains **exactly** how Planner + HITL work in the current Memo_v2 runtime, including the canonical `pendingHITL` control-plane contract.
 
 ## Canonical code
 
 - Graph + routers + timeout: `Memo_v2/src/graph/index.ts`
 - Planner: `Memo_v2/src/graph/nodes/PlannerNode.ts`
-- HITL: `Memo_v2/src/graph/nodes/HITLGateNode.ts`
+- HITL control-plane: `Memo_v2/src/graph/nodes/HITLGateNode.ts`
 - Entity resolution: `Memo_v2/src/graph/nodes/EntityResolutionNode.ts`
 - State: `Memo_v2/src/graph/state/MemoState.ts`
-- Types: `Memo_v2/src/types/index.ts`
+- Types: `Memo_v2/src/types/index.ts`, `Memo_v2/src/types/hitl.ts`
 
 ## Overview
 
-Planner produces a structured `plannerOutput` plan (steps + routing hints). HITL uses LangGraph `interrupt()` to safely pause the graph when execution is risky or under-specified, and resumes with `Command({ resume: userMessage })`.
+Planner produces a structured `plannerOutput` plan. HITL uses LangGraph `interrupt()` to pause when execution is risky or under-specified, and resumes via `Command({ resume: userMessage })`.
 
-There are **two HITL families**:
+The HITL system uses a **single canonical contract**: one `pendingHITL` object in state at a time, with deterministic resume routing via `Command({ update, goto })`.
 
-- **Planner HITL**: Clarification / confirmation / approval / intent clarification (`intent_unclear`).
+There are **two HITL families** (both managed by `HITLGateNode`):
+
+- **Planner HITL**: Clarification / approval (low confidence, missing fields, high risk, needs approval, intent unclear).
 - **Entity-resolution HITL**: Disambiguation selection (user chooses between candidate entities).
+
+## Architecture diagram
+
+```mermaid
+flowchart TD
+  user[UserMessage] --> invoke[invokeMemoGraph]
+  invoke --> planner[PlannerNode]
+  planner --> hitlGate[HITLGateNode_controlPlane]
+
+  hitlGate -->|no_pendingHITL| resolverRouter[ResolverRouterNode]
+  resolverRouter --> entityRes[EntityResolutionNode]
+
+  entityRes -->|machine_disambiguation| hitlGate
+
+  hitlGate -->|interrupt_pendingHITL| webhook[Webhook_returns_question]
+  webhook --> user
+
+  user -->|reply| invoke
+  hitlGate -->|resume_validate_storeResult| cmd["Command(update+goto)"]
+  cmd -->|goto_planner_replan| planner
+  cmd -->|goto_continue| resolverRouter
+  cmd -->|goto_apply_selection| entityRes
+```
 
 ## 1) Planner output contract (LLM)
 
@@ -28,81 +53,123 @@ Planner writes `state.plannerOutput`:
 - `confidence`: \(0..1\)
 - `riskLevel`: `"low" | "medium" | "high"`
 - `needsApproval`: boolean
-- `missingFields`: string[]
-- `plan`: `PlanStep[]` (each includes `id`, `capability`, `action`, `constraints.rawMessage`, `changes`, `dependsOn`)
+- `missingFields`: string[] — when non-empty, triggers `reason:'missing_fields'` HITL. Known values (see PlannerNode system prompt): `reminder_time_required` (reminder needs specific date+time; use when user said "תזכיר לי" with day but no time, or no date/time), `target_unclear`, `time_unclear`, `which_one`, `intent_unclear`.
+- `plan`: `PlanStep[]`
 
-Planner also writes `state.routingSuggestions` (pattern hints) used only for HITL clarification wording.
+Planner also writes `state.routingSuggestions` (pattern hints) used for HITL clarification wording.
 
-## 2) HITL trigger rules (current)
+Planner receives `state.latestActions` (last 3, most-recent first) as a tiny hint block. When user uses referential language ("it/that/זה/אותו"), planner uses the most-recent action as the strongest candidate. Only emits `intent_unclear` when no latestAction is plausible.
 
-In `HITLGateNode.checkHITLConditions()` (priority order):
+## 2) HITL trigger rules
 
-1. If `plannerOutput.missingFields` includes **`intent_unclear`** → interrupt with type `clarification`, and set `hitlType = 'intent_unclear'`. The clarification message **always** includes the second-brain option (“לשמור בזכרון?” / “save to memory?”) so the user can choose to store the information even when pattern matching did not suggest it.
-2. Else if `plannerOutput.confidence < 0.7` → interrupt with clarification.
-3. Else if `plannerOutput.missingFields.length > 0` → interrupt with clarification.
-4. Else if `plannerOutput.riskLevel === 'high'` → interrupt with confirmation.
-5. Else if `plannerOutput.needsApproval === true` → interrupt with approval.
-6. Else → continue.
+In `HITLGateNode.checkPlannerHITLConditions()` (priority order):
 
-## 3) Planner HITL resume behavior (intent_unclear vs other)
+1. If `missingFields` includes **`intent_unclear`** → `reason:'intent_unclear'`, `kind:'clarification'`
+2. Else if `confidence < 0.7` → `reason:'low_confidence_plan'`, `kind:'clarification'`
+3. Else if `missingFields.length > 0` → `reason:'missing_fields'`, `kind:'clarification'`
+4. Else if `riskLevel === 'high'` → `reason:'high_risk'`, `kind:'approval'`
+5. Else if `needsApproval === true` → `reason:'needs_approval'`, `kind:'approval'`
+6. Else → continue (no HITL)
 
-When Planner HITL interrupts:
+For entity disambiguation:
+- If `state.disambiguation` has unresolved candidates → `kind:'disambiguation'`, `source:'entity_resolution'`
 
-- `HITLGateNode` stores:
-  - `state.hitlType`: one of `'intent_unclear' | 'missing_fields' | 'confirmation'`
-  - `state.interruptedAt`: timestamp (also copied into the interrupt payload metadata)
-- It adds the question to MemoryService **before** interrupting, so the user sees it in conversation history.
+## 3) PendingHITL contract
 
-When the user replies (graph resume):
+When HITL is triggered, `HITLGateNode` creates exactly one `PendingHITL` object:
 
-- The resume value becomes the return value of `interrupt(payload)` (LangGraph behavior).
-- `HITLGateNode` stores the user reply into:
-  - `state.plannerHITLResponse` (planner HITL only)
+```typescript
+{
+  version: 1,
+  hitlId: string,          // UUID, unique per interruption
+  kind: HITLKind,          // 'clarification' | 'approval' | 'disambiguation'
+  source: HITLSource,      // 'planner' | 'entity_resolution' | ...
+  reason: HITLReason,      // 'intent_unclear' | 'missing_fields' | 'high_risk' | ...
+  originStepId: string,    // Ties to triggering step
+  returnTo: HITLReturnTo,  // Deterministic resume destination
+  expectedInput: HITLExpectedInput,  // 'yes_no' | 'single_choice' | 'multi_choice' | 'free_text'
+  question: string,        // User-facing question text
+  options?: PendingHITLOption[],     // Machine-controlled options
+  policySource?: HITLPolicySource,   // For approval audit
+  expiresAt: string,       // ISO timestamp (TTL = 5 minutes)
+  context?: { ... },       // Disambiguation-specific context
+  createdAt: string,
+}
+```
 
-Routing after resume (in `hitlGateRouter` in `Memo_v2/src/graph/index.ts`):
+### returnTo mapping
 
-- If `state.hitlType === 'intent_unclear'` AND `state.plannerHITLResponse` exists → route back to **PlannerNode** for re-planning.
-- Otherwise → continue to **ResolverRouterNode**.
+| Source | Reason | returnTo |
+|--------|--------|----------|
+| planner | intent_unclear | `{ node:'planner', mode:'replan' }` |
+| planner | missing_fields, low_confidence, confirmation, high_risk, approval | `{ node:'resolver_router', mode:'continue' }` |
+| entity_resolution | disambiguation | `{ node:'entity_resolution', mode:'apply_selection' }` |
 
-## 4) Entity resolution HITL (disambiguation) contract
+## 4) Resume validation
 
-If `EntityResolutionNode` hits ambiguity:
+On resume, `HITLGateNode` validates the user's reply against `expectedInput`:
 
-- It returns early with:
-  - `state.needsHITL = true`
-  - `state.hitlReason = 'disambiguation'`
-  - `state.disambiguation = { type, candidates, question, allowMultiple, resolverStepId, originalArgs }`
+- **yes_no**: Normalizes multilingual yes/no (Hebrew/English)
+- **single_choice**: Accepts numeric (1-based) or option id/label
+- **multi_choice**: Accepts "2 3" / "2,3" / "both"/"all"/"שניהם"/"כולם"
+- **free_text**: Non-empty
 
-Graph routing (in `entityResolutionRouter`):
+On **invalid**: re-interrupts with same `hitlId` and error-prefixed question.
 
-- Only `(needsHITL && hitlReason === 'disambiguation')` routes to HITL.
-- `not_found` does **not** interrupt; it proceeds to response generation with a friendly explanation.
+On **valid**: writes `hitlResults[hitlId]`, clears `pendingHITL`, routes via `Command({ update, goto })`.
 
-On disambiguation resume:
+## 5) HITL result storage
 
-- `HITLGateNode.handleEntityResolutionHITL()` parses:
-  - numbers (`"1"`, `"2 3"`) → `number | number[]`
-  - `"both"/"all"` / `"שניהם"/"כולם"` → string
-  - otherwise → raw text
-- It writes `state.disambiguation.userSelection` and keeps `resolved: false` so `EntityResolutionNode` can apply it.
+```typescript
+hitlResults[hitlId] = {
+  raw: string,      // User's raw reply
+  parsed: any,      // Validated/normalized value
+  at: string,       // ISO timestamp
+  returnTo?: HITLReturnTo  // Audit trail
+}
+```
 
-Then `EntityResolutionNode` calls the domain resolver’s `applySelection(...)` and writes the resolved args into `state.executorArgs`.
+## 6) Multi-HITL guard
 
-## 5) Interrupt timeout (current)
+If `pendingHITL !== null` and a new HITL condition is triggered in the same run:
+- Logs `HITL_DUPLICATE_ATTEMPT`
+- Ignores the new request
+- Continues with the existing `pendingHITL`
 
-`invokeMemoGraph()` enforces a stale-interrupt timeout:
+This prevents race-like behavior if planner + resolver both request HITL in the same tick.
 
-- `INTERRUPT_TIMEOUT_MS = 1 * 60 * 1000` (1 minute)
-- It reads `interruptedAt` from the persisted interrupt payload metadata.
-- If timed out, it deletes the thread checkpoints and treats the message as a **fresh invocation**.
+## 7) Expiry policy
 
-## 6) Resolver caching on resume
+### Expiry (pendingHITL.expiresAt)
 
-After any HITL resume, the graph re-enters at `HITLGateNode` and routes forward.
+- Default TTL: **5 minutes** (`HITL_TTL_MS` in `Memo_v2/src/types/hitl.ts`)
+- On resume, if `now > expiresAt`:
+  - Clear pending HITL (delete thread checkpoints)
+  - Respond: "That request expired — want to try again?"
+  - Log `HITL_EXPIRED`
+  - Do not resume tool execution
+
+When there is no pending interrupt, every user message is treated as a fresh invocation (planner runs with full context). No stale-reply guard is applied.
+
+## 8) Resolver caching on resume
+
+After any HITL resume, the graph re-enters and routes forward.
 
 To prevent repeated resolver LLM calls:
+- `ResolverRouterNode` checks `state.resolverResults.get(step.id)` and if present returns the cached result.
 
-- `ResolverRouterNode.routeAndExecute()` checks `state.resolverResults.get(step.id)` and if present returns the cached result.
+## 9) LLM guardrails
 
-This is critical for confirmation-style HITL: once the user says “yes”, we do not want to re-run the resolver LLM on the same input.
+- LLM may generate **question text only**.
+- LLM must never control: `options[].id`, `options[].label`, option count/order, `expectedInput`, `returnTo`, or metadata.
+- For disambiguation, LLM is not used — question is template-based with machine-controlled options.
 
+## 10) Structured logging
+
+All HITL events use JSON-structured logs with `traceId` and `threadId`:
+
+- `HITL_CREATED`: `{ traceId, threadId, hitlId, kind, reason, source, returnTo }`
+- `HITL_RESUME_VALID`: `{ traceId, threadId, hitlId, parsedResult, returnTo }`
+- `HITL_INVALID_REPLY`: `{ traceId, threadId, hitlId, expectedInput, rawReply }`
+- `HITL_EXPIRED`: `{ traceId, threadId, hitlId, originStepId }`
+- `HITL_DUPLICATE_ATTEMPT`: `{ traceId, threadId, existingHitlId, newSource }`

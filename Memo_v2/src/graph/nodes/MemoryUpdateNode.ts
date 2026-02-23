@@ -13,7 +13,7 @@
  */
 
 import { getMemoryService } from "../../services/memory/index.js";
-import type { ConversationMessage } from "../../types/index.js";
+import type { ConversationMessage, LatestAction } from "../../types/index.js";
 import type { MemoState } from "../state/MemoState.js";
 import { CodeNode } from "./BaseNode.js";
 
@@ -152,6 +152,9 @@ export class MemoryUpdateNode extends CodeNode {
 		// which adds the assistant message with the returned WhatsApp message ID (for reply context).
 		this.persistMessagesToMemory(state, userMessage, enhancedMessage);
 
+		// Persist latestActions for ALL successful executions in this run
+		this.persistLatestActions(state);
+
 		// Update long-term summary if needed
 		// This would typically involve an LLM call to summarize older messages
 		// For now, we just pass through the existing summary
@@ -232,6 +235,100 @@ export class MemoryUpdateNode extends CodeNode {
 			);
 			// Don't fail the node if this fails
 		}
+	}
+
+	/**
+	 * Extract and persist LatestActions for ALL successful executions in this run.
+	 * Iterates every PlanStep; for each success, builds a compact LatestAction record.
+	 */
+	private persistLatestActions(state: MemoState): void {
+		try {
+			const plan = state.plannerOutput?.plan;
+			const results = state.executionResults;
+			if (!plan || plan.length === 0 || !results || results.size === 0) return;
+
+			const memoryService = getMemoryService();
+			const userPhone = state.user.phone || state.input.userPhone;
+			const nowIso = new Date().toISOString();
+
+			const actions: LatestAction[] = [];
+
+			for (const step of plan) {
+				const execResult = results.get(step.id);
+				if (!execResult || !execResult.success) continue;
+
+				const data = execResult.data;
+				const summary = this.extractSummary(step.capability, data, step.constraints);
+				const when = this.extractWhen(step.capability, data);
+				const externalIds = this.extractActionExternalIds(step.capability, data);
+
+				actions.push({
+					createdAt: nowIso,
+					capability: step.capability,
+					action: step.action,
+					summary,
+					...(when ? { when } : {}),
+					...(externalIds ? { externalIds } : {}),
+				});
+			}
+
+			if (actions.length > 0) {
+				memoryService.pushLatestActions(userPhone, actions);
+				console.log(`[MemoryUpdate] Persisted ${actions.length} latestActions`);
+			}
+		} catch (error) {
+			console.error("[MemoryUpdate] Error persisting latestActions:", error);
+		}
+	}
+
+	private extractSummary(capability: string, data: any, constraints: Record<string, any>): string {
+		if (!data) return constraints?.rawMessage?.substring(0, 80) || 'unknown';
+
+		switch (capability) {
+			case 'calendar':
+				return data.summary || data.title || constraints?.rawMessage?.substring(0, 80) || 'calendar action';
+			case 'database':
+				return data.text || data.list_name || constraints?.rawMessage?.substring(0, 80) || 'task action';
+			case 'gmail':
+				return data.subject || constraints?.rawMessage?.substring(0, 80) || 'email action';
+			case 'second-brain':
+				return (data.content || data.summary || '').substring(0, 80) || 'memory action';
+			default:
+				return constraints?.rawMessage?.substring(0, 80) || 'action';
+		}
+	}
+
+	private extractWhen(capability: string, data: any): string | undefined {
+		if (!data) return undefined;
+
+		switch (capability) {
+			case 'calendar':
+				return data.start || undefined;
+			case 'database':
+				return data.due_date || data.dueDate || undefined;
+			default:
+				return undefined;
+		}
+	}
+
+	private extractActionExternalIds(capability: string, data: any): Record<string, string | string[]> | undefined {
+		if (!data) return undefined;
+
+		switch (capability) {
+			case 'calendar':
+				if (data.id) return { eventId: data.id };
+				break;
+			case 'database':
+				if (data.id) return { taskId: data.id };
+				break;
+			case 'gmail':
+				if (data.id) return { threadId: data.id };
+				break;
+			case 'second-brain':
+				if (data.id) return { memoryId: data.id };
+				break;
+		}
+		return undefined;
 	}
 
 	/**

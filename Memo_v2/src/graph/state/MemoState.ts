@@ -12,10 +12,13 @@ import type {
   AuthContext,
   ConversationMessage,
   DisambiguationContext,
+  ExecutedOperation,
   ExecutionResult,
   FormattedResponse,
-  HITLReason,
+  HITLResultEntry,
+  LatestAction,
   MessageInput,
+  PendingHITL,
   PlannerOutput,
   ResolverResult,
   RoutingSuggestion,
@@ -132,6 +135,12 @@ export const MemoStateAnnotation = Annotation.Root({
     reducer: (_, update) => update,
   }),
 
+  // === LATEST ACTIONS (per-session, for referential follow-ups like "it/that/זה") ===
+  latestActions: Annotation<LatestAction[]>({
+    default: () => [],
+    reducer: (_, update) => update,
+  }),
+
   // === PLANNER OUTPUT ===
   plannerOutput: Annotation<PlannerOutput | undefined>({
     default: () => undefined,
@@ -146,11 +155,47 @@ export const MemoStateAnnotation = Annotation.Root({
     reducer: (_, update) => update,
   }),
 
-  // === DISAMBIGUATION ===
-  // Note: HITL pause/resume handled by LangGraph interrupt()
+  // === DISAMBIGUATION (machine-only: candidates + metadata, no user-facing strings) ===
   disambiguation: Annotation<DisambiguationContext | undefined>({
     default: () => undefined,
     reducer: (_, update) => update,
+  }),
+
+  // === CANONICAL HITL CONTRACT ===
+  pendingHITL: Annotation<PendingHITL | null>({
+    default: () => null,
+    reducer: (_, update) => update,
+  }),
+
+  hitlResults: Annotation<Record<string, HITLResultEntry>>({
+    default: () => ({}),
+    reducer: (existing, incoming) => {
+      if (!incoming || Object.keys(incoming).length === 0) return existing;
+      return { ...existing, ...incoming };
+    },
+  }),
+
+  // === IDENTITY (immutable per request chain) ===
+  threadId: Annotation<string>({
+    default: () => '',
+    reducer: (existing, update) => update || existing,
+  }),
+
+  traceId: Annotation<string>({
+    default: () => '',
+    reducer: (existing, update) => {
+      if (existing) return existing; // Immutable once set
+      return update || existing;
+    },
+  }),
+
+  // === IDEMPOTENCY LEDGER (PII-safe, persistent) ===
+  executedOperations: Annotation<Record<string, ExecutedOperation>>({
+    default: () => ({}),
+    reducer: (existing, incoming) => {
+      if (!incoming || Object.keys(incoming).length === 0) return existing;
+      return { ...existing, ...incoming };
+    },
   }),
 
   // === RESOLVER RESULTS ===
@@ -206,44 +251,7 @@ export const MemoStateAnnotation = Annotation.Root({
   }),
 
   // === CONTROL ===
-  // Note: shouldPause/pauseReason REMOVED - using LangGraph interrupt() instead
   error: Annotation<string | undefined>({
-    default: () => undefined,
-    reducer: (_, update) => update,
-  }),
-
-  // === HITL FLAGS (set by EntityResolutionNode) ===
-  needsHITL: Annotation<boolean>({
-    default: () => false,
-    reducer: (_, update) => update,
-  }),
-
-  hitlReason: Annotation<HITLReason | undefined>({
-    default: () => undefined,
-    reducer: (_, update) => update,
-  }),
-
-  // === HITL TYPE (for routing after resume) ===
-  // Tracks which type of HITL was triggered to determine routing:
-  // - 'intent_unclear': Re-route to planner for re-planning
-  // - 'missing_fields': Continue to resolver with updated constraints
-  // - 'confirmation': Continue to resolver after user confirms
-  hitlType: Annotation<'intent_unclear' | 'missing_fields' | 'confirmation' | undefined>({
-    default: () => undefined,
-    reducer: (_, update) => update,
-  }),
-
-  // === PLANNER HITL RESPONSE ===
-  // Stores user response to planner-triggered HITL (confirmation/clarification)
-  // Separate from disambiguation which is used by EntityResolutionNode
-  plannerHITLResponse: Annotation<string | undefined>({
-    default: () => undefined,
-    reducer: (_, update) => update,
-  }),
-
-  // === INTERRUPT TIMEOUT ===
-  // Timestamp when an interrupt was triggered, used for 5-minute timeout
-  interruptedAt: Annotation<number | undefined>({
     default: () => undefined,
     reducer: (_, update) => update,
   }),
@@ -294,9 +302,15 @@ export function createInitialState(partial: Partial<MemoState> = {}): MemoState 
     },
     recentMessages: partial.recentMessages || [],
     longTermSummary: partial.longTermSummary,
+    latestActions: partial.latestActions || [],
     plannerOutput: partial.plannerOutput,
     routingSuggestions: partial.routingSuggestions,
     disambiguation: partial.disambiguation,
+    pendingHITL: partial.pendingHITL || null,
+    hitlResults: partial.hitlResults || {},
+    threadId: partial.threadId || '',
+    traceId: partial.traceId || '',
+    executedOperations: partial.executedOperations || {},
     resolverResults: partial.resolverResults || new Map(),
     executorArgs: partial.executorArgs || new Map(),
     executionResults: partial.executionResults || new Map(),
@@ -304,11 +318,6 @@ export function createInitialState(partial: Partial<MemoState> = {}): MemoState 
     formattedResponse: partial.formattedResponse,
     finalResponse: partial.finalResponse,
     error: partial.error,
-    needsHITL: partial.needsHITL || false,
-    hitlReason: partial.hitlReason,
-    hitlType: partial.hitlType,
-    plannerHITLResponse: partial.plannerHITLResponse,
-    interruptedAt: partial.interruptedAt,
     metadata: partial.metadata || { ...defaultMetadata, startTime: Date.now() },
   };
 }

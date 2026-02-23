@@ -12,10 +12,11 @@
  * ✅ Deterministic
  */
 
+import { randomUUID } from 'crypto';
 import { GoogleTokenManager } from '../../legacy/services/auth/GoogleTokenManager.js';
 import { getMemoryService } from '../../services/memory/index.js';
 import { getUserService } from '../../services/v1-services.js';
-import type { AuthContext, TimeContext, TriggerInput, UserContext } from '../../types/index.js';
+import type { AuthContext, LatestAction, TimeContext, TriggerInput, UserContext } from '../../types/index.js';
 import type { MemoState } from '../state/MemoState.js';
 import { createInitialState } from '../state/MemoState.js';
 import { CodeNode } from './BaseNode.js';
@@ -49,8 +50,16 @@ export class ContextAssemblyNode extends CodeNode {
     // 5. Get long-term memory summary (optional)
     const longTermSummary = await this.getLongTermMemorySummary(this.input.userPhone);
 
-    // 6. Build time context
+    // 6. Get latest actions (last 3, for referential follow-ups)
+    const latestActions = this.getLatestActions(this.input.userPhone);
+
+    // 7. Build time context
     const now = this.buildTimeContext();
+
+    // threadId = conversation identity (WhatsApp phone / session key)
+    const threadId = this.input.userPhone;
+    // traceId = per-request chain, stable across resume (immutable once set)
+    const traceId = state.traceId || this.input.whatsappMessageId || randomUUID();
 
     return createInitialState({
       user,
@@ -67,6 +76,9 @@ export class ContextAssemblyNode extends CodeNode {
       now,
       recentMessages,
       longTermSummary,
+      latestActions,
+      threadId,
+      traceId,
     });
   }
 
@@ -244,6 +256,16 @@ export class ContextAssemblyNode extends CodeNode {
     // For now, return undefined (can be enhanced later with SecondBrainService)
     // This would query the second_brain_memory table for user summaries
     return undefined;
+  }
+
+  private getLatestActions(phone: string): LatestAction[] {
+    try {
+      const memoryService = getMemoryService();
+      return memoryService.getLatestActions(phone, 3);
+    } catch (error) {
+      console.error('[ContextAssemblyNode] Error getting latest actions:', error);
+      return [];
+    }
   }
 
   private buildTimeContext(): TimeContext {
