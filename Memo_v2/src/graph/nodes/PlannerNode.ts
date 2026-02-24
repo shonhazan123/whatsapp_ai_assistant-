@@ -122,8 +122,14 @@ Route to **general** when the user asks about **themselves** (name, account), ab
 If user lists multiple items of the **same operation type**, it is **ONE step** (bulk). Do NOT split.
 Examples: create many tasks, create many events, delete many reminders → all ONE step.
 
-### 2) Split into multiple steps ONLY for different operations or capabilities
-Examples: delete + create, find + update, calendar + database.
+### 2) Multiple steps ONLY when capability OR action differs (logic rule)
+- **ALLOW** multiple steps when: (a) different capabilities (e.g. calendar + database), or (b) same capability but **different** actions (e.g. database create_multiple + database delete).
+- **FORBIDDEN** multiple steps with the **same** capability AND the **same** action.
+  - WRONG: A database create_reminder, B database create_reminder. (Same cap + same action → merge into ONE step.)
+  - WRONG: A calendar create event, B calendar create event. (Same cap + same action → ONE step.)
+  - CORRECT: A database create_reminder (all items in one step). Resolver will use createMultiple.
+  - CORRECT: A database create_reminder, B database delete_all_tasks. (Same capability, different actions.)
+  - CORRECT: A calendar create event, B database create reminder. (Different capabilities.)
 
 ### 3) Dependencies (dependsOn)
 Add dependency ONLY when step B needs step A's RESULT (e.g. find→act).
@@ -696,6 +702,9 @@ export class PlannerNode extends LLMNode {
       // Validate plan steps
       normalized.plan = this.validatePlanSteps(normalized.plan, state);
 
+      // Merge any duplicate (capability, action) steps into one — never allow A database create, B database create
+      normalized.plan = this.mergeDuplicateCapabilityActionSteps(normalized.plan, state);
+
       // Safeguard: if LLM returns meta intent with empty plan, inject one step (general capability)
       if (normalized.intentType === 'meta' && normalized.plan.length === 0) {
         const msg = state.input.enhancedMessage || state.input.message;
@@ -787,6 +796,74 @@ export class PlannerNode extends LLMNode {
 
       return step;
     });
+  }
+
+  /**
+   * Merge steps that share the same (capability, action) into a single step.
+   * Multiple steps are only valid when capability differs or same capability but different action
+   * (e.g. calendar + database, or database create + database delete).
+   * Never allow: A database create_reminder, B database create_reminder.
+   */
+  private mergeDuplicateCapabilityActionSteps(plan: PlanStep[], state: MemoState): PlanStep[] {
+    if (plan.length <= 1) return plan;
+
+    const message = state.input.enhancedMessage || state.input.message;
+
+    const actionKey = (step: PlanStep) =>
+      `${step.capability}:${(step.action || '').toLowerCase().replace(/\s+/g, '_').trim()}`;
+
+    const groups = new Map<string, PlanStep[]>();
+    for (const step of plan) {
+      const key = actionKey(step);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(step);
+    }
+
+    const merged: PlanStep[] = [];
+    const oldIdToKeptId = new Map<string, string>();
+
+    for (const [, steps] of groups) {
+      const first = steps[0];
+      if (steps.length === 1) {
+        merged.push({ ...first });
+        oldIdToKeptId.set(first.id, first.id);
+        continue;
+      }
+      // Merge: keep one step with full message so resolver sees entire request (e.g. createMultiple)
+      const representative: PlanStep = {
+        id: first.id,
+        capability: first.capability,
+        action: first.action,
+        constraints: { ...first.constraints, rawMessage: message },
+        changes: first.changes || {},
+        dependsOn: [],
+      };
+      merged.push(representative);
+      for (const s of steps) oldIdToKeptId.set(s.id, first.id);
+      console.log(
+        `[PlannerNode] Merged ${steps.length} steps (${first.capability}/${first.action}) into one; was: ${steps.map(s => s.id).join(', ')}`
+      );
+    }
+
+    // Reassign sequential ids A, B, C, ... and fix dependsOn
+    const keptIdToNewId = new Map<string, string>();
+    merged.forEach((step, i) => {
+      const newId = String.fromCharCode(65 + i);
+      keptIdToNewId.set(step.id, newId);
+      step.id = newId;
+    });
+
+    for (const step of merged) {
+      const newDeps = new Set<string>();
+      for (const oldDep of step.dependsOn || []) {
+        const kept = oldIdToKeptId.get(oldDep) ?? oldDep;
+        const newId = keptIdToNewId.get(kept) ?? kept;
+        if (merged.some(s => s.id === newId)) newDeps.add(newId);
+      }
+      step.dependsOn = Array.from(newDeps);
+    }
+
+    return merged;
   }
 
   /**
