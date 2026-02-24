@@ -103,13 +103,11 @@ export {
     EXECUTOR_REGISTRY,
     GeneralExecutor,
     GmailExecutor,
-    MetaExecutor,
     SecondBrainExecutor,
     createCalendarExecutor,
     createDatabaseExecutor,
     createGeneralExecutor,
     createGmailExecutor,
-    createMetaExecutor,
     createSecondBrainExecutor,
     findExecutor,
     type ExecutorContext

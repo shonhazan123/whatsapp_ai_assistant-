@@ -1,7 +1,7 @@
 /**
  * Canonical subscription-tier pricing and features.
  * Source: https://donnai.io/pricing
- * Used by MetaResolver to answer "what plan am I on / what does it include?"
+ * Used by GeneralResolver (general capability) to answer "what plan am I on / what does it include?"
  */
 
 export interface PlanTierConfig {

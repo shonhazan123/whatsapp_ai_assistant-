@@ -1,27 +1,88 @@
 /**
  * General Resolver
  *
- * Informative capability only: answers about the user (name, account, capabilities),
- * about what the assistant did (last/recent actions), and acknowledgments.
- * Does not answer general-knowledge or open-ended advice outside program/user state.
+ * Single informative capability: answers about the user (name, account, capabilities),
+ * about what the assistant did (last/recent actions), acknowledgments, and about the
+ * agent (identity, capabilities, help, status, plan/account, website). One prompt,
+ * one context, one resolve path.
+ *
+ * Static data (agent info, subscription plans) is in the system prompt so it can be
+ * cached by the LLM provider to reduce tokens and cost per request.
  */
 
 import type { Capability, PlanStep } from '../../types/index.js';
 import type { MemoState } from '../state/MemoState.js';
-import { getNodeModel } from '../../config/llm-config.js';
 import { getMetaInfo } from '../../config/meta-info.js';
 import { getPlanTiers } from '../../config/plan-tiers.js';
 import { LLMResolver, type ResolverOutput } from './BaseResolver.js';
 
 // ============================================================================
-// GENERAL RESOLVER (LLM-based, context-bound)
+// SYSTEM PROMPT (cacheable: instructions + static agent/plans)
 // ============================================================================
 
+const SYSTEM_INSTRUCTIONS = `You are Donna (in English) or דונה (in Hebrew). You are a female AI personal secretary; when replying in Hebrew, use feminine language (e.g. "אני דונה", "אני יכולה"; refer to yourself in feminine forms).
+
+Your job is to answer ONLY from the provided context. In each request you receive (in the user message) the per-request context: current time, user profile, latest actions, recent conversation, and the user's message. The system message above also contains static reference data: Agent Information and Subscription Plans (use these for "what can you do?", "who are you?", "website?", "what's my plan?", pricing, etc.).
+
+YOU MAY:
+- Answer "what's my name?", "did you create X?", "what are the recent things you created?"
+- Answer "what can you do?", "help", "who are you?", "what's my plan?", "what's the website?", "privacy policy?", status/account questions; when asked for a link (website, support, privacy, pricing, login), provide the URL from Agent Information or Help Links once, on its own line or after a short label
+- Acknowledge: thank you, okay, בסדר, תודה
+- Greet and guide the user. Match the user's language (Hebrew or English).
+
+RULES:
+- Answer ONLY from the provided data. Never guess or invent. If something is missing, say so honestly.
+- The response is sent over WhatsApp as plain text: no markdown link syntax like [text](url). To share a link, write it once on its own line or after a short label, e.g. "האתר: https://donnai.io". Never write the URL twice.
+- Use *asterisks* for bold only if needed. Keep links and text clean; short lines for readability on a phone.
+- Never expose internal details (file names, code paths, env vars). Do not answer general-knowledge questions outside this app.
+
+OUTPUT FORMAT (MUST BE VALID JSON):
+Respond with ONLY valid JSON, no additional text.
+{
+  "response": "Your message here",
+  "language": "he" | "en"
+}`;
+
+/** Build static agent + plans block once (cacheable with system prompt). */
+function buildStaticContextBlock(): string {
+  const metaInfo = getMetaInfo();
+  const mi = metaInfo as { agentNameHebrew?: string; shortDescriptionHebrew?: string };
+  const lines: string[] = [
+    '---',
+    '## Agent Information (static reference)',
+    `- Name (EN): ${metaInfo.agentName}${mi.agentNameHebrew ? ` | Name (HE): ${mi.agentNameHebrew}` : ''}`,
+    `- Description (EN): ${metaInfo.shortDescription}${mi.shortDescriptionHebrew ? `\n- Description (HE): ${mi.shortDescriptionHebrew}` : ''}`,
+    `- Website URL: ${metaInfo.websiteUrl}`,
+  ];
+  if (metaInfo.supportUrl) lines.push(`- Support URL: ${metaInfo.supportUrl}`);
+  if (metaInfo.privacyUrl) lines.push(`- Privacy URL: ${metaInfo.privacyUrl}`);
+  if (metaInfo.helpLinks.length > 0) {
+    lines.push('- Help Links:');
+    for (const link of metaInfo.helpLinks) {
+      lines.push(`  • ${link.label}: ${link.url}`);
+    }
+  }
+  const allTiers = getPlanTiers();
+  lines.push('', '## Subscription Plans (static reference, source: https://donnai.io/pricing)');
+  for (const [tierKey, tier] of Object.entries(allTiers)) {
+    const th = tier as { nameHebrew?: string; period?: string; featuresHebrew?: string[] };
+    lines.push(`### ${tier.name}${th.nameHebrew ? ` / ${th.nameHebrew}` : ''} (${tierKey})`);
+    lines.push(`- Price: ${tier.price} ${tier.currency}${th.period ? `/${th.period}` : ''}`);
+    lines.push(`- Features (EN): ${tier.features.join(', ')}`);
+    if (th.featuresHebrew && th.featuresHebrew.length) {
+      lines.push(`- Features (HE): ${th.featuresHebrew.join(', ')}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+/** Cached full system prompt (instructions + static context) for token caching. */
+const CACHED_SYSTEM_PROMPT = SYSTEM_INSTRUCTIONS + '\n\n' + buildStaticContextBlock();
+
 /**
- * GeneralResolver - Informative responses from user state and latest actions only
- *
- * Actions: respond, greet, acknowledge, ask_about_recent_actions, ask_about_user,
- * ask_about_what_i_did, clarify, unknown; plus fallback strings from planner.
+ * GeneralResolver — single resolver for all user and system informative questions.
+ * Actions: respond, greet, acknowledge, ask_about_* (user/recent actions), clarify, unknown;
+ * plus describe_capabilities, what_can_you_do, help, status, website, about_agent, plan_info, account_status.
  */
 export class GeneralResolver extends LLMResolver {
   readonly name = 'general_resolver';
@@ -37,37 +98,18 @@ export class GeneralResolver extends LLMResolver {
     'unknown',
     'greeting response',
     'process request',
+    'describe_capabilities',
+    'what_can_you_do',
+    'help',
+    'status',
+    'website',
+    'about_agent',
+    'plan_info',
+    'account_status',
   ];
 
   getSystemPrompt(): string {
-    return `You are Memo. You answer ONLY from the provided context below.
-
-CONTEXT YOU RECEIVE:
-- User profile (name, capabilities, language, timezone, plan, connected services)
-- Latest Actions (what was created/updated/deleted recently by the assistant)
-- Recent conversation
-
-YOU MAY:
-- Answer "what's my name?", "did you create X?", "what are the recent things you created?"
-- Acknowledge the user: thank you, okay, בסדר, תודה
-- Greet and guide the user within the app based on the provided data
-- Match the user's language (Hebrew or English)
-
-YOU MUST NOT:
-- Answer general-knowledge questions or give advice on topics outside this app
-- Invent information not present in the provided context
-If the question is outside program/user state, respond politely that you can only help with their account and recent actions.
-
-OUTPUT FORMAT (MUST BE VALID JSON):
-Respond with ONLY valid JSON, no additional text.
-{
-  "response": "Your message here",
-  "language": "he" | "en"
-}
-
-RULES:
-- Never mention internal systems or technical details
-- Output only the JSON, no explanation`;
+    return CACHED_SYSTEM_PROMPT;
   }
 
   getSchemaSlice(): object {
@@ -186,177 +228,10 @@ RULES:
 }
 
 // ============================================================================
-// META RESOLVER (LLM-based — single call with full meta scope)
-// ============================================================================
-
-const META_SYSTEM_PROMPT = `You are Donna (in English) or דונה (in Hebrew). You are a female AI personal secretary; when replying in Hebrew, use feminine language (e.g. "אני דונה", "אני יכולה", "בואי", "אתה" when addressing the user is fine; refer to yourself in feminine forms).
-
-Your job is to answer questions about yourself, your capabilities, and the user's account/plan. You will receive agent info, plan definitions, user state, and the user's question.
-
-RULES:
-- Answer ONLY from the provided data. Never guess or invent information.
-- If something is missing or "Not configured", say so honestly.
-- Match the user's language: English → friendly female voice; Hebrew → דונה, feminine Hebrew.
-- The response is sent over WhatsApp as plain text: no markdown rendering. Do NOT use markdown link syntax like [text](url) — WhatsApp shows brackets and parentheses literally, so it looks broken. To share a link, write it once on its own line or after a short label, e.g. "האתר: https://donnai.io" or "Website: https://donnai.io". Never write the URL twice (no "👉 [https://...](https://...)").
-- Use *asterisks* for bold only if you want emphasis; otherwise keep links and text clean. Be friendly and organized with short lines for readability on a phone.
-- Never expose internal details (file names, code paths, env vars).
-
-OUTPUT FORMAT (MUST BE VALID JSON):
-{
-  "response": "Your full WhatsApp message — already formatted by you (headings, bullets, line breaks as needed)",
-  "language": "he" | "en"
-}`;
-
-/**
- * MetaResolver — LLM-based resolver that receives the full meta scope
- * (agent identity, plan tiers, user state) and produces the final user message.
- *
- * Actions: describe_capabilities, help, status, website, about_agent,
- *          plan_info, account_status, what_can_you_do
- */
-export class MetaResolver extends LLMResolver {
-  readonly name = 'meta_resolver';
-  readonly capability: Capability = 'meta';
-  readonly actions = [
-    'describe_capabilities', 'what_can_you_do', 'help', 'status',
-    'website', 'about_agent', 'plan_info', 'account_status',
-  ];
-
-  getSystemPrompt(): string {
-    return META_SYSTEM_PROMPT;
-  }
-
-  getSchemaSlice(): object {
-    return {
-      name: 'metaResponse',
-      parameters: {
-        type: 'object',
-        properties: {
-          response: { type: 'string', description: 'Final WhatsApp-formatted message' },
-          language: { type: 'string', enum: ['he', 'en'] },
-        },
-        required: ['response', 'language'],
-      },
-    };
-  }
-
-  async resolve(step: PlanStep, state: MemoState): Promise<ResolverOutput> {
-    try {
-      const userMessage = this.buildMetaUserMessage(step, state);
-      const modelConfig = getNodeModel('meta', true);
-      const requestId = (state.input as any).requestId;
-
-      const { callLLM: callLLMService } = await import('../../services/llm/LLMService.js');
-
-      const llmResponse = await callLLMService({
-        messages: [
-          { role: 'system', content: this.getSystemPrompt() },
-          { role: 'user', content: userMessage },
-        ],
-        model: modelConfig.model,
-        temperature: 0.3,
-        maxTokens: 1000,
-        functions: [this.getSchemaSlice() as any],
-        functionCall: { name: 'metaResponse' },
-      }, requestId);
-
-      let parsed: { response: string; language: string };
-      if (llmResponse.functionCall) {
-        parsed = JSON.parse(llmResponse.functionCall.arguments);
-      } else if (llmResponse.toolCalls && llmResponse.toolCalls.length > 0) {
-        parsed = JSON.parse(llmResponse.toolCalls[0].function.arguments);
-      } else {
-        throw new Error('No function call in meta LLM response');
-      }
-
-      return {
-        stepId: step.id,
-        type: 'execute',
-        args: {
-          response: parsed.response,
-          language: parsed.language || state.user.language,
-          isMetaFinal: true,
-        },
-      };
-    } catch (error: any) {
-      console.error(`[MetaResolver] LLM call failed, using fallback:`, error);
-      const fallback = state.user.language === 'he'
-        ? 'לא הצלחתי לעבד את הבקשה. נסה שוב בבקשה.'
-        : "I couldn't process your request. Please try again.";
-      return {
-        stepId: step.id,
-        type: 'execute',
-        args: {
-          response: fallback,
-          language: state.user.language,
-          isMetaFinal: true,
-        },
-      };
-    }
-  }
-
-  private buildMetaUserMessage(step: PlanStep, state: MemoState): string {
-    const metaInfo = getMetaInfo();
-    const allTiers = getPlanTiers();
-    const userTier = allTiers[state.user.planTier];
-
-    const caps = state.user.capabilities;
-    const enabledServices: string[] = [];
-    if (caps.calendar) enabledServices.push('Calendar');
-    if (caps.gmail) enabledServices.push('Gmail');
-    if (caps.database) enabledServices.push('Tasks & Reminders');
-    if (caps.secondBrain) enabledServices.push('Second Brain (Memory)');
-
-    const mi = metaInfo as { agentNameHebrew?: string; shortDescriptionHebrew?: string };
-    let msg = `## Agent Information
-- Name (EN): ${metaInfo.agentName}${mi.agentNameHebrew ? ` | Name (HE): ${mi.agentNameHebrew}` : ''}
-- Description (EN): ${metaInfo.shortDescription}${mi.shortDescriptionHebrew ? `\n- Description (HE): ${mi.shortDescriptionHebrew}` : ''}
-- Website URL: ${metaInfo.websiteUrl}`;
-
-    if (metaInfo.supportUrl) msg += `\n- Support URL: ${metaInfo.supportUrl}`;
-    if (metaInfo.helpLinks.length > 0) {
-      msg += `\n- Help Links:`;
-      for (const link of metaInfo.helpLinks) {
-        msg += `\n  • ${link.label}: ${link.url}`;
-      }
-    }
-
-    msg += `\n\n## Subscription Plans (source: https://donnai.io/pricing)`;
-    for (const [tierKey, tier] of Object.entries(allTiers)) {
-      const th = tier as { nameHebrew?: string; period?: string; featuresHebrew?: string[] };
-      msg += `\n### ${tier.name}${th.nameHebrew ? ` / ${th.nameHebrew}` : ''} (${tierKey})`;
-      msg += `\n- Price: ${tier.price} ${tier.currency}${th.period ? `/${th.period}` : ''}`;
-      msg += `\n- Features (EN): ${tier.features.join(', ')}`;
-      if (th.featuresHebrew && th.featuresHebrew.length) {
-        msg += `\n- Features (HE): ${th.featuresHebrew.join(', ')}`;
-      }
-    }
-
-    msg += `\n\n## User Account`;
-    msg += `\n- Current plan: ${state.user.planTier}${userTier ? ` (${userTier.name})` : ''}`;
-    msg += `\n- Google Connected: ${state.user.googleConnected ? 'Yes' : 'No'}`;
-    msg += `\n- Enabled capabilities: ${enabledServices.length > 0 ? enabledServices.join(', ') : 'None'}`;
-    msg += `\n- Timezone: ${state.user.timezone}`;
-    msg += `\n- Language: ${state.user.language === 'he' ? 'Hebrew' : 'English'}`;
-
-    msg += `\n\n## User's Question\n${state.input.enhancedMessage || state.input.message}`;
-
-    return msg;
-  }
-}
-
-// ============================================================================
-// FACTORY FUNCTIONS
+// FACTORY
 // ============================================================================
 
 export function createGeneralResolver() {
   const resolver = new GeneralResolver();
   return resolver.asNodeFunction();
 }
-
-export function createMetaResolver() {
-  const resolver = new MetaResolver();
-  return resolver.asNodeFunction();
-}
-
-

@@ -202,7 +202,7 @@
 - ✅ Implement pure-LLM response generation
 - ✅ Unit tests
 
-### MetaResolver ✅
+### Meta (merged into General) ✅
 
 - ✅ Define capability descriptions (EN + HE)
 - ✅ Implement template-based responses

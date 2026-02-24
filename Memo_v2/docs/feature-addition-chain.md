@@ -41,7 +41,7 @@ This is the planner’s “capability contract”.
 - Database: `Memo_v2/src/graph/resolvers/DatabaseResolvers.ts`
 - Gmail: `Memo_v2/src/graph/resolvers/GmailResolver.ts`
 - Second brain: `Memo_v2/src/graph/resolvers/SecondBrainResolver.ts`
-- General/meta: `Memo_v2/src/graph/resolvers/GeneralResolver.ts`
+- General (user + agent/help/plan): `Memo_v2/src/graph/resolvers/GeneralResolver.ts` — single resolver, no separate meta capability
 
 Do:
 

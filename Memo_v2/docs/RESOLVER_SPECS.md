@@ -54,8 +54,7 @@ Each Resolver:
 | DatabaseListResolver   | database     | create, get, getAll, update, delete, addItem, toggleItem, deleteItem                  | ✅   |
 | GmailResolver          | gmail        | listEmails, getEmailById, sendPreview, sendConfirm, reply, forward, archive, delete   | ✅   |
 | SecondBrainResolver    | second-brain | storeMemory, searchMemory, getMemoryById, updateMemory, deleteMemory                  | ✅   |
-| GeneralResolver        | general      | respond (conversational, no tools)                                                    | ✅   |
-| MetaResolver           | meta         | describe_capabilities, help (template-based, no LLM)                                  | ❌   |
+| GeneralResolver        | general      | respond, greet, acknowledge, ask_about_*; describe_capabilities, help, status, website, about_agent, plan_info, account_status (user + agent/plan, one LLM) | ✅   |
 
 ---
 
@@ -677,68 +676,9 @@ async function resolve(
 
 ---
 
-## MetaResolver
+## GeneralResolver (includes former meta)
 
-### Purpose
-
-Handle questions about Memo's capabilities using predefined text.
-
-### Actions Handled
-
-- `describe_capabilities` → Template response
-
-### Implementation
-
-```typescript
-async function resolve(
-	step: PlanStep,
-	state: MemoState
-): Promise<ResolverResult> {
-	const topic = step.constraints.topic || "general";
-
-	// Use predefined capability descriptions
-	const description =
-		CAPABILITY_DESCRIPTIONS[topic] || CAPABILITY_DESCRIPTIONS.general;
-
-	// Localize if needed
-	const localized =
-		state.user.language === "he"
-			? CAPABILITY_DESCRIPTIONS_HE[topic]
-			: description;
-
-	return {
-		stepId: step.id,
-		type: "execute",
-		functionName: "__meta__", // Special marker
-		args: { response: localized },
-	};
-}
-
-const CAPABILITY_DESCRIPTIONS = {
-	general: `I can help you with:
-- 📅 Calendar: Create, update, and manage Google Calendar events
-- ✅ Tasks: Create reminders, to-do lists, and track tasks
-- 📧 Email: Draft, send, and search Gmail messages
-- 🧠 Memory: Store and recall your thoughts, ideas, and notes
-- 💬 General: Answer questions and help you think through problems`,
-
-	calendar: `Calendar features:
-- Create one-time or recurring events
-- Check for scheduling conflicts
-- Update event times, titles, and attendees
-- Delete single events or entire series
-- View your schedule for any time range`,
-
-	reminders: `Reminder features:
-- Set one-time reminders with due dates
-- Create recurring reminders (daily, weekly, monthly)
-- Set "nudge" reminders that repeat every X minutes until done
-- Mark reminders as complete
-- View all pending reminders`,
-
-	// ... more topics
-};
-```
+Agent/help/plan questions (describe_capabilities, help, status, website, about_agent, plan_info, account_status) are handled by **GeneralResolver** with capability `general`. One unified prompt and context (user + agent info + plan tiers); see `Memo_v2/docs/capabilities/general.md`.
 
 ---
 

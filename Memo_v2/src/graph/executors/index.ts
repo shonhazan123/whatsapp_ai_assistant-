@@ -7,7 +7,7 @@ export { CalendarExecutor, createCalendarExecutor } from './CalendarExecutor.js'
 export { DatabaseExecutor, createDatabaseExecutor } from './DatabaseExecutor.js';
 export { GmailExecutor, createGmailExecutor } from './GmailExecutor.js';
 export { SecondBrainExecutor, createSecondBrainExecutor } from './SecondBrainExecutor.js';
-export { GeneralExecutor, MetaExecutor, createGeneralExecutor, createMetaExecutor } from './GeneralExecutor.js';
+export { GeneralExecutor, createGeneralExecutor } from './GeneralExecutor.js';
 
 // ============================================================================
 // EXECUTOR REGISTRY
@@ -17,7 +17,7 @@ import { CalendarExecutor } from './CalendarExecutor.js';
 import { DatabaseExecutor } from './DatabaseExecutor.js';
 import { GmailExecutor } from './GmailExecutor.js';
 import { SecondBrainExecutor } from './SecondBrainExecutor.js';
-import { GeneralExecutor, MetaExecutor } from './GeneralExecutor.js';
+import { GeneralExecutor } from './GeneralExecutor.js';
 
 export const EXECUTOR_REGISTRY = [
   new CalendarExecutor(),
@@ -25,7 +25,6 @@ export const EXECUTOR_REGISTRY = [
   new GmailExecutor(),
   new SecondBrainExecutor(),
   new GeneralExecutor(),
-  new MetaExecutor(),
 ];
 
 /**

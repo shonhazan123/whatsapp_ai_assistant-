@@ -14,7 +14,6 @@ import {
     GeneralResolver,
     getResolversForCapability,
     GmailResolver,
-    MetaResolver,
     RESOLVER_REGISTRY,
     SecondBrainResolver,
 } from '../../src/graph/resolvers/index.js';
@@ -626,68 +625,40 @@ describe('GeneralResolver', () => {
   });
 });
 
-describe('MetaResolver', () => {
-  let resolver: MetaResolver;
-  
+describe('GeneralResolver (former meta actions)', () => {
+  let resolver: GeneralResolver;
+
   beforeEach(() => {
-    resolver = new MetaResolver();
+    resolver = new GeneralResolver();
   });
-  
-  it('should handle describe_capabilities action (English)', async () => {
+
+  it('should handle describe_capabilities with capability general', async () => {
     const step = createPlanStep({
-      capability: 'meta',
+      capability: 'general',
       action: 'describe_capabilities',
     });
     const state = createTestState();
-    
+
     const result = await resolver.resolve(step, state);
-    
+
     expect(result.type).toBe('execute');
-    expect(result.args?.response).toContain('Calendar');
-    expect(result.args?.response).toContain('Tasks');
-    expect(result.args?.isTemplate).toBe(true);
+    expect(result.args).toHaveProperty('response');
+    expect(typeof result.args?.response).toBe('string');
+    expect(result.args).toHaveProperty('language');
   });
-  
-  it('should handle describe_capabilities action (Hebrew)', async () => {
+
+  it('should handle help action with capability general', async () => {
     const step = createPlanStep({
-      capability: 'meta',
-      action: 'describe_capabilities',
-    });
-    const state = createInitialState({
-      user: {
-        phone: '+1234567890',
-        timezone: 'Asia/Jerusalem',
-        language: 'he',
-        planTier: 'free',
-        googleConnected: true,
-        capabilities: {
-          calendar: true,
-          gmail: true,
-          database: true,
-          secondBrain: true,
-        },
-      },
-    });
-    
-    const result = await resolver.resolve(step, state);
-    
-    expect(result.type).toBe('execute');
-    expect(result.args?.response).toContain('לוח שנה');
-    expect(result.args?.response).toContain('משימות');
-  });
-  
-  it('should handle help action', async () => {
-    const step = createPlanStep({
-      capability: 'meta',
+      capability: 'general',
       action: 'help',
     });
     const state = createTestState();
-    
+
     const result = await resolver.resolve(step, state);
-    
+
     expect(result.type).toBe('execute');
-    expect(result.args?.response).toContain('Help');
-    expect(result.args?.response).toContain('Example commands');
+    expect(result.args).toHaveProperty('response');
+    expect(typeof result.args?.response).toBe('string');
   });
 });
 

@@ -184,8 +184,7 @@ export class ExecutorNode extends CodeNode {
           break;
           
         case 'general':
-        case 'meta':
-          // No external service call needed
+          // No external service call needed (user/agent info responses)
           result = { success: true, data: args };
           break;
           

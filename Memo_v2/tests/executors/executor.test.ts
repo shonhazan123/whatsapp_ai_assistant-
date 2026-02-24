@@ -9,7 +9,7 @@ import { CalendarExecutor } from '../../src/graph/executors/CalendarExecutor.js'
 import { DatabaseExecutor } from '../../src/graph/executors/DatabaseExecutor.js';
 import { GmailExecutor } from '../../src/graph/executors/GmailExecutor.js';
 import { SecondBrainExecutor } from '../../src/graph/executors/SecondBrainExecutor.js';
-import { GeneralExecutor, MetaExecutor } from '../../src/graph/executors/GeneralExecutor.js';
+import { GeneralExecutor } from '../../src/graph/executors/GeneralExecutor.js';
 import type { ExecutorContext } from '../../src/graph/executors/BaseExecutor.js';
 import { setMockService, clearMockServices } from '../../src/services/v1-services.js';
 
@@ -492,39 +492,3 @@ describe('GeneralExecutor', () => {
   });
 });
 
-describe('MetaExecutor', () => {
-  const executor = new MetaExecutor();
-  
-  it('should have correct name and capability', () => {
-    expect(executor.name).toBe('meta_executor');
-    expect(executor.capability).toBe('meta');
-  });
-  
-  it('should pass through args for getCapabilities operation', async () => {
-    const args = {
-      operation: 'getCapabilities',
-      capabilities: ['calendar', 'database', 'gmail'],
-    };
-    
-    const result = await executor.execute('step-1', args, mockContext);
-    
-    expect(result.success).toBe(true);
-    // MetaExecutor passes through args as data
-    expect(result.data).toHaveProperty('operation', 'getCapabilities');
-    expect(result.data).toHaveProperty('capabilities');
-  });
-  
-  it('should pass through args for help operation', async () => {
-    const args = {
-      operation: 'help',
-      helpText: 'I can help you with tasks, lists, and calendar.',
-    };
-    
-    const result = await executor.execute('step-2', args, mockContext);
-    
-    expect(result.success).toBe(true);
-    // MetaExecutor passes through args as data
-    expect(result.data).toHaveProperty('operation', 'help');
-    expect(result.data).toHaveProperty('helpText');
-  });
-});

@@ -538,12 +538,12 @@ export const SECONDBRAIN_SCHEMA: ResolverSchema = {
 
 /**
  * GeneralResolver Schema
- * Handles: Informative responses only — user (name, account, capabilities), what the assistant did (last/recent actions), acknowledgments. Not for general knowledge or open-ended advice.
+ * Handles: All informative responses — user (name, account, capabilities), what the assistant did (last/recent actions), acknowledgments; and agent (capabilities, help, status, plan/account, website). Single resolver, no separate meta.
  */
 export const GENERAL_SCHEMA: ResolverSchema = {
   name: 'general_resolver',
   capability: 'general',
-  summary: 'Answer questions only about the user (name, account, capabilities), about what the assistant did (last/recent actions, created missions/tasks/events), and acknowledgments (thank you, okay). Not for general knowledge or open-ended advice.',
+  summary: 'Answer questions about the user (name, account, capabilities), about what the assistant did (last/recent actions), acknowledgments; and about the agent (capabilities, help, status, who are you, plan/pricing, website). One resolver for all user and system info. Not for general knowledge or open-ended advice.',
   actionHints: [
     'respond',
     'greet',
@@ -553,6 +553,14 @@ export const GENERAL_SCHEMA: ResolverSchema = {
     'ask_about_what_i_did',
     'clarify',
     'unknown',
+    'describe_capabilities',
+    'what_can_you_do',
+    'help',
+    'status',
+    'website',
+    'about_agent',
+    'plan_info',
+    'account_status',
   ],
   triggerPatterns: {
     hebrew: [
@@ -568,60 +576,6 @@ export const GENERAL_SCHEMA: ResolverSchema = {
       'מה הדברים האחרונים',
       'האם יצרת את',
       'בסדר',
-    ],
-    english: [
-      'hello',
-      'hi',
-      'hey',
-      'good morning',
-      'good evening',
-      'thanks',
-      'thank you',
-      "what's my name",
-      'what is my name',
-      'did you create',
-      'what did you create',
-      'last mission',
-      'recent things',
-      'what are the recent',
-      'ok',
-      'okay',
-    ],
-  },
-  examples: [
-    { input: 'שלום!', action: 'greet' },
-    { input: 'תודה על העזרה', action: 'acknowledge' },
-    { input: 'האם יצרת את המשימה האחרונה?', action: 'ask_about_recent_actions' },
-    { input: 'מה השם שלי?', action: 'ask_about_user' },
-    { input: 'Hello!', action: 'greet' },
-    { input: 'Thanks for your help', action: 'acknowledge' },
-    { input: 'Did you create the last mission?', action: 'ask_about_recent_actions' },
-    { input: "What's my name?", action: 'ask_about_user' },
-    { input: 'What are the recent things you created?', action: 'ask_about_recent_actions' },
-  ],
-  priority: 10, // Lowest priority - fallback
-};
-
-/**
- * MetaResolver Schema
- * Handles: Bot capabilities, help, status, agent identity, user account/plan info, website
- */
-export const META_SCHEMA: ResolverSchema = {
-  name: 'meta_resolver',
-  capability: 'meta',
-  summary: 'Information about the bot itself and the user\'s account. Describes capabilities, provides help, shows status, connected services, plan tier/pricing, agent identity, and website.',
-  actionHints: [
-    'describe_capabilities',
-    'what_can_you_do',
-    'help',
-    'status',
-    'website',
-    'about_agent',
-    'plan_info',
-    'account_status',
-  ],
-  triggerPatterns: {
-    hebrew: [
       'מה אתה יכול',
       'מה את יכולה',
       'מה היכולות שלך',
@@ -640,6 +594,22 @@ export const META_SCHEMA: ResolverSchema = {
       'מה התוכנית שלי',
     ],
     english: [
+      'hello',
+      'hi',
+      'hey',
+      'good morning',
+      'good evening',
+      'thanks',
+      'thank you',
+      "what's my name",
+      'what is my name',
+      'did you create',
+      'what did you create',
+      'last mission',
+      'recent things',
+      'what are the recent',
+      'ok',
+      'okay',
       'what can you do',
       'what are your capabilities',
       'help',
@@ -657,6 +627,15 @@ export const META_SCHEMA: ResolverSchema = {
     ],
   },
   examples: [
+    { input: 'שלום!', action: 'greet' },
+    { input: 'תודה על העזרה', action: 'acknowledge' },
+    { input: 'האם יצרת את המשימה האחרונה?', action: 'ask_about_recent_actions' },
+    { input: 'מה השם שלי?', action: 'ask_about_user' },
+    { input: 'Hello!', action: 'greet' },
+    { input: 'Thanks for your help', action: 'acknowledge' },
+    { input: 'Did you create the last mission?', action: 'ask_about_recent_actions' },
+    { input: "What's my name?", action: 'ask_about_user' },
+    { input: 'What are the recent things you created?', action: 'ask_about_recent_actions' },
     { input: 'מה אתה יכול לעשות?', action: 'describe_capabilities' },
     { input: 'מה את יכולה לעשות?', action: 'describe_capabilities' },
     { input: 'עזרה', action: 'help' },
@@ -670,7 +649,7 @@ export const META_SCHEMA: ResolverSchema = {
     { input: 'Am I connected to Google Calendar?', action: 'account_status' },
     { input: 'מה התוכנית שלי?', action: 'plan_info' },
   ],
-  priority: 20,
+  priority: 10, // Lowest priority - fallback
 };
 
 // ============================================================================
@@ -681,7 +660,6 @@ export const META_SCHEMA: ResolverSchema = {
  * All resolver schemas in priority order
  */
 export const RESOLVER_SCHEMAS: ResolverSchema[] = [
-  META_SCHEMA,
   DATABASE_TASK_SCHEMA,
   DATABASE_LIST_SCHEMA,
   CALENDAR_FIND_SCHEMA,

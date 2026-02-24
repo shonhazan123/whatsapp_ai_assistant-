@@ -74,7 +74,7 @@ ${resolverSchemasSection}
   "plan": [
     {
       "id": "A",
-      "capability": "calendar" | "database" | "gmail" | "second-brain" | "general" | "meta",
+      "capability": "calendar" | "database" | "gmail" | "second-brain" | "general",
       "action": string,
       "constraints": { "rawMessage": string, "extractedInfo"?: object },
       "changes": object,
@@ -85,9 +85,10 @@ ${resolverSchemasSection}
 
 ## ROUTING DECISION TREE (USE IN THIS ORDER)
 
-### Step 1: Check for META intent first
-If user asks about bot capabilities, help, or status → capability = **meta**
+### Step 1: Check for agent/user-info intent (→ general)
+If user asks about bot capabilities, help, or status → capability = **general**
 Patterns: "מה אתה יכול", "what can you do", "עזרה", "help"
+Action hints: describe_capabilities, what_can_you_do, help, status, website, about_agent, plan_info, account_status
 
 ### Step 2: Check for SECOND-BRAIN (memory storage/recall)
 If user wants to SAVE a fact, contact, or key-value info, or RECALL saved information → capability = **second-brain**
@@ -134,7 +135,7 @@ Use action hints from the RESOLVER CAPABILITIES section above. Examples:
 - calendar_mutate_resolver: "create event", "update event", "delete event"
 - database_task_resolver: "create task", "create reminder", "list tasks", "complete task", "delete_all_tasks", "delete_multiple_tasks", "update_all_tasks", "update_multiple_tasks"
 - database_list_resolver: "create list", "add to list" (ONLY when "list/רשימה" is mentioned)
-- general_resolver: "respond", "greet", "acknowledge", "ask_about_recent_actions", "ask_about_user", "ask_about_what_i_did" (when user asks about themselves or what the assistant did; use Latest Actions section)
+- general_resolver: "respond", "greet", "acknowledge", "ask_about_recent_actions", "ask_about_user", "ask_about_what_i_did", "describe_capabilities", "what_can_you_do", "help", "status", "website", "about_agent", "plan_info", "account_status" (user/account + agent/help/plan; use Latest Actions section for recent-actions questions)
 
 **Reminder vs Task (database):**
 - **create reminder** = user wants to be notified at a specific date+time ("תזכיר לי מחר בשמונה", "remind me at 5pm"). Requires BOTH date AND time; if either is missing → missingFields: ["reminder_time_required"].
@@ -695,18 +696,18 @@ export class PlannerNode extends LLMNode {
       // Validate plan steps
       normalized.plan = this.validatePlanSteps(normalized.plan, state);
 
-      // Safeguard: if LLM returns meta intent with empty plan, inject one step
+      // Safeguard: if LLM returns meta intent with empty plan, inject one step (general capability)
       if (normalized.intentType === 'meta' && normalized.plan.length === 0) {
         const msg = state.input.enhancedMessage || state.input.message;
         normalized.plan = [{
           id: 'A',
-          capability: 'meta',
+          capability: 'general',
           action: this.inferMetaAction(msg),
           constraints: { rawMessage: msg },
           changes: {},
           dependsOn: [],
         }];
-        console.log(`[PlannerNode] Injected meta step (LLM returned empty plan): action=${normalized.plan[0].action}`);
+        console.log(`[PlannerNode] Injected general step (meta intent, empty plan): action=${normalized.plan[0].action}`);
       }
 
       console.log(`[PlannerNode] Intent: ${normalized.intentType}, Confidence: ${normalized.confidence}, Steps: ${normalized.plan.length}, Risk: ${normalized.riskLevel}`);
@@ -749,7 +750,7 @@ export class PlannerNode extends LLMNode {
    * Validate and fix plan steps
    */
   private validatePlanSteps(plan: PlanStep[], state: MemoState): PlanStep[] {
-    const validCapabilities: Capability[] = ['calendar', 'database', 'gmail', 'second-brain', 'general', 'meta'];
+    const validCapabilities: Capability[] = ['calendar', 'database', 'gmail', 'second-brain', 'general'];
     const message = state.input.enhancedMessage || state.input.message;
 
     return plan.map((step, index) => {
@@ -813,7 +814,7 @@ export class PlannerNode extends LLMNode {
    * Create fallback output when LLM fails
    */
   private createFallbackOutput(message: string, state: MemoState): PlannerOutput {
-    // Meta intent — always emit one step so resolver_router can dispatch
+    // Meta intent (agent/help/plan) — route to general capability
     if (this.matchesMetaIntent(message)) {
       return {
         intentType: 'meta',
@@ -823,7 +824,7 @@ export class PlannerNode extends LLMNode {
         missingFields: [],
         plan: [{
           id: 'A',
-          capability: 'meta' as Capability,
+          capability: 'general' as Capability,
           action: this.inferMetaAction(message),
           constraints: { rawMessage: message },
           changes: {},

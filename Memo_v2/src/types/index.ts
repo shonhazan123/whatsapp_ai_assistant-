@@ -198,8 +198,7 @@ export type Capability =
 	| "database"
 	| "gmail"
 	| "second-brain"
-	| "general"
-	| "meta";
+	| "general";
 
 export interface PlanStep {
 	id: string;
@@ -452,7 +451,7 @@ export interface SecondBrainResponseContext {
  */
 export interface ResponseContext {
 	// Capability indicator - tells which sub-context is populated
-	capability: "database" | "calendar" | "gmail" | "second-brain" | "general" | "meta";
+	capability: "database" | "calendar" | "gmail" | "second-brain" | "general";
 
 	// Capability-specific contexts (only the matching one is populated)
 	database?: DatabaseResponseContext;

@@ -1,5 +1,5 @@
 /**
- * Canonical agent identity and links — single source of truth for MetaResolver.
+ * Canonical agent identity and links — single source of truth for GeneralResolver (general capability).
  * Loaded once at module import; no DB, no LLM.
  *
  * Agent: Donna (EN) / דונה (HE) — female persona.

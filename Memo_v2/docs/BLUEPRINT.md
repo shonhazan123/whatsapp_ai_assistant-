@@ -68,8 +68,7 @@ LangGraph provides:
 | `database`     | Reminders, tasks, lists, nudges             | `DatabaseAgent` + `DatabaseFunctions`      |
 | `gmail`        | Draft, reply, send, search                  | `GmailAgent` + `GmailFunctions`            |
 | `second-brain` | RAG-based notes, ideas, reflections         | `SecondBrainAgent` + `SecondBrainFunction` |
-| `general`      | Questions, advice, brainstorming (no tools) | `MainAgent` general responses              |
-| `meta`         | Agent info, capabilities, help, user account/plan, links | LLM-based MetaResolver (one call)          |
+| `general`      | User/account questions, acknowledgments, agent/help/plan, status, capabilities | GeneralResolver (one prompt, one context)  |
 
 ### 2.2 Trigger Types
 
@@ -1237,11 +1236,11 @@ GENERAL (no tools)
     └── Handles: conversation responses
     └── Selected when: capability=general
 
-META (LLM-based — single call with full agent + user scope)
-└── MetaResolver
-    └── Handles: describe_capabilities, help, status, website, about_agent, plan_info, account_status
-    └── Selected when: capability=meta
-    └── Produces final WhatsApp message (ResponseWriter passes through)
+GENERAL (user + agent/help/plan — single resolver)
+└── GeneralResolver
+    └── Handles: respond, greet, acknowledge, ask_about_*; describe_capabilities, help, status, website, about_agent, plan_info, account_status
+    └── Selected when: capability=general
+    └── One prompt, one context; ResponseWriter uses data.response directly
 ```
 
 **Smart Resolver Selection** (`selectResolver` function):
@@ -1769,8 +1768,7 @@ Memo_v2/
 │   │   │   ├── DatabaseListResolver.ts
 │   │   │   ├── GmailResolver.ts
 │   │   │   ├── SecondBrainResolver.ts
-│   │   │   ├── GeneralResolver.ts
-│   │   │   └── MetaResolver.ts
+│   │   │   └── GeneralResolver.ts
 │   │   │
 │   │   ├── executors/
 │   │   │   ├── index.ts              # Executor registry & exports
@@ -1779,7 +1777,7 @@ Memo_v2/
 │   │   │   ├── DatabaseExecutor.ts
 │   │   │   ├── GmailExecutor.ts
 │   │   │   ├── SecondBrainExecutor.ts
-│   │   │   └── GeneralExecutor.ts    # Also exports MetaExecutor
+│   │   │   └── GeneralExecutor.ts
 │   │   │
 │   │   ├── cron/
 │   │   │   ├── CronSubGraph.ts
@@ -1972,8 +1970,7 @@ const graph = new StateGraph<MemoState>({
 - [ ] Implement DatabaseListResolver
 - [ ] Implement GmailResolver
 - [ ] Implement SecondBrainResolver
-- [ ] Implement GeneralResolver
-- [ ] Implement MetaResolver
+- [ ] Implement GeneralResolver (user + agent/help/plan)
 
 ### 13.4 Phase 4: Executors & Response (Week 7)
 

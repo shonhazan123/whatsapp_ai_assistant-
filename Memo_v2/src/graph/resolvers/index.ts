@@ -19,7 +19,7 @@ export {
   CALENDAR_FIND_SCHEMA,
   CALENDAR_MUTATE_SCHEMA, DATABASE_LIST_SCHEMA, DATABASE_TASK_SCHEMA, formatSchemasForPrompt, GENERAL_SCHEMA, getBestMatch, getResolverSchemas,
   getSchemaByName,
-  getSchemasForCapability, GMAIL_SCHEMA, matchPatterns, META_SCHEMA, RESOLVER_SCHEMAS, SECONDBRAIN_SCHEMA
+  getSchemasForCapability, GMAIL_SCHEMA, matchPatterns, RESOLVER_SCHEMAS, SECONDBRAIN_SCHEMA
 } from './ResolverSchema.js';
 export type { PatternMatchResult, ResolverSchema } from './ResolverSchema.js';
 
@@ -46,11 +46,10 @@ export {
   createSecondBrainResolver, SecondBrainResolver
 } from './SecondBrainResolver.js';
 
-// General and Meta resolvers
+// General resolver (user + agent/help/plan — single capability)
 export {
   createGeneralResolver,
-  createMetaResolver, GeneralResolver,
-  MetaResolver
+  GeneralResolver,
 } from './GeneralResolver.js';
 
 // ============================================================================
@@ -61,7 +60,7 @@ import type { Capability } from '../../types/index.js';
 import type { BaseResolver } from './BaseResolver.js';
 import { CalendarFindResolver, CalendarMutateResolver } from './CalendarResolvers.js';
 import { DatabaseListResolver, DatabaseTaskResolver } from './DatabaseResolvers.js';
-import { GeneralResolver, MetaResolver } from './GeneralResolver.js';
+import { GeneralResolver } from './GeneralResolver.js';
 import { GmailResolver } from './GmailResolver.js';
 import { getSchemasForCapability, matchPatterns } from './ResolverSchema.js';
 import { SecondBrainResolver } from './SecondBrainResolver.js';
@@ -77,7 +76,6 @@ export const RESOLVER_REGISTRY: BaseResolver[] = [
   new GmailResolver(),
   new SecondBrainResolver(),
   new GeneralResolver(),
-  new MetaResolver(),
 ];
 
 /**
@@ -113,7 +111,6 @@ export function getPrimaryResolver(capability: Capability): BaseResolver | undef
     'gmail': 'gmail_resolver',
     'second-brain': 'secondbrain_resolver',
     'general': 'general_resolver',
-    'meta': 'meta_resolver',
   };
   
   const primaryName = primaryResolverMap[capability];
