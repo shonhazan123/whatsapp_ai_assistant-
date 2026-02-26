@@ -14,9 +14,13 @@ import {
   sendTypingIndicator,
   sendWhatsAppMessage,
 } from "../services/whatsapp";
+import { runExclusive } from "../services/concurrency/UserRequestLock";
 import { WhatsAppMessage, WhatsAppWebhookPayload } from "../types/whatsapp";
 import { logger } from "../legacy/utils/logger";
 dotenv.config();
+
+const BUSY_MESSAGE =
+	"אני יכולה להתמודד עם בקשה אחת כל פעם , רק שניה 😅";
 
 export const whatsappWebhook = express.Router();
 
@@ -217,13 +221,23 @@ export async function handleIncomingMessage(
 		} else if (message.type === "audio" && message.audio) {
 			logger.info("🎤 Processing audio message");
 			try {
-				const audioBuffer = await downloadWhatsAppMedia(message.audio.id);
-				const response = await processAudioMessage(
-					userPhone,
-					audioBuffer,
-					message.id || "",
-				);
-				await sendWhatsAppMessage(userPhone, response);
+				const lockResult = await runExclusive(userPhone, async () => {
+					const audioBuffer = await downloadWhatsAppMedia(message.audio!.id);
+					const response = await processAudioMessage(
+						userPhone,
+						audioBuffer,
+						message.id || "",
+					);
+					await sendWhatsAppMessage(userPhone, response);
+					return response;
+				});
+				if (lockResult.status === "rejected") {
+					await sendWhatsAppMessage(userPhone, BUSY_MESSAGE);
+					if (performanceRequestId) {
+						performanceTracker.endRequest(performanceRequestId);
+					}
+					return;
+				}
 				logger.info(`📤 Sent audio response to ${userPhone}`);
 			} catch (error: any) {
 				logger.error("Error processing audio:", error);
@@ -241,49 +255,66 @@ export async function handleIncomingMessage(
 		} else if (message.type === "image" && message.image) {
 			logger.info("🖼️  Processing image message");
 			const imageCaption = message.image.caption || "";
-			let imageBuffer: Buffer;
 			try {
-				imageBuffer = await downloadWhatsAppMedia(message.image.id);
-				logger.info(
-					`📷 Image downloaded (${(imageBuffer.length / 1024).toFixed(2)}KB)`,
-				);
-			} catch (downloadError: any) {
-				logger.error("Error downloading image:", downloadError);
-				const errorMessage = downloadError.message?.includes("not found")
-					? "Sorry, I couldn't access the image. It may have expired or been deleted. Please send the image again."
-					: downloadError.message?.includes("timeout")
-						? "The image download timed out. Please try sending the image again."
-						: "Sorry, I couldn't download your image. Please try sending it again.";
-				await sendWhatsAppMessage(userPhone, errorMessage);
-				if (performanceRequestId)
+				const lockResult = await runExclusive(userPhone, async () => {
+					let imageBuffer: Buffer;
+					try {
+						imageBuffer = await downloadWhatsAppMedia(message.image!.id);
+						logger.info(
+							`📷 Image downloaded (${(imageBuffer.length / 1024).toFixed(2)}KB)`,
+						);
+					} catch (downloadError: any) {
+						logger.error("Error downloading image:", downloadError);
+						const errorMessage = downloadError.message?.includes("not found")
+							? "Sorry, I couldn't access the image. It may have expired or been deleted. Please send the image again."
+							: downloadError.message?.includes("timeout")
+								? "The image download timed out. Please try sending the image again."
+								: "Sorry, I couldn't download your image. Please try sending it again.";
+						await sendWhatsAppMessage(userPhone, errorMessage);
+						throw downloadError;
+					}
+					try {
+						const responseMessage = await processImageMessage(
+							userPhone,
+							imageBuffer,
+							imageCaption,
+							message.id || "",
+							message.image!.id,
+						);
+						await sendWhatsAppMessage(userPhone, responseMessage);
+						logger.info(
+							`📤 Sent formatted image analysis response to ${userPhone}`,
+						);
+						return responseMessage;
+					} catch (error: any) {
+						logger.error("Error analyzing image:", error);
+						const errMsg =
+							error?.message ||
+							"Sorry, I encountered an error analyzing your image.";
+						await sendWhatsAppMessage(
+							userPhone,
+							errMsg.includes("rate limit")
+								? "The image analysis service is currently busy. Please try again in a few moments."
+								: errMsg.includes("timeout")
+									? "The image took too long to process. Please try with a smaller image."
+									: "Sorry, I encountered an error analyzing your image. Please try again or describe what you see.",
+						);
+						throw error;
+					}
+				});
+				if (lockResult.status === "rejected") {
+					await sendWhatsAppMessage(userPhone, BUSY_MESSAGE);
+					if (performanceRequestId) {
+						performanceTracker.endRequest(performanceRequestId);
+					}
+					return;
+				}
+			} catch (_) {
+				// Download or process error already handled inside runExclusive
+				if (performanceRequestId) {
 					performanceTracker.endRequest(performanceRequestId);
+				}
 				return;
-			}
-			try {
-				const responseMessage = await processImageMessage(
-					userPhone,
-					imageBuffer,
-					imageCaption,
-					message.id || "",
-					message.image.id,
-				);
-				await sendWhatsAppMessage(userPhone, responseMessage);
-				logger.info(
-					`📤 Sent formatted image analysis response to ${userPhone}`,
-				);
-			} catch (error: any) {
-				logger.error("Error analyzing image:", error);
-				const errMsg =
-					error?.message ||
-					"Sorry, I encountered an error analyzing your image.";
-				await sendWhatsAppMessage(
-					userPhone,
-					errMsg.includes("rate limit")
-						? "The image analysis service is currently busy. Please try again in a few moments."
-						: errMsg.includes("timeout")
-							? "The image took too long to process. Please try with a smaller image."
-							: "Sorry, I encountered an error analyzing your image. Please try again or describe what you see.",
-				);
 			}
 			if (performanceRequestId) {
 				performanceTracker.endRequest(performanceRequestId);
@@ -299,49 +330,62 @@ export async function handleIncomingMessage(
 			return;
 		}
 
-		// Get or create user record
-		const userRecord = await userService.findOrCreateByWhatsappNumber(userPhone);
+		// Get or create user record and invoke graph (one request at a time per user)
+		const lockResult = await runExclusive(userPhone, async () => {
+			const userRecord = await userService.findOrCreateByWhatsappNumber(userPhone);
 
-		logger.info(`🤖 AI Processing: "${messageText}"`);
+			logger.info(`🤖 AI Processing: "${messageText}"`);
 
-		// Invoke graph directly (no RequestContext wrapper needed - graph uses MemoState)
-		const response = await invokeMemoGraphSimple(userPhone, messageText, {
-			whatsappMessageId: message.id,
-			replyToMessageId: replyToMessageId,
-			triggerType: "user",
-		});
-		logger.info(`💡 AI Response: "${response}"`);
+			// Invoke graph directly (no RequestContext wrapper needed - graph uses MemoState)
+			const response = await invokeMemoGraphSimple(userPhone, messageText, {
+				whatsappMessageId: message.id,
+				replyToMessageId: replyToMessageId,
+				triggerType: "user",
+			});
+			logger.info(`💡 AI Response: "${response}"`);
 
-		// Send agent response back to user
-		await sendWhatsAppMessage(userPhone, response);
+			// Send agent response back to user
+			await sendWhatsAppMessage(userPhone, response);
 
-		const duration = Date.now() - startTime;
-		logger.info(`✅ Message handled successfully in ${duration}ms`);
+			const duration = Date.now() - startTime;
+			logger.info(`✅ Message handled successfully in ${duration}ms`);
 
-		// End performance tracking FIRST (needs requestCalls for cost calculation)
-		if (performanceRequestId) {
-			await performanceTracker.endRequest(performanceRequestId);
-		}
-
-		// Step 6: Upload performance logs to database (after response is sent and summary printed)
-		if (performanceRequestId) {
-			try {
-				const calls = performanceTracker.getRequestCalls(performanceRequestId);
-				const functions =
-					performanceTracker.getRequestFunctions(performanceRequestId);
-
-				if (calls.length > 0 || functions.length > 0) {
-					await performanceLogService.uploadSessionLogs(calls, functions);
-					// Clear in-memory data after successful upload
-					performanceTracker.clearRequestData(performanceRequestId);
-				}
-			} catch (uploadError) {
-				logger.error(
-					"Error uploading performance logs to database:",
-					uploadError,
-				);
-				// Don't fail the request if upload fails
+			// End performance tracking FIRST (needs requestCalls for cost calculation)
+			if (performanceRequestId) {
+				await performanceTracker.endRequest(performanceRequestId);
 			}
+
+			// Step 6: Upload performance logs to database (after response is sent and summary printed)
+			if (performanceRequestId) {
+				try {
+					const calls = performanceTracker.getRequestCalls(performanceRequestId);
+					const functions =
+						performanceTracker.getRequestFunctions(performanceRequestId);
+
+					if (calls.length > 0 || functions.length > 0) {
+						await performanceLogService.uploadSessionLogs(calls, functions);
+						// Clear in-memory data after successful upload
+						performanceTracker.clearRequestData(performanceRequestId);
+					}
+				} catch (uploadError) {
+					logger.error(
+						"Error uploading performance logs to database:",
+						uploadError,
+					);
+					// Don't fail the request if upload fails
+				}
+			}
+
+			return response;
+		});
+
+		if (lockResult.status === "rejected") {
+			await sendWhatsAppMessage(userPhone, BUSY_MESSAGE);
+			if (performanceRequestId) {
+				await performanceTracker.endRequest(performanceRequestId);
+			}
+			logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+			return;
 		}
 
 		logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");

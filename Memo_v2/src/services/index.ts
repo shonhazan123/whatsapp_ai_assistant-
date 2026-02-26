@@ -40,6 +40,12 @@ export {
 } from "./whatsapp.js";
 
 // ============================================================================
+// PER-USER REQUEST LOCK (one request at a time per user)
+// ============================================================================
+
+export { runExclusive, type RunExclusiveResult } from "./concurrency/UserRequestLock.js";
+
+// ============================================================================
 // PLACEHOLDER EXPORTS (for development/testing when V1 not available)
 // ============================================================================
 

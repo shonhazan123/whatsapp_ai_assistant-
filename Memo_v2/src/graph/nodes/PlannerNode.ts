@@ -620,6 +620,7 @@ export class PlannerNode extends LLMNode {
     // Recent conversation - CRITICAL for context understanding and resolving references like "it", "that", "סיימתי"
     if (state.recentMessages && state.recentMessages.length > 0) {
       userMessage += `## Recent Conversation (use to resolve references like "it", "that", "זה")\n`;
+      userMessage += `The user may refer in their last message to previous context (events, details, dates, etc.). If the message is ambiguous, try to match it with details from these interactions.\n\n`;
       // Provide a larger window so the Planner can understand context, not just the last input
       const recent = state.recentMessages.slice(-10);
       for (const msg of recent) {

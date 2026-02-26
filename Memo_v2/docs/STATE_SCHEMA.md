@@ -50,6 +50,9 @@ Canonical code: `Memo_v2/src/graph/nodes/ReplyContextNode.ts`
 
 ### 3) `PlannerNode` (LLM)
 
+Reads (among other state):
+- `state.recentMessages`: injected as a "Recent Conversation" block with an explicit instruction that this is the last conversation with the user, that the user may refer to previous context (events, details, dates), and that ambiguous messages should be matched against these interactions.
+
 Writes:
 - `state.plannerOutput`: `intentType`, `confidence`, `riskLevel`, `needsApproval`, `missingFields`, `plan[]`
 - `state.routingSuggestions`: pattern-based hints used for natural clarification messages in HITL
