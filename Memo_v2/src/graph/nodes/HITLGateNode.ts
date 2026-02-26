@@ -15,11 +15,13 @@
 
 import { Command, interrupt } from '@langchain/langgraph';
 import { randomUUID } from 'crypto';
-import { callLLM } from '../../services/llm/LLMService.js';
+import { callLLM, callLLMJSON } from '../../services/llm/LLMService.js';
 import { getMemoryService } from '../../services/memory/index.js';
 import type { InterruptPayload, InterruptType } from '../../types/index.js';
 import type {
   HITLExpectedInput,
+  HITLInterpreterDecision,
+  HITLInterpreterOutput,
   HITLKind,
   HITLPolicySource,
   HITLReason,
@@ -67,7 +69,7 @@ Generate a SHORT, conversational message asking the user to clarify their intent
 - reminder_time_required: Ask at what time (and date if missing). Reminders need a specific date and time.
 - target_unclear: Ask WHICH specific items (by name or time window)
 - time_unclear: Ask WHEN
-- intent_unclear: Ask WHAT they want to do. Always offer second-brain as an option when it could apply.
+- intent_unclear: Ask WHAT they want to do. Offer choices based only on the Routing Suggestions (score-based); do not add a default save-to-memory option.
 - which_one: Ask which specific item from options
 
 ## Output
@@ -110,6 +112,87 @@ Generate a SHORT, casual confirmation message. Tone: "just making sure" — ligh
 
 ## Output
 Return ONLY the confirmation message text. No JSON, no markdown fences, no explanations.`;
+
+// ============================================================================
+// INTERPRETER PROMPT (LLM-based reply classification)
+// ============================================================================
+
+const INTERPRETER_SYSTEM_PROMPT = `You are a reply classifier for a personal assistant called Donna.
+
+You receive:
+- The question Donna asked the user
+- A summary of the pending operation (capability, action, current args)
+- The user's reply
+
+Your job: classify the user's reply into exactly ONE of these decisions:
+
+## Decisions
+
+1. **continue** — The user answered the question as expected.
+   Examples:
+   - Q: "Sure to delete task X?" → User: "yes" / "go ahead" / "do it" / "כן" / "בטוח" / "יאללה"
+   - Q: "What time for the reminder?" → User: "3pm" / "בשלוש"
+   - Q: "Which calendar?" → User: "work" / "personal"
+
+2. **continue_with_modifications** — The user approved/answered AND added extra changes to the SAME operation.
+   Examples:
+   - Q: "Sure to update the event date to March 5?" → User: "Yes, and change the name to Wedding"
+     → { "decision": "continue_with_modifications", "parsed": { "approved": true, "modifications": { "title": "Wedding" } } }
+   - Q: "Sure to create a reminder for tomorrow?" → User: "Yes but make it at 3pm"
+     → { "decision": "continue_with_modifications", "parsed": { "approved": true, "modifications": { "time": "3pm" } } }
+   - Q: "Which one? 1. Meeting 2. Lunch" → User: "Pick 2 and make it recurring"
+     → { "decision": "continue_with_modifications", "parsed": { "answer": "2", "modifications": { "recurring": true } } }
+
+3. **switch_intent** — The user's reply is about a COMPLETELY DIFFERENT topic/intent, unrelated to the pending question.
+   Examples:
+   - Q: "Sure to delete task X?" → User: "What are my events tomorrow?" / "מה יש לי מחר?" / "Send an email to Dan"
+   - Q: "What time?" → User: "Actually show me my calendar" / "מה האירועים שלי?"
+
+4. **cancel** — The user explicitly wants to stop/cancel the pending operation.
+   Examples:
+   - User: "never mind" / "forget it" / "don't do it" / "cancel" / "לא רוצה" / "תשכחי מזה" / "ביטול" / "עזבי"
+
+5. **re_ask** — The user tried to answer but the reply is unclear, partial, or does not make sense for the question.
+   Examples:
+   - Q: "Which event? 1. Meeting 2. Lunch" → User: "the thing" / "hmm" / "maybe"
+   - Q: "Sure to delete?" → User: "what?" / "מה?" / "I don't know"
+
+## Output format
+
+Return ONLY valid JSON (no markdown fences, no explanation):
+{
+  "decision": "<one of: continue | continue_with_modifications | switch_intent | cancel | re_ask>",
+  "parsed": {
+    "approved": true/false,
+    "answer": "<the user's actual answer if applicable>",
+    "modifications": { "<field>": "<value>" }
+  }
+}
+
+- For "continue": set "parsed.approved" to true (for yes_no) or "parsed.answer" to the selection/answer.
+- For "continue_with_modifications": MUST include "parsed.modifications" with semantic field names only (e.g. "title", "summary", "start", "end", "time", "date", "description", "location", "attendees", "priority", "category", "recurring"). NEVER output entity IDs, database IDs, or candidate indices.
+- For "switch_intent", "cancel", "re_ask": "parsed" can be empty or omitted.
+
+## Safety rules
+
+- NEVER output entity IDs, eventId, taskId, or any database identifiers.
+- NEVER choose disambiguation candidates on behalf of the user.
+- NEVER invent fields not mentioned by the user.
+- Only extract modifications the user EXPLICITLY stated.
+- When in doubt between switch_intent and re_ask, prefer switch_intent if the reply looks like a new request.
+- When in doubt between continue and continue_with_modifications, prefer continue if no extra changes were mentioned.`;
+
+// Semantic fields the interpreter is allowed to suggest as modifications
+const ALLOWED_MODIFICATION_FIELDS = new Set([
+  'title', 'summary', 'description', 'name',
+  'start', 'end', 'date', 'time', 'startDate', 'endDate', 'startTime', 'endTime',
+  'location', 'attendees', 'duration',
+  'priority', 'category', 'status',
+  'recurring', 'recurrence', 'repeat',
+  'reminder', 'reminderTime',
+  'text', 'body', 'subject',
+  'to', 'cc', 'bcc',
+]);
 
 // ============================================================================
 // HITL GATE NODE
@@ -330,13 +413,18 @@ export class HITLGateNode {
 
   // ========================================================================
   // SHARED RESUME HANDLER (called inline after interrupt() returns)
+  //
+  // Three-layer processing:
+  //   1. Fast path — deterministic keyword/index match (no LLM)
+  //   2. LLM interpreter — semantic classification into 5 decisions
+  //   3. State transitions — map decision to Command({ update, goto })
   // ========================================================================
 
-  private handleResumeInline(
+  private async handleResumeInline(
     state: MemoState,
     pending: PendingHITL,
     rawReply: string,
-  ): Command {
+  ): Promise<Command> {
     const traceId = state.traceId;
     const threadId = state.threadId;
 
@@ -365,43 +453,138 @@ export class HITLGateNode {
       });
     }
 
-    // Validate reply against expectedInput
+    // === LAYER 1: FAST PATH (cheapest — no LLM) ===
+
+    // Entity disambiguation uses deterministic validation only (no interpreter)
+    if (pending.source === 'entity_resolution') {
+      return this.handleDisambiguationResume(state, pending, rawReply);
+    }
+
+    // Planner HITL: try fast-path first
+    const fastPathResult = this.tryFastPath(rawReply, pending);
+    if (fastPathResult) {
+      console.log(JSON.stringify({
+        event: 'HITL_FAST_PATH_MATCH',
+        traceId, threadId,
+        hitlId: pending.hitlId,
+        decision: 'continue',
+        parsed: fastPathResult.parsed,
+      }));
+      return await this.applyDecision(state, pending, rawReply, {
+        decision: 'continue',
+        parsed: { approved: fastPathResult.parsed === 'yes', answer: String(fastPathResult.parsed) },
+      });
+    }
+
+    // === LAYER 2: LLM INTERPRETER ===
+    const interpreterResult = await this.callInterpreter(state, pending, rawReply);
+
+    console.log(JSON.stringify({
+      event: 'HITL_INTERPRETER_RESULT',
+      traceId, threadId,
+      hitlId: pending.hitlId,
+      decision: interpreterResult.decision,
+      hasMods: !!(interpreterResult.parsed?.modifications && Object.keys(interpreterResult.parsed.modifications).length > 0),
+    }));
+
+    // === LAYER 3: STATE TRANSITIONS ===
+    return await this.applyDecision(state, pending, rawReply, interpreterResult);
+  }
+
+  // ========================================================================
+  // FAST PATH — deterministic yes/no and single_choice match
+  // ========================================================================
+
+  private tryFastPath(
+    rawReply: string,
+    pending: PendingHITL,
+  ): { parsed: any } | null {
+    const trimmed = rawReply.trim();
+    if (!trimmed) return null;
+
+    if (pending.expectedInput === 'yes_no') {
+      const result = this.validateYesNo(trimmed);
+      if (result.valid) return { parsed: result.parsed };
+    }
+
+    if (pending.expectedInput === 'single_choice') {
+      const result = this.validateSingleChoiceExact(trimmed, pending);
+      if (result.valid) return { parsed: result.parsed };
+    }
+
+    if (pending.expectedInput === 'multi_choice') {
+      const result = this.validateMultiChoice(trimmed, pending);
+      if (result.valid) return { parsed: result.parsed };
+    }
+
+    if (pending.expectedInput === 'free_text') {
+      return { parsed: trimmed };
+    }
+
+    return null;
+  }
+
+  /**
+   * Strict single-choice matching: only succeeds on exact index or exact option id/label.
+   * Does NOT fall back to free-text (that goes to the interpreter).
+   */
+  private validateSingleChoiceExact(
+    trimmed: string,
+    pending: PendingHITL,
+  ): { valid: boolean; parsed: any } {
+    const optionCount = pending.options?.length || 0;
+
+    const num = parseInt(trimmed, 10);
+    if (!isNaN(num) && num >= 1 && num <= optionCount) {
+      return { valid: true, parsed: num };
+    }
+
+    const matchedOption = pending.options?.find(
+      o => o.id === trimmed || o.label.toLowerCase() === trimmed.toLowerCase()
+    );
+    if (matchedOption) {
+      const idx = pending.options!.indexOf(matchedOption) + 1;
+      return { valid: true, parsed: idx };
+    }
+
+    const allPatterns = ['both', 'all', 'שניהם', 'כולם'];
+    if (allPatterns.includes(trimmed.toLowerCase())) {
+      return { valid: true, parsed: trimmed };
+    }
+
+    return { valid: false, parsed: null };
+  }
+
+  // ========================================================================
+  // ENTITY DISAMBIGUATION RESUME (deterministic only)
+  // ========================================================================
+
+  private handleDisambiguationResume(
+    state: MemoState,
+    pending: PendingHITL,
+    rawReply: string,
+  ): Command {
+    const traceId = state.traceId;
+    const threadId = state.threadId;
+
     const validation = this.validateReply(rawReply, pending);
 
     if (!validation.valid) {
       console.log(JSON.stringify({
-        event: 'HITL_INVALID_REPLY',
+        event: 'HITL_SWITCH_INTENT',
         traceId, threadId,
         hitlId: pending.hitlId,
-        expectedInput: pending.expectedInput,
+        source: 'entity_disambiguation',
         rawReply,
       }));
 
-      // Do NOT continue with the pending action. Treat the user's message as a new request
-      // and re-route to planner so we plan for the new input (e.g. "מה האירועים שלי?" instead of yes/no).
-      const newInput = {
-        ...state.input,
-        message: rawReply,
-        enhancedMessage: rawReply,
-      };
-      const hitlExchange: MemoState['recentMessages'] = [
-        { role: 'assistant', content: pending.question, timestamp: new Date().toISOString() },
-        { role: 'user', content: rawReply, timestamp: new Date().toISOString() },
-      ];
-      console.log(`[HITLGateNode] Invalid reply: re-routing to planner with new message as input: "${rawReply.slice(0, 80)}${rawReply.length > 80 ? '...' : ''}"`);
-      return new Command({
-        update: {
-          pendingHITL: null,
-          input: newInput,
-          recentMessages: hitlExchange,
-          // Clear old plan so planner runs fresh on the new message and downstream uses new plan
-          plannerOutput: undefined,
-        } as Partial<MemoState>,
-        goto: 'planner',
-      });
+      return this.buildSwitchIntentCommand(state, pending, rawReply);
     }
 
-    // Valid reply — write hitlResults, clear pendingHITL, route via returnTo
+    const disambiguationUpdate = state.disambiguation
+      ? { ...state.disambiguation, userSelection: validation.parsed, resolved: false }
+      : undefined;
+
     const hitlResultEntry = {
       raw: rawReply,
       parsed: validation.parsed,
@@ -409,39 +592,349 @@ export class HITLGateNode {
       returnTo: pending.returnTo,
     };
 
-    const hitlResults = {
-      ...state.hitlResults,
-      [pending.hitlId]: hitlResultEntry,
-    };
-
-    const goto = this.deriveGoto(pending.returnTo);
-
-    let disambiguationUpdate: MemoState['disambiguation'] | undefined;
-    if (pending.source === 'entity_resolution' && state.disambiguation) {
-      disambiguationUpdate = {
-        ...state.disambiguation,
-        userSelection: validation.parsed,
-        resolved: false,
-      };
-    }
-
     console.log(JSON.stringify({
       event: 'HITL_RESUME_VALID',
       traceId, threadId,
       hitlId: pending.hitlId,
       parsedResult: validation.parsed,
       returnTo: pending.returnTo,
-      goto,
+      goto: this.deriveGoto(pending.returnTo),
     }));
 
-    const update: Partial<MemoState> = {
-      pendingHITL: null,
-      hitlResults,
-      error: undefined,
-      ...(disambiguationUpdate ? { disambiguation: disambiguationUpdate } : {}),
-    };
+    return new Command({
+      update: {
+        pendingHITL: null,
+        hitlResults: { ...state.hitlResults, [pending.hitlId]: hitlResultEntry },
+        error: undefined,
+        ...(disambiguationUpdate ? { disambiguation: disambiguationUpdate } : {}),
+      } as Partial<MemoState>,
+      goto: this.deriveGoto(pending.returnTo),
+    });
+  }
 
-    return new Command({ update, goto });
+  // ========================================================================
+  // LLM INTERPRETER CALL
+  // ========================================================================
+
+  private async callInterpreter(
+    state: MemoState,
+    pending: PendingHITL,
+    rawReply: string,
+  ): Promise<HITLInterpreterOutput> {
+    const plan = state.plannerOutput?.plan || [];
+    const originStep = plan.find(s => s.id === pending.originStepId) || plan[0];
+
+    const operationSummary = originStep
+      ? { capability: originStep.capability, action: originStep.action }
+      : { capability: 'unknown', action: 'unknown' };
+
+    const currentArgs = originStep
+      ? { constraints: originStep.constraints, changes: originStep.changes }
+      : {};
+
+    const userPrompt = `## Donna's question to the user
+"${pending.question}"
+
+## Pending operation
+${JSON.stringify(operationSummary)}
+
+## Current args being confirmed
+${JSON.stringify(currentArgs)}
+
+## Expected input type
+${pending.expectedInput}
+
+## User's reply
+"${rawReply}"
+
+Classify this reply. Return JSON only.`;
+
+    try {
+      const result = await callLLMJSON<HITLInterpreterOutput>({
+        messages: [
+          { role: 'system', content: INTERPRETER_SYSTEM_PROMPT },
+          { role: 'user', content: userPrompt },
+        ],
+        model: 'gpt-4o-mini',
+        temperature: 0.1,
+        maxTokens: 200,
+      });
+
+      if (!this.isValidDecision(result.decision)) {
+        console.warn(`[HITLGateNode] Interpreter returned unknown decision "${result.decision}", falling back to re_ask`);
+        return { decision: 're_ask' };
+      }
+
+      if (result.parsed?.modifications) {
+        result.parsed.modifications = this.sanitizeModifications(result.parsed.modifications);
+      }
+
+      return result;
+    } catch (error) {
+      console.error('[HITLGateNode] Interpreter LLM call failed, falling back to re_ask:', error);
+      return { decision: 're_ask' };
+    }
+  }
+
+  private isValidDecision(d: string): d is HITLInterpreterDecision {
+    return ['continue', 're_ask', 'switch_intent', 'cancel', 'continue_with_modifications'].includes(d);
+  }
+
+  /**
+   * Strip any keys that look like entity IDs or are not in the semantic allowlist.
+   */
+  private sanitizeModifications(mods: Record<string, unknown>): Record<string, unknown> {
+    const sanitized: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(mods)) {
+      const lowerKey = key.toLowerCase();
+      if (lowerKey.endsWith('id') || lowerKey === 'id') continue;
+      if (!ALLOWED_MODIFICATION_FIELDS.has(key)) continue;
+      sanitized[key] = value;
+    }
+    return sanitized;
+  }
+
+  // ========================================================================
+  // STATE TRANSITION LAYER — maps interpreter decision to Command
+  // ========================================================================
+
+  private async applyDecision(
+    state: MemoState,
+    pending: PendingHITL,
+    rawReply: string,
+    interpreterResult: HITLInterpreterOutput,
+  ): Promise<Command> {
+    const traceId = state.traceId;
+    const threadId = state.threadId;
+    const language = state.user.language;
+
+    switch (interpreterResult.decision) {
+      // ── CONTINUE ────────────────────────────────────────────────
+      case 'continue': {
+        const parsed = interpreterResult.parsed?.answer
+          ?? interpreterResult.parsed?.approved
+          ?? rawReply.trim();
+
+        const normalizedParsed = this.normalizeApprovalParsed(parsed, pending);
+
+        const hitlResultEntry = {
+          raw: rawReply,
+          parsed: normalizedParsed,
+          at: new Date().toISOString(),
+          returnTo: pending.returnTo,
+          interpreted: interpreterResult,
+        };
+
+        console.log(JSON.stringify({
+          event: 'HITL_RESUME_VALID',
+          traceId, threadId,
+          hitlId: pending.hitlId,
+          parsedResult: normalizedParsed,
+          returnTo: pending.returnTo,
+          goto: this.deriveGoto(pending.returnTo),
+        }));
+
+        return new Command({
+          update: {
+            pendingHITL: null,
+            hitlResults: { ...state.hitlResults, [pending.hitlId]: hitlResultEntry },
+            error: undefined,
+          } as Partial<MemoState>,
+          goto: this.deriveGoto(pending.returnTo),
+        });
+      }
+
+      // ── CONTINUE WITH MODIFICATIONS ─────────────────────────────
+      case 'continue_with_modifications': {
+        const modifications = interpreterResult.parsed?.modifications || {};
+        if (Object.keys(modifications).length === 0) {
+          console.warn(`[HITLGateNode] continue_with_modifications but no modifications found, treating as continue`);
+          return await this.applyDecision(state, pending, rawReply, { decision: 'continue', parsed: interpreterResult.parsed });
+        }
+
+        const hitlResultEntry = {
+          raw: rawReply,
+          parsed: 'yes',
+          at: new Date().toISOString(),
+          returnTo: pending.returnTo,
+          interpreted: interpreterResult,
+        };
+
+        const updatedPlannerOutput = this.mergePlanModifications(state, pending, modifications);
+
+        const clearedResolverResults = new Map(state.resolverResults);
+        clearedResolverResults.delete(pending.originStepId);
+        const clearedExecutorArgs = new Map(state.executorArgs);
+        clearedExecutorArgs.delete(pending.originStepId);
+
+        console.log(JSON.stringify({
+          event: 'HITL_CONTINUE_WITH_MODIFICATIONS',
+          traceId, threadId,
+          hitlId: pending.hitlId,
+          modifications,
+          originStepId: pending.originStepId,
+        }));
+
+        return new Command({
+          update: {
+            pendingHITL: null,
+            hitlResults: { ...state.hitlResults, [pending.hitlId]: hitlResultEntry },
+            plannerOutput: updatedPlannerOutput,
+            resolverResults: clearedResolverResults,
+            executorArgs: clearedExecutorArgs,
+            error: undefined,
+          } as Partial<MemoState>,
+          goto: 'resolver_router',
+        });
+      }
+
+      // ── SWITCH INTENT ───────────────────────────────────────────
+      case 'switch_intent': {
+        console.log(JSON.stringify({
+          event: 'HITL_SWITCH_INTENT',
+          traceId, threadId,
+          hitlId: pending.hitlId,
+          rawReply,
+        }));
+
+        return this.buildSwitchIntentCommand(state, pending, rawReply);
+      }
+
+      // ── CANCEL ──────────────────────────────────────────────────
+      case 'cancel': {
+        const cancelMessage = language === 'he'
+          ? 'ביטלתי. 👍'
+          : 'Cancelled. 👍';
+
+        console.log(JSON.stringify({
+          event: 'HITL_CANCELLED',
+          traceId, threadId,
+          hitlId: pending.hitlId,
+        }));
+
+        return new Command({
+          update: {
+            pendingHITL: null,
+            finalResponse: cancelMessage,
+            error: undefined,
+          } as Partial<MemoState>,
+          goto: 'response_writer',
+        });
+      }
+
+      // ── RE-ASK ──────────────────────────────────────────────────
+      case 're_ask': {
+        console.log(JSON.stringify({
+          event: 'HITL_RE_ASK',
+          traceId, threadId,
+          hitlId: pending.hitlId,
+          rawReply,
+        }));
+
+        const reAskQuestion = this.buildReAskQuestion(pending, language);
+        this.addInterruptMessageToMemory(state, reAskQuestion);
+
+        const reAskPending: PendingHITL = {
+          ...pending,
+          question: reAskQuestion,
+        };
+
+        const payload = this.buildInterruptPayloadFromPending(reAskPending, state);
+        const nextReply = interrupt(payload);
+
+        return await this.handleResumeInline(state, reAskPending, String(nextReply));
+      }
+
+      default: {
+        console.warn(`[HITLGateNode] Unexpected decision "${interpreterResult.decision}", treating as switch_intent`);
+        return this.buildSwitchIntentCommand(state, pending, rawReply);
+      }
+    }
+  }
+
+  // ========================================================================
+  // HELPER: Normalize approval parsed value for downstream compatibility
+  // ========================================================================
+
+  private normalizeApprovalParsed(parsed: any, pending: PendingHITL): any {
+    if (pending.expectedInput === 'yes_no') {
+      if (parsed === true || parsed === 'true') return 'yes';
+      if (parsed === false || parsed === 'false') return 'no';
+    }
+    return parsed;
+  }
+
+  // ========================================================================
+  // HELPER: Build switch-intent Command (shared by disambiguation + interpreter)
+  // ========================================================================
+
+  private buildSwitchIntentCommand(
+    state: MemoState,
+    pending: PendingHITL,
+    rawReply: string,
+  ): Command {
+    const newInput = {
+      ...state.input,
+      message: rawReply,
+      enhancedMessage: rawReply,
+    };
+    const hitlExchange: MemoState['recentMessages'] = [
+      { role: 'assistant', content: pending.question, timestamp: new Date().toISOString() },
+      { role: 'user', content: rawReply, timestamp: new Date().toISOString() },
+    ];
+
+    return new Command({
+      update: {
+        pendingHITL: null,
+        input: newInput,
+        recentMessages: hitlExchange,
+        plannerOutput: undefined,
+      } as Partial<MemoState>,
+      goto: 'planner',
+    });
+  }
+
+  // ========================================================================
+  // HELPER: Merge modifications into the plan step
+  // ========================================================================
+
+  private mergePlanModifications(
+    state: MemoState,
+    pending: PendingHITL,
+    modifications: Record<string, unknown>,
+  ): MemoState['plannerOutput'] {
+    if (!state.plannerOutput) return state.plannerOutput;
+
+    const updatedPlan = state.plannerOutput.plan.map(step => {
+      if (step.id !== pending.originStepId) return step;
+      return {
+        ...step,
+        constraints: { ...step.constraints, ...modifications },
+        changes: { ...step.changes, ...modifications },
+      };
+    });
+
+    return { ...state.plannerOutput, plan: updatedPlan };
+  }
+
+  // ========================================================================
+  // HELPER: Build re-ask question (gentle nudge, same context)
+  // ========================================================================
+
+  private buildReAskQuestion(pending: PendingHITL, language: MemoState['user']['language']): string {
+    if (pending.expectedInput === 'yes_no') {
+      return language === 'he'
+        ? `לא הצלחתי להבין — כן או לא? 🙂\n\n${pending.question}`
+        : `I didn't quite catch that — yes or no? 🙂\n\n${pending.question}`;
+    }
+    if (pending.expectedInput === 'single_choice' || pending.expectedInput === 'multi_choice') {
+      return language === 'he'
+        ? `לא הצלחתי להבין את הבחירה — אפשר לבחור מהרשימה?\n\n${pending.question}`
+        : `I didn't catch your choice — could you pick from the list?\n\n${pending.question}`;
+    }
+    return language === 'he'
+      ? `לא הצלחתי להבין. אפשר לנסח אחרת?\n\n${pending.question}`
+      : `I didn't quite understand. Could you rephrase?\n\n${pending.question}`;
   }
 
   // ========================================================================
@@ -785,13 +1278,8 @@ Generate a short, warm confirmation message:`;
   ): Promise<string> {
     const language = state.user.language;
     const userMessage = state.input.enhancedMessage || state.input.message;
-    const isIntentUnclear = check.reason === 'intent_unclear';
 
-    const baseSuggestions = state.routingSuggestions?.slice(0, 3) || [];
-    const hasSecondBrain = baseSuggestions.some(s => s.capability === 'second-brain');
-    const routingSuggestions = isIntentUnclear && !hasSecondBrain
-      ? [{ resolverName: 'secondbrain_resolver', capability: 'second-brain' as const, matchedPatterns: ['save/remember'], score: 0 }, ...baseSuggestions]
-      : baseSuggestions;
+    const routingSuggestions = state.routingSuggestions?.slice(0, 3) || [];
 
     const context = {
       userMessage,
@@ -808,10 +1296,6 @@ Generate a short, warm confirmation message:`;
       hitlReason: check.reason,
       hitlDetails: check.details,
     };
-
-    const intentUnclearInstruction = isIntentUnclear
-      ? `\n## Mandatory for intent_unclear\nYou MUST include the option to save to memory. Use exactly: "${language === 'he' ? 'לשמור בזכרון?' : 'save to memory?'}" as one of the choices.\n`
-      : '';
 
     const userPrompt = `## User Message
 "${userMessage}"
@@ -837,7 +1321,6 @@ ${context.plannerOutput
 Reason: ${check.reason || 'unclear intent'}
 Details: ${check.details || 'Low confidence in understanding'}
 ${check.missingFields?.length ? `Missing fields: ${check.missingFields.join(', ')}` : ''}
-${intentUnclearInstruction}
 
 Generate a friendly, conversational clarification message in ${language === 'he' ? 'Hebrew' : 'English'}:`;
 

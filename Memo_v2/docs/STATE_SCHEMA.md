@@ -79,22 +79,30 @@ Single canonical HITL control-plane. One `pendingHITL` at a time.
 - **Planner HITL**: checks planner conditions (confidence, missingFields, risk, approval), creates `PendingHITL` with appropriate `kind`/`returnTo`.
 - **Multi-HITL guard**: if `pendingHITL !== null` and a new HITL trigger occurs, logs `HITL_DUPLICATE_ATTEMPT` and ignores the new request.
 
-#### B) Resume path: validates, stores result, routes via Command
+#### B) Resume path: three-layer processing
 
-- Validates user reply against `pendingHITL.expectedInput` (yes_no, single_choice, multi_choice, free_text).
-- On invalid: re-interrupts with error-prefixed question, same `hitlId`.
-- On valid: writes `hitlResults[hitlId]`, clears `pendingHITL`, returns `Command({ update, goto })`.
-- `goto` derived from `pendingHITL.returnTo`:
-  - `planner + replan` → `goto: 'planner'`
-  - `resolver_router + continue` → `goto: 'resolver_router'`
-  - `entity_resolution + apply_selection` → `goto: 'entity_resolution'`
-- Expiry check: if `pendingHITL.expiresAt` < now, clears and responds with expiry message.
+Resume uses a three-layer architecture:
+
+1. **Fast path** (no LLM): deterministic yes/no keyword match, exact option index/label match, multi-choice numeric parsing, free-text pass-through. Entity disambiguation always uses this layer only.
+2. **LLM interpreter** (planner HITL only, `gpt-4o-mini`): classifies reply into one of five decisions: `continue`, `continue_with_modifications`, `switch_intent`, `cancel`, `re_ask`. For `continue_with_modifications`, extracts semantic `modifications` (e.g. `{ title: "Wedding" }`).
+3. **State transitions**: maps decision to `Command({ update, goto })`.
+
+Decision routing:
+- `continue` → writes `hitlResults[hitlId]`, clears `pendingHITL`, routes via `pendingHITL.returnTo`
+- `continue_with_modifications` → merges modifications into plan step `constraints`/`changes`, **clears** `resolverResults` and `executorArgs` for that step, routes to `resolver_router`
+- `switch_intent` → clears `pendingHITL`, replaces `input.message`, clears `plannerOutput`, routes to `planner`
+- `cancel` → clears `pendingHITL`, sets `finalResponse` to cancellation message, routes to `response_writer`
+- `re_ask` → re-interrupts with same `hitlId` and a nudge question (recursive)
+
+Expiry check: if `pendingHITL.expiresAt` < now, clears and responds with expiry message.
+
+`hitlResults[hitlId]` may include an `interpreted?: HITLInterpreterOutput` field when the LLM interpreter ran (for audit).
 
 #### LLM guardrails
 
-- LLM generates **question text only** (clarification messages).
-- Options (ids, labels, order) are **machine-controlled** in code.
-- For disambiguation, LLM is not used at all — question is template-based.
+- **Question generation LLMs** generate question text only. Options are machine-controlled.
+- **Interpreter LLM** classifies + extracts semantic fields only. Never invents entity IDs. Modifications are filtered through an allowlist (`ALLOWED_MODIFICATION_FIELDS`) in code.
+- For disambiguation, no LLM is used — question is template-based.
 
 Canonical code: `Memo_v2/src/graph/nodes/HITLGateNode.ts`
 
@@ -160,7 +168,9 @@ Canonical code: `Memo_v2/src/graph/nodes/ExecutorNode.ts`
 
 - **TTL**: 5 minutes (`HITL_TTL_MS` from `Memo_v2/src/types/hitl.ts`).
 - Enforced in `invokeMemoGraph()`: reads `interruptedAt` from interrupt payload metadata.
-- If timed out → deletes thread checkpoints, responds with expiry message.
-- Also enforced defense-in-depth in `HITLGateNode`: if `pendingHITL.expiresAt` is past, clears and routes to expiry response.
+- If timed out → deletes thread checkpoints, **falls through to fresh invocation** (user's message is processed normally, no confusing expiry error). The HITL question is already in `MemoryService`, so the planner sees full context.
+- Defense-in-depth in `HITLGateNode`: if `pendingHITL.expiresAt` is past, clears and routes to expiry response.
+
+All HITL interactions are persisted to `MemoryService` (question via `addInterruptMessageToMemory`, user reply via `addUserResponseToMemory`) so conversation context is never lost.
 
 When there is no pending interrupt, every user message is passed to the graph as a fresh invocation (no stale-reply guard).

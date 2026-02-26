@@ -338,26 +338,11 @@ export async function invokeMemoGraph(
 				}));
 				try {
 					await checkpointer.deleteThread(threadId);
-					console.log(`[MemoGraph] Cleaned up expired thread ${threadId}`);
+					console.log(`[MemoGraph] Cleaned up expired thread ${threadId}, falling through to fresh invocation`);
 				} catch (e) {
 					console.warn(`[MemoGraph] Failed to cleanup stale thread:`, e);
 				}
 				isPendingInterrupt = false;
-
-				const lang = detectLanguageSimple(message);
-				return {
-					response: lang === "he"
-						? "הבקשה פגה — רוצה לנסות שוב?"
-						: "That request expired — want to try again?",
-					interrupted: false,
-					metadata: {
-						startTime: Date.now(),
-						nodeExecutions: [],
-						llmCalls: 0,
-						totalTokens: 0,
-						totalCost: 0,
-					},
-				};
 			}
 		}
 	}
@@ -489,17 +474,6 @@ export async function invokeMemoGraphSimple(
 ): Promise<string> {
 	const result = await invokeMemoGraph(userPhone, message, options);
 	return result.response;
-}
-
-// ============================================================================
-// HELPERS
-// ============================================================================
-
-/**
- * Simple language detection for short responses (used in expiry messages).
- */
-function detectLanguageSimple(msg: string): "he" | "en" {
-	return /[\u0590-\u05FF]/.test(msg) ? "he" : "en";
 }
 
 // Export types and state

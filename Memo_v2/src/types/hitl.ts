@@ -94,6 +94,26 @@ export interface PendingHITL {
 }
 
 // ============================================================================
+// HITL INTERPRETER (LLM-based reply classification)
+// ============================================================================
+
+export type HITLInterpreterDecision =
+  | 'continue'
+  | 're_ask'
+  | 'switch_intent'
+  | 'cancel'
+  | 'continue_with_modifications';
+
+export interface HITLInterpreterOutput {
+  decision: HITLInterpreterDecision;
+  parsed?: {
+    approved?: boolean;
+    answer?: string;
+    modifications?: Record<string, unknown>;
+  };
+}
+
+// ============================================================================
 // HITL RESULT ENTRY (stored after valid resume)
 // ============================================================================
 
@@ -102,6 +122,7 @@ export interface HITLResultEntry {
   parsed: any;
   at: string; // ISO timestamp
   returnTo?: HITLReturnTo; // Audit trail
+  interpreted?: HITLInterpreterOutput;
 }
 
 // ============================================================================
