@@ -352,17 +352,19 @@ export class CalendarService {
       if (request.location) updates.location = request.location;
 
       if (request.start) {
-        updates.start = {
-          dateTime: request.start,
-          timeZone
-        };
+        if (this.isDateOnlyFormat(request.start)) {
+          updates.start = { date: request.start, dateTime: null, timeZone: null };
+        } else {
+          updates.start = { dateTime: request.start, timeZone };
+        }
       }
 
       if (request.end) {
-        updates.end = {
-          dateTime: request.end,
-          timeZone
-        };
+        if (this.isDateOnlyFormat(request.end)) {
+          updates.end = { date: request.end, dateTime: null, timeZone: null };
+        } else {
+          updates.end = { dateTime: request.end, timeZone };
+        }
       }
 
       if (request.attendees) {
@@ -404,11 +406,11 @@ export class CalendarService {
           this.logger.warn(`⚠️  Format mismatch detected, retrying with date format for event: ${request.eventId}`);
           if (updates.start?.dateTime) {
             const dateOnly = updates.start.dateTime.split('T')[0];
-            updates.start = { date: dateOnly };
+            updates.start = { date: dateOnly, dateTime: null, timeZone: null };
           }
           if (updates.end?.dateTime) {
             const dateOnly = updates.end.dateTime.split('T')[0];
-            updates.end = { date: dateOnly };
+            updates.end = { date: dateOnly, dateTime: null, timeZone: null };
           }
           const retryResponse = await calendarClient.events.patch({
             calendarId,

@@ -455,9 +455,9 @@ export class HITLGateNode {
 
     // === LAYER 1: FAST PATH (cheapest — no LLM) ===
 
-    // Entity disambiguation uses deterministic validation only (no interpreter)
+    // Entity disambiguation: deterministic + LLM fallback normalization
     if (pending.source === 'entity_resolution') {
-      return this.handleDisambiguationResume(state, pending, rawReply);
+      return await this.handleDisambiguationResume(state, pending, rawReply);
     }
 
     // Planner HITL: try fast-path first
@@ -549,7 +549,7 @@ export class HITLGateNode {
 
     const allPatterns = ['both', 'all', 'שניהם', 'כולם'];
     if (allPatterns.includes(trimmed.toLowerCase())) {
-      return { valid: true, parsed: trimmed };
+      return { valid: true, parsed: 'all' };
     }
 
     return { valid: false, parsed: null };
@@ -559,17 +559,25 @@ export class HITLGateNode {
   // ENTITY DISAMBIGUATION RESUME (deterministic only)
   // ========================================================================
 
-  private handleDisambiguationResume(
+  private async handleDisambiguationResume(
     state: MemoState,
     pending: PendingHITL,
     rawReply: string,
-  ): Command {
+  ): Promise<Command> {
     const traceId = state.traceId;
     const threadId = state.threadId;
 
     const validation = this.validateReply(rawReply, pending);
 
-    if (!validation.valid) {
+    // Layer 1: deterministic fast path — number or exact "all" keyword
+    if (validation.valid && this.isCleanDisambiguationMatch(validation.parsed)) {
+      return this.buildDisambiguationCommand(state, pending, validation.parsed, rawReply);
+    }
+
+    // Layer 2: LLM interpreter — normalize free-text to known value
+    const interpreted = await this.callDisambiguationInterpreter(pending, rawReply);
+
+    if (interpreted === null) {
       console.log(JSON.stringify({
         event: 'HITL_SWITCH_INTENT',
         traceId, threadId,
@@ -577,26 +585,50 @@ export class HITLGateNode {
         source: 'entity_disambiguation',
         rawReply,
       }));
-
       return this.buildSwitchIntentCommand(state, pending, rawReply);
     }
 
+    // Normalized to number or "all"
+    return this.buildDisambiguationCommand(state, pending, interpreted, rawReply);
+  }
+
+  /**
+   * Returns true if parsed is a clean, normalized value that applySelection() can handle:
+   * number, number[], or the canonical "all" string.
+   */
+  private isCleanDisambiguationMatch(parsed: any): boolean {
+    if (typeof parsed === 'number') return true;
+    if (Array.isArray(parsed) && parsed.every((n: any) => typeof n === 'number')) return true;
+    if (parsed === 'all') return true;
+    return false;
+  }
+
+  /**
+   * Build Command for a successfully resolved disambiguation selection.
+   */
+  private buildDisambiguationCommand(
+    state: MemoState,
+    pending: PendingHITL,
+    parsed: any,
+    rawReply: string,
+  ): Command {
     const disambiguationUpdate = state.disambiguation
-      ? { ...state.disambiguation, userSelection: validation.parsed, resolved: false }
+      ? { ...state.disambiguation, userSelection: parsed, resolved: false }
       : undefined;
 
     const hitlResultEntry = {
       raw: rawReply,
-      parsed: validation.parsed,
+      parsed,
       at: new Date().toISOString(),
       returnTo: pending.returnTo,
     };
 
     console.log(JSON.stringify({
       event: 'HITL_RESUME_VALID',
-      traceId, threadId,
+      traceId: state.traceId,
+      threadId: state.threadId,
       hitlId: pending.hitlId,
-      parsedResult: validation.parsed,
+      parsedResult: parsed,
       returnTo: pending.returnTo,
       goto: this.deriveGoto(pending.returnTo),
     }));
@@ -610,6 +642,54 @@ export class HITLGateNode {
       } as Partial<MemoState>,
       goto: this.deriveGoto(pending.returnTo),
     });
+  }
+
+  /**
+   * Lightweight LLM call to normalize free-text disambiguation replies.
+   * Only fires when deterministic matching fails.
+   * Returns: number (1-based), "all", or null (unrelated/new request).
+   */
+  private async callDisambiguationInterpreter(
+    pending: PendingHITL,
+    rawReply: string,
+  ): Promise<number | 'all' | null> {
+    const optionsList = pending.options
+      ?.map((o, i) => `${i + 1}. ${o.label}`)
+      .join('\n') || '';
+
+    const systemPrompt = `You are classifying a user's reply to a numbered-options question.
+
+The question was: "${pending.question}"
+Options:
+${optionsList}
+
+The user replied: "${rawReply}"
+
+Determine what the user meant. Return JSON:
+- { "selection": <number> } if user picked a specific option (1-based)
+- { "selection": "all" } if user wants ALL options
+- { "selection": null } if the reply is unrelated or a new request
+
+Return only the JSON.`;
+
+    try {
+      const result = await callLLMJSON<{ selection: number | 'all' | null }>({
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: rawReply },
+        ],
+        model: 'gpt-4o-mini',
+        temperature: 0.1,
+        maxTokens: 50,
+      });
+
+      if (result.selection === 'all') return 'all';
+      if (typeof result.selection === 'number' && result.selection >= 1) return result.selection;
+      return null;
+    } catch (error) {
+      console.error('[HITLGateNode] Disambiguation interpreter failed:', error);
+      return null;
+    }
   }
 
   // ========================================================================
@@ -1053,14 +1133,14 @@ Classify this reply. Return JSON only.`;
       return { valid: true, parsed: idx };
     }
 
-    // "both"/"all" → treat as first if single_choice
+    // "both"/"all" → normalize to canonical "all"
     const allPatterns = ['both', 'all', 'שניהם', 'כולם'];
     if (allPatterns.includes(trimmed.toLowerCase())) {
-      return { valid: true, parsed: trimmed };
+      return { valid: true, parsed: 'all' };
     }
 
-    // Free text fallback (for text-based selection)
-    return { valid: true, parsed: trimmed };
+    // No deterministic match — return invalid so LLM layer is invoked
+    return { valid: false, parsed: null };
   }
 
   private validateMultiChoice(
@@ -1069,10 +1149,10 @@ Classify this reply. Return JSON only.`;
   ): { valid: boolean; parsed: any } {
     const optionCount = pending.options?.length || 0;
 
-    // "both"/"all"
+    // "both"/"all" → normalize to canonical "all"
     const allPatterns = ['both', 'all', 'שניהם', 'כולם'];
     if (allPatterns.includes(trimmed.toLowerCase())) {
-      return { valid: true, parsed: trimmed };
+      return { valid: true, parsed: 'all' };
     }
 
     // Parse "2 3" or "2,3" or "1, 3"
@@ -1085,8 +1165,8 @@ Classify this reply. Return JSON only.`;
       }
     }
 
-    // Fallback: accept as free text
-    return { valid: true, parsed: trimmed };
+    // No deterministic match — return invalid so LLM layer is invoked
+    return { valid: false, parsed: null };
   }
 
   // ========================================================================

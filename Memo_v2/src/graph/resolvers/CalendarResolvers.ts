@@ -243,9 +243,9 @@ Analyze the user's intent to determine the correct operation:
 - User wants MULTIPLE DIFFERENT recurring events (same days, different titles/times) → "createMultipleRecurring"
 - User wants to CHANGE/MOVE a SINGLE event → "update"
 - User wants to CHANGE/MOVE ALL events in a time window → "updateByWindow"
-- User wants to DELETE/CANCEL a SINGLE event → "delete"
-- User wants to DELETE ALL events in a time window → "deleteByWindow"
-- User wants to DELETE all events matching summary (no window) → "deleteBySummary"
+- User wants to DELETE/CANCEL a SINGLE event (singular language, specific date) → "delete"
+- User wants to DELETE ALL events in a time window (no specific summary) → "deleteByWindow"
+- User wants to DELETE MULTIPLE events matching a summary/name (with or without time window) → "deleteBySummary"
 - User wants to END recurring series → "truncateRecurring"
 
 ## AVAILABLE OPERATIONS:
@@ -255,9 +255,9 @@ Analyze the user's intent to determine the correct operation:
 - **createMultipleRecurring**: Create multiple different recurring events
 - **update**: Update a single existing event (use searchCriteria + updateFields)
 - **updateByWindow**: Update ALL events in a time window (use timeMin, timeMax, updateFields)
-- **delete**: Delete a single event by summary and time window
-- **deleteByWindow**: Delete ALL events in a time window (use timeMin, timeMax, optional excludeSummaries)
-- **deleteBySummary**: Delete all events matching summary (no time window needed)
+- **delete**: Delete a SINGLE event (user treats it as one specific event)
+- **deleteByWindow**: Delete ALL events in a time window regardless of summary (use timeMin, timeMax, optional excludeSummaries)
+- **deleteBySummary**: Delete all events matching summary (with or without time window). Use when user refers to MULTIPLE events by name.
 - **truncateRecurring**: End a recurring series
 
 ## CRITICAL RULES:
@@ -276,6 +276,7 @@ When user requests event spanning multiple days WITHOUT specific time:
 - Use allDay: true
 - Use date format YYYY-MM-DD (no time)
 - End date is day AFTER last day (exclusive per Google API)
+
 
 Example: "צימר בצפון ממחר עד שישי" (no time mentioned)
 → { "operation": "create", "summary": "צימר בצפון", "start": "2025-01-03", "end": "2025-01-07", "allDay": true }
@@ -300,6 +301,18 @@ Example: "תזיז את הפגישה עם דנה מחר לשעה 18:30"
 → { "operation": "update", 
     "searchCriteria": { "summary": "פגישה עם דנה", "timeMin": "...", "timeMax": "..." },
     "updateFields": { "start": "2025-01-03T18:30:00+02:00", "end": "2025-01-03T19:30:00+02:00" } }
+
+### Convert Events to All-Day (updateByWindow + allDay):
+When user wants to make existing events "whole day" / "יום שלם":
+- Use updateByWindow with the time window covering the events
+- Set updateFields.allDay: true
+- Do NOT set updateFields.start or updateFields.end (each event will be converted to all-day on its own date automatically)
+
+Example: "תעדכני את האירועים האלה ליום שלם" (reply to events from 24-28 March)
+→ { "operation": "updateByWindow", "timeMin": "2025-03-24T00:00:00+02:00", "timeMax": "2025-03-28T23:59:59+02:00", "updateFields": { "allDay": true }, "language": "he" }
+
+Example: "make tomorrow's events all day"
+→ { "operation": "updateByWindow", "timeMin": "2025-01-03T00:00:00+02:00", "timeMax": "2025-01-03T23:59:59+02:00", "updateFields": { "allDay": true }, "language": "en" }
 
 ### Defaults:
 - If only date given (no time): default start 10:00, end 11:00
@@ -383,13 +396,34 @@ Example 11 - Clear all events in a window:
 User: "delete all tomorrow's events"
 → { "operation": "deleteByWindow", "timeMin": "2025-01-03T00:00:00+02:00", "timeMax": "2025-01-03T23:59:59+02:00", "language": "en" }
 
-Example 12 - Update ALL events in a time window (move to new date):
+Example 12 - Delete multiple named events (plural language):
+User: "תמחקי אותם" (context: previously discussed "קייטנה לאפיק" events on March 24-30)
+→ { "operation": "deleteBySummary", "summary": "קייטנה לאפיק", "timeMin": "2025-03-24T00:00:00+02:00", "timeMax": "2025-03-30T23:59:59+02:00", "language": "he" }
+
+Example 12b - Delete all events with same name:
+User: "delete all the team meetings next week"
+→ { "operation": "deleteBySummary", "summary": "team meeting", "timeMin": "2025-01-06T00:00:00+02:00", "timeMax": "2025-01-12T23:59:59+02:00", "language": "en" }
+
+Example 14 - Update ALL events in a time window (move to new date):
 User: "הזז את כל האירועים של הבוקר מחר לשבת"
 → { "operation": "updateByWindow", "timeMin": "2025-01-03T06:00:00+02:00", "timeMax": "2025-01-03T12:00:00+02:00", "updateFields": { "start": "2025-01-04" }, "language": "he" }
 
-Example 13 - Postpone all events:
+Example 15 - Postpone all events:
 User: "postpone all morning events tomorrow to Saturday"
 → { "operation": "updateByWindow", "timeMin": "2025-01-03T06:00:00+02:00", "timeMax": "2025-01-03T12:00:00+02:00", "updateFields": { "start": "2025-01-04" }, "language": "en" }
+
+Example 15b - Convert events to all-day:
+User: "תעדכני את האירועים האלה ליום שלם"
+→ { "operation": "updateByWindow", "timeMin": "2025-03-24T00:00:00+02:00", "timeMax": "2025-03-28T23:59:59+02:00", "updateFields": { "allDay": true }, "language": "he" }
+
+Example 15c - Make events whole day (English):
+User: "make all events next week full day"
+→ { "operation": "updateByWindow", "timeMin": "2025-01-06T00:00:00+02:00", "timeMax": "2025-01-10T23:59:59+02:00", "updateFields": { "allDay": true }, "language": "en" }
+
+### delete vs deleteBySummary:
+- "delete" = user refers to ONE specific event (singular: "the event", "את האירוע", specific date)
+- "deleteBySummary" = user refers to MULTIPLE events by name (plural: "אותם", "them", "all the X", "את כל ה-X")
+- When in doubt, prefer deleteBySummary — it safely handles both single and multiple matches.
 
 ### RECURRING EVENT INTENT DETECTION (DELETE/UPDATE only):
 When user DELETES or UPDATES an event, detect if they mean the ENTIRE RECURRING SERIES.
@@ -403,20 +437,20 @@ DO NOT set this field (leave undefined) when:
 - User just mentions event name without "recurring/חוזר": "תמחק את אימון איגרוף"
 - Creating new events (only relevant for delete/update)
 
-Example 14 - Delete recurring series (explicit):
+Example 16 - Delete recurring series (explicit):
 User: "תמחק את האירוע החוזר אימון איגרוף שבימי שני בבוקר"
 → { "operation": "delete", "summary": "אימון איגרוף", "recurringSeriesIntent": true, "language": "he" }
 
-Example 15 - Delete single instance (specific date):
+Example 17 - Delete single instance (specific date):
 User: "תמחק את אימון איגרוף ביום שני הקרוב"
 → { "operation": "delete", "summary": "אימון איגרוף", "language": "he" }
 Note: No recurringSeriesIntent - entity resolver will detect if recurring and ask user.
 
-Example 16 - Update recurring series:
+Example 18 - Update recurring series:
 User: "תשנה את השעה של האירוע החוזר אימון איגרוף ל-10:00"
 → { "operation": "update", "searchCriteria": { "summary": "אימון איגרוף" }, "updateFields": { "start": "10:00" }, "recurringSeriesIntent": true, "language": "he" }
 
-Example 17 - Delete all occurrences (English):
+Example 19 - Delete all occurrences (English):
 User: "delete all occurrences of the team meeting"
 → { "operation": "delete", "summary": "team meeting", "recurringSeriesIntent": true, "language": "en" }
 
@@ -478,6 +512,7 @@ Output only the JSON, no explanation.`;
               end: { type: 'string' },
               description: { type: 'string' },
               location: { type: 'string' },
+              allDay: { type: 'boolean', description: 'Set true to convert events to all-day (each event becomes all-day on its own date)' },
             },
           },
           isRecurring: { type: 'boolean', description: 'Whether updating a recurring event' },

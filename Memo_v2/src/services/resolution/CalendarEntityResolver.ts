@@ -93,160 +93,90 @@ export class CalendarEntityResolver implements IEntityResolver {
   }
 
   /**
-   * Apply user's disambiguation selection
+   * Apply user's disambiguation selection.
+   * 
+   * HITLGateNode guarantees normalized inputs:
+   * - number (1-based selection index)
+   * - number[] (multi-selection)
+   * - "all" (select all candidates)
    */
   async applySelection(
     selection: number | number[] | string,
     candidates: ResolutionCandidate[],
     args: Record<string, any>
   ): Promise<ResolutionOutput> {
-    // First, check if this is a recurring choice disambiguation
-    // Recurring choice has exactly 2 candidates with ids 'all' and 'single'
     const isRecurringChoice = candidates.length === 2 &&
       candidates.some(c => c.id === 'all') &&
       candidates.some(c => c.id === 'single');
 
-    if (typeof selection === 'string') {
-      const lowerSelection = selection.toLowerCase().trim();
-
-      // Handle recurring series choice
+    // "all" — select all candidates
+    if (selection === 'all') {
       if (isRecurringChoice) {
-        // User wants ALL occurrences: "1", "all", "כולם", "כל המופעים", "את כולם"
-        const wantsAll = lowerSelection === '1' ||
-          lowerSelection === 'all' ||
-          lowerSelection === 'כולם' ||
-          lowerSelection === 'כל המופעים' ||
-          lowerSelection === 'את כולם' ||
-          lowerSelection.includes('כולם') ||
-          lowerSelection.includes('all');
-
-        // User wants SINGLE instance: "2", "single", "רק המופע", "רק את זה", "הזה"
-        const wantsSingle = lowerSelection === '2' ||
-          lowerSelection === 'single' ||
-          lowerSelection === 'רק המופע הזה' ||
-          lowerSelection === 'רק את זה' ||
-          lowerSelection === 'הזה' ||
-          lowerSelection.includes('רק') ||
-          lowerSelection.includes('המופע');
-
-        if (wantsAll) {
-          const allCandidate = candidates.find(c => c.id === 'all');
-          if (allCandidate?.metadata?.recurringEventId) {
-            console.log(`[CalendarEntityResolver] User selected ALL - using recurringEventId: ${allCandidate.metadata.recurringEventId}`);
-            return {
-              type: 'resolved',
-              resolvedIds: [allCandidate.metadata.recurringEventId],
-              args: {
-                ...args,
-                eventId: allCandidate.metadata.recurringEventId,
-                isRecurringSeries: true,
-              },
-            };
-          }
-        }
-
-        if (wantsSingle) {
-          const singleCandidate = candidates.find(c => c.id === 'single');
-          if (singleCandidate?.metadata?.eventId) {
-            console.log(`[CalendarEntityResolver] User selected SINGLE - using eventId: ${singleCandidate.metadata.eventId}`);
-            return {
-              type: 'resolved',
-              resolvedIds: [singleCandidate.metadata.eventId],
-              args: {
-                ...args,
-                eventId: singleCandidate.metadata.eventId,
-                isRecurringSeries: false,
-              },
-            };
-          }
-        }
-
-        // If unclear, re-ask with clearer options
-        console.log(`[CalendarEntityResolver] Unclear recurring choice selection: "${selection}"`);
-        return {
-          type: 'disambiguation',
-          candidates,
-          question: this.buildRecurringChoiceQuestion(candidates, args.language || 'he'),
-        };
+        return this.applyRecurringAll(candidates, args);
       }
-
-      // Handle "both" or "all" for regular disambiguation (not recurring choice)
-      if (lowerSelection === 'both' ||
-        lowerSelection === 'שניהם' || lowerSelection === 'כולם') {
-        const resolvedArgs: Record<string, any> = {
-          ...args,
-          eventIds: candidates.map(c => c.id),
-        };
-        if (args.operation === 'deleteBySummary') {
-          resolvedArgs.deletedSummaries = candidates.map(c => c.entity?.summary || c.displayText);
-          resolvedArgs.originalEvents = candidates.map(c => c.entity);
-        }
-        return {
-          type: 'resolved',
-          resolvedIds: candidates.map(c => c.id),
-          args: resolvedArgs,
-        };
-      }
-
-      // Try to parse as number
-      const parsed = parseInt(selection, 10);
-      if (!isNaN(parsed)) {
-        selection = parsed;
-      } else {
-        // Invalid selection
-        return {
-          type: 'disambiguation',
-          candidates,
-          question: 'Invalid selection. Please reply with a number.',
-        };
-      }
+      return this.applySelectAll(candidates, args);
     }
 
-    // Handle array selection
+    // number — single selection (1-based)
+    if (typeof selection === 'number') {
+      if (isRecurringChoice) {
+        return this.applyRecurringByIndex(selection, candidates, args);
+      }
+      return this.applySingleSelection(selection, candidates, args);
+    }
+
+    // number[] — multi selection
     if (Array.isArray(selection)) {
-      const selectedCandidates = selection
-        .map(idx => candidates[idx - 1])
-        .filter(Boolean);
+      return this.applyMultiSelection(selection, candidates, args);
+    }
 
-      if (selectedCandidates.length === 0) {
-        return {
-          type: 'disambiguation',
-          candidates,
-          question: 'Invalid selection. Please reply with a number.',
-        };
-      }
+    // Should never reach here with clean inputs
+    return {
+      type: 'disambiguation',
+      candidates,
+      question: 'Invalid selection. Please reply with a number.',
+    };
+  }
 
-      const arrayArgs: Record<string, any> = {
-        ...args,
-        eventId: selectedCandidates[0].id,
-        eventIds: selectedCandidates.map(c => c.id),
-      };
-      if (args.operation === 'deleteBySummary') {
-        arrayArgs.deletedSummaries = selectedCandidates.map(c => c.entity?.summary || c.displayText);
-        arrayArgs.originalEvents = selectedCandidates.map(c => c.entity);
-      }
+  // --- applySelection helper methods ---
+
+  private applyRecurringAll(
+    candidates: ResolutionCandidate[],
+    args: Record<string, any>,
+  ): ResolutionOutput {
+    const allCandidate = candidates.find(c => c.id === 'all');
+    if (allCandidate?.metadata?.recurringEventId) {
+      console.log(`[CalendarEntityResolver] User selected ALL - using recurringEventId: ${allCandidate.metadata.recurringEventId}`);
       return {
         type: 'resolved',
-        resolvedIds: selectedCandidates.map(c => c.id),
-        args: arrayArgs,
+        resolvedIds: [allCandidate.metadata.recurringEventId],
+        args: {
+          ...args,
+          eventId: allCandidate.metadata.recurringEventId,
+          isRecurringSeries: true,
+        },
       };
     }
+    return this.applyRecurringByIndex(1, candidates, args);
+  }
 
-    // Handle single number selection (1-based)
-    const index = (selection as number) - 1;
-    if (index < 0 || index >= candidates.length) {
+  private applyRecurringByIndex(
+    index: number,
+    candidates: ResolutionCandidate[],
+    args: Record<string, any>,
+  ): ResolutionOutput {
+    const zeroIndex = index - 1;
+    if (zeroIndex < 0 || zeroIndex >= candidates.length) {
       return {
         type: 'disambiguation',
         candidates,
-        question: 'Invalid selection. Please reply with a number.',
+        question: this.buildRecurringChoiceQuestion(candidates, args.language || 'he'),
       };
     }
+    const selected = candidates[zeroIndex];
 
-    const selected = candidates[index];
-
-    // Check if this is a recurring choice selection (id is 'all' or 'single')
     if (selected.id === 'all' && selected.metadata?.recurringEventId) {
-      console.log(`[CalendarEntityResolver] Number selection (${selection}) → ALL - using recurringEventId: ${selected.metadata.recurringEventId}`);
+      console.log(`[CalendarEntityResolver] Number selection (${index}) → ALL - using recurringEventId: ${selected.metadata.recurringEventId}`);
       return {
         type: 'resolved',
         resolvedIds: [selected.metadata.recurringEventId],
@@ -254,7 +184,6 @@ export class CalendarEntityResolver implements IEntityResolver {
           ...args,
           eventId: selected.metadata.recurringEventId,
           isRecurringSeries: true,
-          // Include event details from entity for response formatting
           summary: selected.entity?.summary,
           start: selected.entity?.start?.dateTime || selected.entity?.start?.date || selected.entity?.start,
           end: selected.entity?.end?.dateTime || selected.entity?.end?.date || selected.entity?.end,
@@ -263,7 +192,7 @@ export class CalendarEntityResolver implements IEntityResolver {
     }
 
     if (selected.id === 'single' && selected.metadata?.eventId) {
-      console.log(`[CalendarEntityResolver] Number selection (${selection}) → SINGLE - using eventId: ${selected.metadata.eventId}`);
+      console.log(`[CalendarEntityResolver] Number selection (${index}) → SINGLE - using eventId: ${selected.metadata.eventId}`);
       return {
         type: 'resolved',
         resolvedIds: [selected.metadata.eventId],
@@ -271,7 +200,6 @@ export class CalendarEntityResolver implements IEntityResolver {
           ...args,
           eventId: selected.metadata.eventId,
           isRecurringSeries: false,
-          // Include event details from entity for response formatting
           summary: selected.entity?.summary,
           start: selected.entity?.start?.dateTime || selected.entity?.start?.date || selected.entity?.start,
           end: selected.entity?.end?.dateTime || selected.entity?.end?.date || selected.entity?.end,
@@ -279,14 +207,53 @@ export class CalendarEntityResolver implements IEntityResolver {
       };
     }
 
-    // Regular selection (not recurring choice)
+    // Fallback — should not happen with well-formed recurring candidates
+    return this.applySingleSelection(index, candidates, args);
+  }
+
+  private applySelectAll(
+    candidates: ResolutionCandidate[],
+    args: Record<string, any>,
+  ): ResolutionOutput {
+    const resolvedArgs: Record<string, any> = {
+      ...args,
+      eventIds: candidates.map(c => c.id),
+    };
+    // Upgrade operation to deleteBySummary when selecting all for delete
+    if (args.operation === 'delete' || args.operation === 'deleteBySummary') {
+      resolvedArgs.operation = 'deleteBySummary';
+      resolvedArgs.deletedSummaries = candidates.map(c => c.entity?.summary || c.displayText);
+      resolvedArgs.originalEvents = candidates.map(c => c.entity);
+    }
+    return {
+      type: 'resolved',
+      resolvedIds: candidates.map(c => c.id),
+      args: resolvedArgs,
+    };
+  }
+
+  private applySingleSelection(
+    index: number,
+    candidates: ResolutionCandidate[],
+    args: Record<string, any>,
+  ): ResolutionOutput {
+    const zeroIndex = index - 1;
+    if (zeroIndex < 0 || zeroIndex >= candidates.length) {
+      return {
+        type: 'disambiguation',
+        candidates,
+        question: 'Invalid selection. Please reply with a number.',
+      };
+    }
+
+    const selected = candidates[zeroIndex];
     const singleArgs: Record<string, any> = {
       ...args,
       eventId: selected.id,
       recurringEventId: selected.metadata?.recurringEventId,
       isRecurring: selected.metadata?.isRecurring,
     };
-    if (args.operation === 'deleteBySummary') {
+    if (args.operation === 'deleteBySummary' || args.operation === 'delete') {
       singleArgs.summary = selected.entity?.summary;
       singleArgs.start = selected.entity?.start?.dateTime || selected.entity?.start?.date;
       singleArgs.end = selected.entity?.end?.dateTime || selected.entity?.end?.date;
@@ -297,6 +264,40 @@ export class CalendarEntityResolver implements IEntityResolver {
       args: singleArgs,
       isRecurring: selected.metadata?.isRecurring,
       recurringEventId: selected.metadata?.recurringEventId,
+    };
+  }
+
+  private applyMultiSelection(
+    indices: number[],
+    candidates: ResolutionCandidate[],
+    args: Record<string, any>,
+  ): ResolutionOutput {
+    const selectedCandidates = indices
+      .map(idx => candidates[idx - 1])
+      .filter(Boolean);
+
+    if (selectedCandidates.length === 0) {
+      return {
+        type: 'disambiguation',
+        candidates,
+        question: 'Invalid selection. Please reply with a number.',
+      };
+    }
+
+    const arrayArgs: Record<string, any> = {
+      ...args,
+      eventId: selectedCandidates[0].id,
+      eventIds: selectedCandidates.map(c => c.id),
+    };
+    if (args.operation === 'delete' || args.operation === 'deleteBySummary') {
+      arrayArgs.operation = 'deleteBySummary';
+      arrayArgs.deletedSummaries = selectedCandidates.map(c => c.entity?.summary || c.displayText);
+      arrayArgs.originalEvents = selectedCandidates.map(c => c.entity);
+    }
+    return {
+      type: 'resolved',
+      resolvedIds: selectedCandidates.map(c => c.id),
+      args: arrayArgs,
     };
   }
 
@@ -499,6 +500,7 @@ export class CalendarEntityResolver implements IEntityResolver {
         eventId: selectedCandidate.id,
         recurringEventId: selectedCandidate.metadata?.recurringEventId,
         isRecurring: selectedCandidate.metadata?.isRecurring,
+        originalEvent: selectedCandidate.entity,
       },
       isRecurring: selectedCandidate.metadata?.isRecurring,
       recurringEventId: selectedCandidate.metadata?.recurringEventId,
@@ -945,6 +947,7 @@ export class CalendarEntityResolver implements IEntityResolver {
         eventId: selectedCandidate.id,
         recurringEventId: selectedCandidate.metadata?.recurringEventId,
         isRecurring: selectedCandidate.metadata?.isRecurring,
+        originalEvent: selectedCandidate.entity,
       },
       isRecurring: selectedCandidate.metadata?.isRecurring,
       recurringEventId: selectedCandidate.metadata?.recurringEventId,

@@ -68,6 +68,7 @@ The system implements several distinct memory types, each serving a specific pur
 - Reply-to detection
 - Conversation continuity
 - Context for LLM nodes (Planner, Resolvers)
+- **Proactive messages**: Morning brief and reminder messages sent by the system are added to the conversation window (ReminderService → ConversationWindow) so the assistant has context of what was sent when the user replies.
 
 **Data Structure**:
 

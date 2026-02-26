@@ -46,6 +46,7 @@ export async function processAudioMessage(
 	whatsappMessageId: string,
 ): Promise<string> {
 	const transcribedText = await transcribeAudio(audioBuffer);
+	console.log("transcribedText", transcribedText);
 	const result = await invokeMemoGraph(userPhone, transcribedText, {
 		whatsappMessageId,
 		triggerType: "user",

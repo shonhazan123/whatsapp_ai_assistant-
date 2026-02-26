@@ -33,6 +33,10 @@ export interface ConversationMessage {
       reminderType: 'one-time' | 'recurring' | 'nudge'; // Type of reminder
       sentAt: string; // ISO timestamp when reminder was sent
     };
+    briefContext?: {
+      type: 'morning_digest'; // Type of brief
+      sentAt: string; // ISO timestamp when brief was sent
+    };
   };
 }
 

@@ -39,6 +39,7 @@ export interface CalendarOperationArgs {
     end?: string;
     description?: string;
     location?: string;
+    allDay?: boolean;
   };
   // For recurring
   startTime?: string;
@@ -53,6 +54,7 @@ export interface CalendarOperationArgs {
   eventIds?: string[];
   deletedSummaries?: string[];
   originalEvents?: any[];
+  originalEvent?: any;
   // For recurring series operations
   isRecurringSeries?: boolean;      // True when operating on entire series
   recurringSeriesIntent?: boolean;  // From LLM resolver - user's explicit intent
@@ -402,6 +404,13 @@ export class CalendarServiceAdapter {
       };
     }
 
+    // If allDay requested, compute per-event all-day dates from original event
+    if (updateFields.allDay && args.originalEvent) {
+      const computed = this.calculateUpdatedTimes(args.originalEvent, updateFields);
+      updateFields.start = computed.start;
+      updateFields.end = computed.end;
+    }
+
     // Update single event (or single instance of recurring)
     const result = await calendarService.updateEvent(context, {
       eventId,
@@ -703,15 +712,27 @@ export class CalendarServiceAdapter {
 
   /**
    * Calculate updated times for bulk update
-   * Preserves original event duration and time-of-day when moving to a new date
+   * Preserves original event duration and time-of-day when moving to a new date.
+   * When allDay is true, converts the event to an all-day event on its own date.
    */
   private calculateUpdatedTimes(originalEvent: any, updateFields: any): any {
-    // If both start and end provided, use them directly
+    if (updateFields.allDay && originalEvent) {
+      const origStartStr = originalEvent.start?.dateTime || originalEvent.start?.date || originalEvent.start;
+      if (origStartStr) {
+        const dateOnly = typeof origStartStr === 'string' && origStartStr.length === 10
+          ? origStartStr
+          : origStartStr.split('T')[0];
+        const nextDay = new Date(dateOnly + 'T00:00:00');
+        nextDay.setDate(nextDay.getDate() + 1);
+        const endDate = nextDay.toISOString().split('T')[0];
+        return { start: dateOnly, end: endDate, allDay: true };
+      }
+    }
+
     if (updateFields.start && updateFields.end) {
       return updateFields;
     }
 
-    // If only new date provided, preserve original time-of-day and duration
     if (updateFields.start && originalEvent) {
       const origStartStr = originalEvent.start?.dateTime || originalEvent.start?.date || originalEvent.start;
       const origEndStr = originalEvent.end?.dateTime || originalEvent.end?.date || originalEvent.end;
@@ -722,7 +743,6 @@ export class CalendarServiceAdapter {
         const duration = origEnd.getTime() - origStart.getTime();
 
         const newStart = new Date(updateFields.start);
-        // Preserve original time-of-day
         newStart.setHours(origStart.getHours(), origStart.getMinutes(), origStart.getSeconds(), 0);
         const newEnd = new Date(newStart.getTime() + duration);
 

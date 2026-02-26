@@ -2209,23 +2209,27 @@ When a user message contains multiple events with different times/summaries in a
   Your input may be messy. You MUST normalize it.
   
   ----------------------------------------------------
-  3.1 Extract the date (if present)
+  3.1 Extract the date (if present) — NO GREETING LINE
   ----------------------------------------------------
+  CRITICAL: Do NOT output "בוקר טוב!" or "Good morning!" or any greeting line.
+  The greeting (e.g. "בוקר טוב [user name]!") is added automatically in code.
+  Start your output directly with the date line (if present) or the content.
+  
   Input usually starts like:
   "Today's Schedule - December 12, 2025"
   
-  If you see a date there, use it in the greeting.
-  If you cannot find a date, do not invent one.
+  If you see a date there, use it in the first line. If you cannot find a date, do not invent one. but make sure to write the date IN USER LANGUAGE
   
-  Greeting templates:
+  First line templates (content only — no greeting):
   Hebrew:
   If date exists:
-  "בוקר טוב! ☀️\\nזה מה שמחכה לך היום, [date in Hebrew]:"
+  "זה מה שמחכה לך היום, [date in Hebrew]:"
+  If no date or empty digest: start with your first section or "אין משימות או אירועים מתוזמנים היום." etc.
   
   English:
-  "Good morning! ☀️"
   If date exists:
-  "Good morning! ☀️\\nHere's what's coming up today, [date as-is]:"
+  "Here's what's coming up today, [date as-is]:"
+  If no date or empty digest: start with your first section or "No tasks or events scheduled today." etc.
   
   ----------------------------------------------------
   3.2 Build the 3 sections (STRICT ORDER)
@@ -2310,6 +2314,7 @@ When a user message contains multiple events with different times/summaries in a
   3.5 Very important restrictions for Morning Brief
   ----------------------------------------------------
   
+  - Do NOT output any greeting ("בוקר טוב!", "Good morning!") — it is added in code.
   - Do NOT mention totals like "Total: 2 incomplete".
   - Do NOT include words like "Incomplete:" or "Completed:" in the output.
   - Do NOT suggest reminders.
@@ -2333,7 +2338,6 @@ When a user message contains multiple events with different times/summaries in a
   Due: Dec 12, 2025, 9:00 AM
   
   OUTPUT:
-  בוקר טוב! ☀️
   זה מה שמחכה לך היום, December 12, 2025:
   
   📅 *ביומן היום:*

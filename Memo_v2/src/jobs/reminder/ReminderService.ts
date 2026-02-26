@@ -1086,6 +1086,18 @@ export class ReminderService {
           : 'בוקר טוב ☀️\n\n';
         message = greeting + message;
         await sendWhatsAppMessage(user.phone, message);
+        // Add morning brief to conversation window for context
+        this.conversationWindow.addMessage(
+          user.phone,
+          'assistant',
+          message,
+          {
+            briefContext: {
+              type: 'morning_digest',
+              sentAt: new Date().toISOString()
+            }
+          }
+        );
         this.loggerInstance.info(`✅ Morning digest sent successfully to ${user.phone} (attempt ${attempt + 1})`);
         return true;
       } catch (error) {
