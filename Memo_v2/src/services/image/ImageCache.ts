@@ -31,12 +31,18 @@ export class ImageCache {
 		return ImageCache.instance;
 	}
 
+	/** Cache key = image hash + response language so same image can have different language responses */
+	private cacheKey(hash: string, language?: string): string {
+		return language ? `${hash}_${language}` : hash;
+	}
+
 	/**
-	 * Get cached analysis result for an image
+	 * Get cached analysis result for an image (optionally for a specific response language)
 	 */
-	public get(imageBuffer: Buffer): ImageAnalysisResult | null {
+	public get(imageBuffer: Buffer, language?: string): ImageAnalysisResult | null {
 		const hash = ImageProcessor.generateImageHash(imageBuffer);
-		const entry = this.cache.get(hash);
+		const key = this.cacheKey(hash, language);
+		const entry = this.cache.get(key);
 
 		if (!entry) {
 			return null;
@@ -44,7 +50,7 @@ export class ImageCache {
 
 		// Check if entry is expired
 		if (Date.now() - entry.timestamp > this.TTL) {
-			this.cache.delete(hash);
+			this.cache.delete(key);
 			logger.debug(`Cache entry expired for hash: ${hash.substring(0, 8)}...`);
 			return null;
 		}
@@ -54,17 +60,18 @@ export class ImageCache {
 	}
 
 	/**
-	 * Store analysis result in cache
+	 * Store analysis result in cache (optionally keyed by response language)
 	 */
-	public set(imageBuffer: Buffer, result: ImageAnalysisResult): void {
+	public set(imageBuffer: Buffer, result: ImageAnalysisResult, language?: string): void {
 		const hash = ImageProcessor.generateImageHash(imageBuffer);
+		const key = this.cacheKey(hash, language);
 
 		// Enforce max cache size
 		if (this.cache.size >= this.MAX_CACHE_SIZE) {
 			this.evictOldest();
 		}
 
-		this.cache.set(hash, {
+		this.cache.set(key, {
 			result,
 			timestamp: Date.now(),
 			hash,

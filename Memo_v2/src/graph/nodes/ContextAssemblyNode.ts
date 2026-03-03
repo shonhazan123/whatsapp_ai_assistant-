@@ -17,6 +17,8 @@ import { GoogleTokenManager } from '../../legacy/services/auth/GoogleTokenManage
 import { getMemoryService } from '../../services/memory/index.js';
 import { getUserService } from '../../services/v1-services.js';
 import type { AuthContext, LatestAction, TimeContext, TriggerInput, UserContext } from '../../types/index.js';
+import { detectUserResponseLanguage } from '../../utils/languageDetection.js';
+import { getDatePartsInTimezone } from '../../utils/userTimezone.js';
 import type { MemoState } from '../state/MemoState.js';
 import { createInitialState } from '../state/MemoState.js';
 import { CodeNode } from './BaseNode.js';
@@ -37,7 +39,8 @@ export class ContextAssemblyNode extends CodeNode {
     const authContext = await this.hydrateAuthContext(this.input.userPhone);
 
     // 2. Derive lightweight UserContext from AuthContext (for prompts / planner)
-    const language = this.detectLanguage(this.input.message);
+    // Central language detection: used for all LLM response language. Empty message (e.g. image-only) defaults to Hebrew.
+    const language = detectUserResponseLanguage(this.input.message, { defaultWhenEmpty: 'he' });
     const user = this.deriveUserContext(authContext, language);
 
     // 3. CRITICAL: Add current user message to memory FIRST (before reading)
@@ -53,8 +56,8 @@ export class ContextAssemblyNode extends CodeNode {
     // 6. Get latest actions (last 3, for referential follow-ups)
     const latestActions = this.getLatestActions(this.input.userPhone);
 
-    // 7. Build time context
-    const now = this.buildTimeContext();
+    // 7. Build time context (always in user timezone – never server)
+    const now = this.buildTimeContext(user.timezone);
 
     // threadId = conversation identity (WhatsApp phone / session key)
     const threadId = this.input.userPhone;
@@ -261,17 +264,23 @@ export class ContextAssemblyNode extends CodeNode {
   private getLatestActions(phone: string): LatestAction[] {
     try {
       const memoryService = getMemoryService();
-      return memoryService.getLatestActions(phone, 3);
+      const actions = memoryService.getLatestActions(phone, 3);
+      if (actions.length > 0) {
+        console.log(`[ContextAssemblyNode] latestActions for ${phone}: ${actions.length} (e.g. "${actions[0]?.summary?.substring(0, 40)}...")`);
+      } else {
+        console.log(`[ContextAssemblyNode] latestActions for ${phone}: 0 (no recent operations to reference)`);
+      }
+      return actions;
     } catch (error) {
       console.error('[ContextAssemblyNode] Error getting latest actions:', error);
       return [];
     }
   }
 
-  private buildTimeContext(): TimeContext {
+  private buildTimeContext(userTimezone: string): TimeContext {
     const now = new Date();
+    const tz = userTimezone || 'Asia/Jerusalem';
 
-    // Format like V1: "[Current time: Day, DD/MM/YYYY HH:mm, Timezone: Asia/Jerusalem]"
     const options: Intl.DateTimeFormatOptions = {
       weekday: 'long',
       day: '2-digit',
@@ -280,7 +289,7 @@ export class ContextAssemblyNode extends CodeNode {
       hour: '2-digit',
       minute: '2-digit',
       hour12: false,
-      timeZone: 'Asia/Jerusalem',
+      timeZone: tz,
     };
 
     const formatter = new Intl.DateTimeFormat('en-GB', options);
@@ -290,33 +299,17 @@ export class ContextAssemblyNode extends CodeNode {
     const date = `${parts.find(p => p.type === 'day')?.value}/${parts.find(p => p.type === 'month')?.value}/${parts.find(p => p.type === 'year')?.value}`;
     const time = `${parts.find(p => p.type === 'hour')?.value}:${parts.find(p => p.type === 'minute')?.value}`;
 
-    const isoString = now.toISOString();
+    const p = getDatePartsInTimezone(tz, now);
 
     return {
-      formatted: `[Current time: ${day}, ${date} ${time}, Timezone: Asia/Jerusalem]`,
-      iso: isoString,
-      timezone: 'Asia/Jerusalem',
-      dayOfWeek: now.getDay(),
+      formatted: `[Current time: ${day}, ${date} ${time}, Timezone: ${tz}]`,
+      iso: now.toISOString(),
+      timezone: tz,
+      dayOfWeek: p.dayOfWeek,
       date: now,
     };
   }
 
-  private detectLanguage(message: string): 'he' | 'en' | 'other' {
-    // Hebrew character range
-    const hebrewRegex = /[\u0590-\u05FF]/;
-
-    if (hebrewRegex.test(message)) {
-      return 'he';
-    }
-
-    // Check if mostly ASCII (English)
-    const asciiChars = message.match(/[a-zA-Z]/g)?.length || 0;
-    if (asciiChars > message.length * 0.5) {
-      return 'en';
-    }
-
-    return 'other';
-  }
 }
 
 /**

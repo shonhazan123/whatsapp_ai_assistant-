@@ -10,7 +10,7 @@ import { getTaskService } from '../v1-services.js';
 export interface ReminderRecurrence {
   type: 'daily' | 'weekly' | 'monthly' | 'nudge';
   interval?: string;
-  days?: string[];
+  days?: number[];
   time?: string;
   until?: string;
 }

@@ -10,6 +10,7 @@ import { UserService } from '../../legacy/services/database/UserService';
 import { PerformanceTracker } from '../../legacy/services/performance/PerformanceTracker';
 import { ConversationWindow } from '../../services/memory/ConversationWindow';
 import { sendWhatsAppMessage } from '../../services/whatsapp';
+import { getDatePartsInTimezone, buildDateTimeISOInZone } from '../../utils/userTimezone.js';
 
 interface User {
   id: string;
@@ -479,146 +480,130 @@ export class ReminderService {
    * Uses same logic as TaskService.calculateNextReminderAt
    */
   private calculateNextRecurrence(recurrence: ReminderRecurrence, currentTime: Date, task?: TaskWithUser): Date {
-    const timezone = recurrence.timezone || 'Asia/Jerusalem';
-    
-    let nextDate = new Date(currentTime);
-    
+    const tz = recurrence.timezone || 'Asia/Jerusalem';
+    const p = getDatePartsInTimezone(tz, currentTime);
+    const fmtDate = (yr: number, mo: number, dy: number) =>
+      `${yr}-${String(mo).padStart(2, '0')}-${String(dy).padStart(2, '0')}`;
+
+    let resultISO: string;
+
     switch (recurrence.type) {
       case 'nudge': {
-        // Nudge: repeat after specified interval (default 10 minutes)
         const interval = recurrence.interval || '10 minutes';
         const minutes = this.parseIntervalToMinutes(interval);
-        
-        if (minutes < 1) {
-          throw new Error('Nudge interval must be at least 1 minute');
-        }
-        
-        // If task has dueDate, calculate from dueDate pattern (for future nudge reminders)
+        if (minutes < 1) throw new Error('Nudge interval must be at least 1 minute');
+
         if (task?.due_date) {
           const dueDate = new Date(task.due_date);
-          const now = new Date(currentTime);
-          
-          // Calculate how many intervals have passed since dueDate
-          const msSinceDueDate = now.getTime() - dueDate.getTime();
+          const msSinceDueDate = currentTime.getTime() - dueDate.getTime();
           const minutesSinceDueDate = Math.floor(msSinceDueDate / (1000 * 60));
           const intervalsPassed = Math.floor(minutesSinceDueDate / minutes);
-          
-          // Next reminder = dueDate + (intervalsPassed + 1) × interval
-          const nextReminderDate = new Date(dueDate);
-          nextReminderDate.setMinutes(dueDate.getMinutes() + (intervalsPassed + 1) * minutes);
-          nextReminderDate.setSeconds(0, 0);
-          
-          // If calculated time is in the past (shouldn't happen, but safety check)
-          if (nextReminderDate <= now) {
-            nextReminderDate.setMinutes(nextReminderDate.getMinutes() + minutes);
-          }
-          
-          nextDate = nextReminderDate;
+          const nextMs = dueDate.getTime() + (intervalsPassed + 1) * minutes * 60_000;
+          let nextD = new Date(nextMs);
+          if (nextD <= currentTime) nextD = new Date(nextD.getTime() + minutes * 60_000);
+          const np = getDatePartsInTimezone(tz, nextD);
+          resultISO = buildDateTimeISOInZone(
+            fmtDate(np.year, np.month, np.day),
+            `${String(np.hour).padStart(2, '0')}:${String(np.minute).padStart(2, '0')}`, tz
+          );
         } else {
-          // No dueDate: calculate from current time (existing behavior)
-          currentTime.setSeconds(0, 0);
-          nextDate.setSeconds(0, 0);
-          
-          // Add interval to current time
-          nextDate.setMinutes(currentTime.getMinutes() + minutes);
+          const total = p.hour * 60 + p.minute + minutes;
+          const nH = Math.floor(total / 60) % 24;
+          const nM = total % 60;
+          let dateStr = fmtDate(p.year, p.month, p.day);
+          if (total >= 1440) {
+            const d = new Date(Date.UTC(p.year, p.month - 1, p.day + 1));
+            const np = getDatePartsInTimezone(tz, d);
+            dateStr = fmtDate(np.year, np.month, np.day);
+          }
+          resultISO = buildDateTimeISOInZone(dateStr, `${String(nH).padStart(2, '0')}:${String(nM).padStart(2, '0')}`, tz);
         }
         break;
       }
-      
+
       case 'daily': {
-        // Parse time string (HH:mm) - required for daily/weekly/monthly
-        if (!recurrence.time) {
-          throw new Error('Daily recurrence requires time');
+        if (!recurrence.time) throw new Error('Daily recurrence requires time');
+        const [rH, rM] = recurrence.time.split(':').map(Number);
+        const userMin = p.hour * 60 + p.minute;
+        const targetMin = rH * 60 + rM;
+        let dateStr = fmtDate(p.year, p.month, p.day);
+        if (targetMin <= userMin) {
+          const tomorrow = new Date(Date.UTC(p.year, p.month - 1, p.day + 1));
+          const tp = getDatePartsInTimezone(tz, tomorrow);
+          dateStr = fmtDate(tp.year, tp.month, tp.day);
         }
-        const [hours, minutes] = recurrence.time.split(':').map(Number);
-        nextDate.setHours(hours, minutes, 0, 0);
-        // If time has passed today, set for tomorrow
-        if (nextDate <= currentTime) {
-          nextDate.setDate(nextDate.getDate() + 1);
-        }
+        resultISO = buildDateTimeISOInZone(dateStr, recurrence.time, tz);
         break;
       }
-      
+
       case 'weekly': {
-        if (!recurrence.time) {
-          throw new Error('Weekly recurrence requires time');
+        if (!recurrence.time) throw new Error('Weekly recurrence requires time');
+        if (!recurrence.days || recurrence.days.length === 0) throw new Error('Weekly recurrence requires days array');
+        const [rH, rM] = recurrence.time.split(':').map(Number);
+        const userMin = p.hour * 60 + p.minute;
+        const targetMin = rH * 60 + rM;
+        const todayIsMatch = recurrence.days.includes(p.dayOfWeek);
+        const timeStillAhead = targetMin > userMin;
+
+        if (todayIsMatch && timeStillAhead) {
+          resultISO = buildDateTimeISOInZone(fmtDate(p.year, p.month, p.day), recurrence.time, tz);
+          break;
         }
-        if (!recurrence.days || recurrence.days.length === 0) {
-          throw new Error('Weekly recurrence requires days array');
-        }
-        
-        const [hours, minutes] = recurrence.time.split(':').map(Number);
-        nextDate.setHours(hours, minutes, 0, 0);
-        
-        // Find next occurrence day
-        const currentDay = currentTime.getDay(); // 0=Sunday, 6=Saturday
-        let daysToAdd = 0;
+
         let found = false;
-        
-        // Check next 7 days
-        for (let i = 0; i < 7; i++) {
-          const checkDay = (currentDay + i) % 7;
-          if (recurrence.days.includes(checkDay)) {
-            nextDate.setDate(currentTime.getDate() + i);
-            daysToAdd = i;
+        for (let i = 1; i <= 7; i++) {
+          const futureDate = new Date(Date.UTC(p.year, p.month - 1, p.day + i));
+          const fp = getDatePartsInTimezone(tz, futureDate);
+          if (recurrence.days.includes(fp.dayOfWeek)) {
+            resultISO = buildDateTimeISOInZone(fmtDate(fp.year, fp.month, fp.day), recurrence.time, tz);
             found = true;
             break;
           }
         }
-        
-        if (!found) {
-          // Next week
-          const firstDay = Math.min(...recurrence.days);
-          daysToAdd = 7 - currentDay + firstDay;
-          nextDate.setDate(currentTime.getDate() + daysToAdd);
-        } else {
-          // If time has passed on the found day, set for next week
-          if (daysToAdd === 0 && nextDate <= currentTime) {
-            daysToAdd = 7;
-            nextDate.setDate(currentTime.getDate() + daysToAdd);
-          }
-        }
+        if (!found) throw new Error('Could not find next weekly occurrence');
         break;
       }
-      
+
       case 'monthly': {
-        if (!recurrence.time) {
-          throw new Error('Monthly recurrence requires time');
-        }
-        if (!recurrence.dayOfMonth) {
-          throw new Error('Monthly recurrence requires dayOfMonth');
-        }
-        
-        const [hours, minutes] = recurrence.time.split(':').map(Number);
-        nextDate.setHours(hours, minutes, 0, 0);
-        
-        // Set day of month
-        const maxDay = new Date(currentTime.getFullYear(), currentTime.getMonth() + 1, 0).getDate();
+        if (!recurrence.time) throw new Error('Monthly recurrence requires time');
+        if (!recurrence.dayOfMonth) throw new Error('Monthly recurrence requires dayOfMonth');
+        const [rH, rM] = recurrence.time.split(':').map(Number);
+        const userMin = p.hour * 60 + p.minute;
+        const targetMin = rH * 60 + rM;
+        const maxDay = new Date(p.year, p.month, 0).getDate();
         const dayToSet = Math.min(recurrence.dayOfMonth, maxDay);
-        nextDate.setDate(dayToSet);
-        nextDate.setMonth(currentTime.getMonth());
-        
-        // If time/date has passed this month, set for next month
-        if (nextDate <= currentTime) {
-          nextDate.setMonth(currentTime.getMonth() + 1);
-          // Recalculate max day for next month
-          const nextMaxDay = new Date(nextDate.getFullYear(), nextDate.getMonth() + 1, 0).getDate();
-          const nextDayToSet = Math.min(recurrence.dayOfMonth, nextMaxDay);
-          nextDate.setDate(nextDayToSet);
+        const todayIsDay = p.day === dayToSet;
+
+        if (todayIsDay && targetMin > userMin) {
+          resultISO = buildDateTimeISOInZone(fmtDate(p.year, p.month, dayToSet), recurrence.time, tz);
+          break;
         }
+        if (!todayIsDay && p.day < dayToSet) {
+          resultISO = buildDateTimeISOInZone(fmtDate(p.year, p.month, dayToSet), recurrence.time, tz);
+          break;
+        }
+
+        let nextMonth = p.month + 1;
+        let nextYear = p.year;
+        if (nextMonth > 12) { nextMonth = 1; nextYear++; }
+        const nextMaxDay = new Date(nextYear, nextMonth, 0).getDate();
+        const nextDayToSet = Math.min(recurrence.dayOfMonth, nextMaxDay);
+        resultISO = buildDateTimeISOInZone(fmtDate(nextYear, nextMonth, nextDayToSet), recurrence.time, tz);
         break;
       }
+
+      default:
+        throw new Error(`Unknown recurrence type: ${recurrence.type}`);
     }
-    
-    // Check until date
+
     if (recurrence.until) {
       const untilDate = new Date(recurrence.until);
-      if (nextDate > untilDate) {
+      if (new Date(resultISO!) > untilDate) {
         throw new Error('Next reminder time exceeds until date');
       }
     }
-    
-    return nextDate;
+
+    return new Date(resultISO!);
   }
 
   /**

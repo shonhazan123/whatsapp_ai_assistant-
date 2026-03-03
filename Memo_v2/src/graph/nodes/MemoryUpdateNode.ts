@@ -287,8 +287,20 @@ export class MemoryUpdateNode extends CodeNode {
 		switch (capability) {
 			case 'calendar':
 				return data.summary || data.title || constraints?.rawMessage?.substring(0, 80) || 'calendar action';
-			case 'database':
-				return data.text || data.list_name || constraints?.rawMessage?.substring(0, 80) || 'task action';
+			case 'database': {
+				const base = data.text || data.list_name || constraints?.rawMessage?.substring(0, 80) || 'task action';
+				const recurrence = data.reminder_recurrence || data.reminderRecurrence;
+				if (recurrence && typeof recurrence === 'object') {
+					const type = recurrence.type;
+					const interval = recurrence.interval;
+					if (type === 'weekly' && recurrence.days?.length) {
+						return `${base} (recurring: weekly on ${recurrence.days.length} day(s))`;
+					}
+					if (type === 'weekly' && interval) return `${base} (every ${interval} week(s))`;
+					if (type) return `${base} (recurring: ${type}${interval ? ` ${interval}` : ''})`;
+				}
+				return base;
+			}
 			case 'gmail':
 				return data.subject || constraints?.rawMessage?.substring(0, 80) || 'email action';
 			case 'second-brain':
@@ -305,7 +317,8 @@ export class MemoryUpdateNode extends CodeNode {
 			case 'calendar':
 				return data.start || undefined;
 			case 'database':
-				return data.due_date || data.dueDate || undefined;
+				// Prefer next reminder time so "when is the next reminder?" can be answered from Latest Actions
+				return data.next_reminder_at ?? data.nextReminderAt ?? data.due_date ?? data.dueDate ?? undefined;
 			default:
 				return undefined;
 		}

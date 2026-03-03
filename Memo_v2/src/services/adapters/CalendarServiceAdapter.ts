@@ -8,6 +8,7 @@
 import { getCalendarService } from '../v1-services.js';
 import type { AuthContext } from '../../types/index.js';
 import type { RequestUserContext } from '../../legacy/types/UserContext.js';
+import { getEndOfDayInTimezone, getStartOfDayInTimezone, normalizeToISOWithOffset } from '../../utils/userTimezone.js';
 
 export interface CalendarReminders {
   useDefault: boolean;
@@ -158,8 +159,12 @@ export class CalendarServiceAdapter {
   // OPERATION IMPLEMENTATIONS
   // ========================================================================
 
+  private getUserTimezone(): string {
+    return this.authContext.userRecord.timezone || 'Asia/Jerusalem';
+  }
+
   private async createEvent(calendarService: any, context: RequestUserContext, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
-    // Build reminders if specified
+    const tz = this.getUserTimezone();
     let reminders: CalendarReminders | undefined;
     if (args.reminderMinutesBefore !== undefined) {
       reminders = {
@@ -168,15 +173,19 @@ export class CalendarServiceAdapter {
       };
     }
 
+    const start = args.start ? normalizeToISOWithOffset(args.start, tz) : '';
+    const end = args.end ? normalizeToISOWithOffset(args.end, tz) : '';
+
     const result = await calendarService.createEvent(context, {
       summary: args.summary || '',
-      start: args.start || '',
-      end: args.end || '',
+      start,
+      end,
       description: args.description,
       location: args.location,
       attendees: args.attendees,
       reminders,
       allDay: args.allDay,
+      timeZone: tz,
     });
 
     return {
@@ -188,10 +197,11 @@ export class CalendarServiceAdapter {
   }
 
   private async createMultipleEvents(calendarService: any, context: RequestUserContext, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
+    const tz = this.getUserTimezone();
     const events = (args.events || []).map((e: any) => ({
       summary: e.summary,
-      start: e.start,
-      end: e.end,
+      start: e.start ? normalizeToISOWithOffset(e.start, tz) : e.start,
+      end: e.end ? normalizeToISOWithOffset(e.end, tz) : e.end,
       description: e.description,
       location: e.location,
       attendees: e.attendees,
@@ -237,6 +247,7 @@ export class CalendarServiceAdapter {
       location: args.location,
       until: args.until,
       reminders,
+      timeZone: this.getUserTimezone(),
     });
 
     // Include original request parameters for response formatting
@@ -311,9 +322,9 @@ export class CalendarServiceAdapter {
   }
 
   private async getEvent(calendarService: any, context: RequestUserContext, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
-    // Get events in a time range and filter by summary if provided
-    const timeMin = args.timeMin || new Date().toISOString();
-    const timeMax = args.timeMax || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    const tz = this.getUserTimezone();
+    const timeMin = args.timeMin || getStartOfDayInTimezone(tz);
+    const timeMax = args.timeMax || getEndOfDayInTimezone(tz, new Date(Date.now() + 7 * 24 * 60 * 60 * 1000));
 
     const result = await calendarService.getEvents(context, {
       timeMin,
@@ -339,9 +350,10 @@ export class CalendarServiceAdapter {
   }
 
   private async getEvents(calendarService: any, context: RequestUserContext, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
+    const tz = this.getUserTimezone();
     const result = await calendarService.getEvents(context, {
-      timeMin: args.timeMin || new Date().toISOString(),
-      timeMax: args.timeMax || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+      timeMin: args.timeMin || getStartOfDayInTimezone(tz),
+      timeMax: args.timeMax || getEndOfDayInTimezone(tz, new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)),
     });
 
     // Apply excludeSummaries filter if provided

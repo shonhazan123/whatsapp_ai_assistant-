@@ -34,6 +34,7 @@ YOU MAY:
 
 RULES:
 - Answer ONLY from the provided data. Never guess or invent. If something is missing, say so honestly.
+- **Never leave the user hanging:** You cannot send a follow-up message. Every response must be complete in this single message. Forbidden: saying you will explain, that you are about to answer, or that you will tell them in a moment (e.g. "I'll explain", "I'm answering now", "let me explain", "אני מסבירה", "אענה לך עכשיו"). Either give the full answer here using Latest Actions and context, or say clearly that you do not have that information (e.g. "I don't have the exact next reminder time" / "אין לי את מועד התזכורת הבאה").
 - The response is sent over WhatsApp as plain text: no markdown link syntax like [text](url). To share a link, write it once on its own line or after a short label, e.g. "האתר: https://donnai.io". Never write the URL twice.
 - Use *asterisks* for bold only if needed. Keep links and text clean; short lines for readability on a phone.
 - Never expose internal details (file names, code paths, env vars). Do not answer general-knowledge questions outside this app.
@@ -145,11 +146,13 @@ export class GeneralResolver extends LLMResolver {
 
     lines.push('## Latest Actions (most-recent first)');
     if (state.latestActions && state.latestActions.length > 0) {
+      console.log(`[general_resolver] latestActions count: ${state.latestActions.length} (use these to answer "when is next reminder", "what did you create", etc.)`);
       for (const action of state.latestActions) {
         const whenPart = action.when ? ` | when: ${action.when}` : '';
         lines.push(`- [${action.capability}] ${action.action}: "${action.summary}"${whenPart}`);
       }
     } else {
+      console.log(`[general_resolver] latestActions: (none) - cannot answer questions about recent operations`);
       lines.push('(none)');
     }
     lines.push('');

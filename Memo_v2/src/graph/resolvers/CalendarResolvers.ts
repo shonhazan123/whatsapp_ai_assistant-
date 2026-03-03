@@ -13,6 +13,7 @@
 
 import type { Capability, PlanStep } from '../../types/index.js';
 import type { MemoState } from '../state/MemoState.js';
+import { buildDateTimeISOInZone, getDatePartsInTimezone, getEndOfDayInTimezone, getStartOfDayInTimezone, normalizeToISOWithOffset } from '../../utils/userTimezone.js';
 import { LLMResolver, type ResolverOutput } from './BaseResolver.js';
 
 // ============================================================================
@@ -159,14 +160,11 @@ Output only the JSON, no explanation.`;
         args.operation = 'getEvents';
       }
 
-      // Apply time defaults if not specified
+      // Apply time defaults in user timezone (never server)
       if (!args.timeMin && !args.timeMax) {
-        const now = new Date();
-        now.setHours(0, 0, 0, 0);
-        args.timeMin = now.toISOString();
-        const weekLater = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-        weekLater.setHours(23, 59, 59, 999);
-        args.timeMax = weekLater.toISOString();
+        const tz = state.user?.timezone || state.input?.timezone || 'Asia/Jerusalem';
+        args.timeMin = getStartOfDayInTimezone(tz);
+        args.timeMax = getEndOfDayInTimezone(tz, new Date(Date.now() + 7 * 24 * 60 * 60 * 1000));
       }
 
       console.log(`[${this.name}] LLM determined operation: ${args.operation}`);
@@ -179,19 +177,14 @@ Output only the JSON, no explanation.`;
     } catch (error: any) {
       console.error(`[${this.name}] LLM call failed:`, error.message);
 
-      // Fallback: default to getEvents with 7 day window
-      const now = new Date();
-      now.setHours(0, 0, 0, 0);
-      const weekLater = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-      weekLater.setHours(23, 59, 59, 999);
-
+      const tz = state.user?.timezone || state.input?.timezone || 'Asia/Jerusalem';
       return {
         stepId: step.id,
         type: 'execute',
         args: {
           operation: 'getEvents',
-          timeMin: now.toISOString(),
-          timeMax: weekLater.toISOString(),
+          timeMin: getStartOfDayInTimezone(tz),
+          timeMax: getEndOfDayInTimezone(tz, new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)),
           _fallback: true,
         },
       };
@@ -561,9 +554,9 @@ Output only the JSON, no explanation.`;
         args.operation = 'create';
       }
 
-      // Calculate end time if not provided
+      const tz = state.user?.timezone || state.input?.timezone || 'Asia/Jerusalem';
       if (args.operation === 'create' && args.start && !args.end) {
-        args.end = this.calculateEnd(args.start);
+        args.end = this.calculateEnd(args.start, tz);
       }
 
       console.log(`[${this.name}] LLM determined operation: ${args.operation}`);
@@ -591,20 +584,19 @@ Output only the JSON, no explanation.`;
   }
 
   /**
-   * Calculate end time (default 1 hour after start)
+   * Calculate end time (default 1 hour after start) in user timezone.
    */
-  private calculateEnd(start: string): string {
+  private calculateEnd(start: string, timezone: string): string {
     if (!start) return '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(start)) return start;
 
-    // Check if it's a date-only (all-day) format
-    if (/^\d{4}-\d{2}-\d{2}$/.test(start)) {
-      return start;
-    }
-
-    // Add 1 hour to start time
-    const startDate = new Date(start);
+    const normalized = normalizeToISOWithOffset(start, timezone);
+    const startDate = new Date(normalized);
     const endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
-    return endDate.toISOString();
+    const p = getDatePartsInTimezone(timezone, endDate);
+    const dateStr = `${p.year}-${String(p.month).padStart(2, '0')}-${String(p.day).padStart(2, '0')}`;
+    const timeStr = `${String(p.hour).padStart(2, '0')}:${String(p.minute).padStart(2, '0')}`;
+    return buildDateTimeISOInZone(dateStr, timeStr, timezone);
   }
 
   protected getEntityType(): 'calendar' | 'database' | 'gmail' | 'second-brain' | 'error' {

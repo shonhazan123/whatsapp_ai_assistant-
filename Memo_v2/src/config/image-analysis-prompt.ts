@@ -3,6 +3,12 @@
  * Used for extracting structured data from images using GPT-4 Vision
  */
 
+export type ImageResponseLanguage = "he" | "en" | "other";
+
+/**
+ * Static system prompt — no dynamic content. Kept cacheable by the provider.
+ * Response language is passed only in the user message (see getImageAnalysisLanguageMessage).
+ */
 export function getImageAnalysisPrompt(): string {
 	return `You are an advanced image analysis assistant. Your role is to analyze images and extract structured data when possible, or provide descriptions for random images.
 
@@ -40,7 +46,7 @@ Analyze the provided image and determine if it contains structured, actionable i
 
 ## OUTPUT FORMAT:
 
-Return ONLY valid JSON in this exact format. You MUST include a "formattedMessage" field that contains a user-friendly message in the same language as the image text (Hebrew or English).
+Return ONLY valid JSON in this exact format. You MUST include a "formattedMessage" field. The formattedMessage MUST be in the response language specified in the user's message (the first line of the user message states the required language).
 
 ### For Structured Images:
 \`\`\`json
@@ -99,7 +105,7 @@ Return ONLY valid JSON in this exact format. You MUST include a "formattedMessag
 
 ## FORMATTED MESSAGE RULES:
 
-1. **Language**: Match the language detected in the image (Hebrew or English)
+1. **Language**: Use ONLY the response language stated in the user message. Do not switch to the image's text language unless that is what the user message specifies.
 2. **Tone**: Friendly, professional, helpful, and personal
 3. **Structure for Structured Images**:
    - Start with a greeting or acknowledgment
@@ -188,5 +194,19 @@ Output:
 }
 \`\`\`
 
-Remember: Return ONLY the JSON object, no additional text or explanations. The formattedMessage must be in the same language as the image text.`;
+Remember: Return ONLY the JSON object, no additional text or explanations. The formattedMessage must be in the response language specified in the user message.`;
+}
+
+/**
+ * Language instruction as a user-message snippet. Injected into the LLM as part of the user message
+ * (not the system prompt) so the system prompt stays static and cacheable.
+ */
+export function getImageAnalysisLanguageMessage(userLanguage?: ImageResponseLanguage): string {
+	if (userLanguage === "he") {
+		return "CRITICAL — RESPONSE LANGUAGE: You MUST write the formattedMessage and ALL user-facing text ONLY in Hebrew. Do not use English.\n\n";
+	}
+	if (userLanguage === "en") {
+		return "CRITICAL — RESPONSE LANGUAGE: You MUST write the formattedMessage and ALL user-facing text ONLY in English. Do not use Hebrew.\n\n";
+	}
+	return "RESPONSE LANGUAGE: Write the formattedMessage in the same language as the text visible in the image (Hebrew or English). If the image has no text, use English.\n\n";
 }

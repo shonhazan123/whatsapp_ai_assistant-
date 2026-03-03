@@ -162,7 +162,7 @@ Canonical code: `Memo_v2/src/graph/nodes/ExecutorNode.ts`
 - **Type**: `LatestAction[]` (defined in `Memo_v2/src/types/index.ts`)
 - **Fields**: `createdAt`, `capability`, `action`, `summary`, `when?`, `externalIds?`
 - **Storage**: `ConversationWindow` in-memory map, per userPhone, 12h session scope, FIFO max 10.
-- **Written by**: `MemoryUpdateNode` — iterates all plan steps; for each `executionResults.get(stepId).success === true`, builds and pushes a `LatestAction`.
+- **Written by**: `MemoryUpdateNode` — iterates all plan steps; for each `executionResults.get(stepId).success === true`, builds and pushes a `LatestAction`. For database (tasks/reminders), `when` is set from `next_reminder_at` when present so follow-up questions like "when is the next reminder?" can be answered from Latest Actions; `summary` may include recurrence hint (e.g. "every 2 weeks").
 - **Read by**: `ContextAssemblyNode` — fetches last 3 (most-recent first) into `state.latestActions`.
 - **Consumed by**: `PlannerNode` — injected as a tiny `## Latest Actions` block in the user message; used to resolve referential language ("it/that/זה"). **GeneralResolver** — receives `state.latestActions`, `state.user`, and `state.recentMessages` in its prompt to answer questions about the user and what the assistant did (informative scope only).
 - **Planner rule**: most-recent action is the strongest candidate when user uses referential language. Only triggers `intent_unclear` HITL when no latestAction is plausible.

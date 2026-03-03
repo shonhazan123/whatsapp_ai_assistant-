@@ -6,6 +6,7 @@
 - **Boundaries**:
   - Answer only from provided context (user profile, latest actions, recent conversation, agent info, plan tiers). Refuse politely when the question is outside program/user state.
   - No external side effects. Must not expose internal implementation details. Never guess — if data is missing, say so.
+  - **No hanging responses:** The agent cannot send a follow-up message. Every reply must be complete in one message. Forbidden: saying "I'll explain", "I'm answering now", or equivalent. Either answer fully using Latest Actions/context or say clearly that the information is not available.
   - Executor returns resolver args as data (no adapter).
 
 ## Canonical sources of truth

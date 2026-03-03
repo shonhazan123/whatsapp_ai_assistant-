@@ -822,7 +822,7 @@ Output only the JSON, no explanation. NEVER include IDs you don't have.`;
         normalized.time = recurrence.time || '08:00';
         break;
       case 'weekly':
-        normalized.days = recurrence.days || [0];
+        normalized.days = this.normalizeDaysArray(recurrence.days) || [0];
         normalized.time = recurrence.time || '08:00';
         break;
       case 'monthly':
@@ -837,6 +837,46 @@ Output only the JSON, no explanation. NEVER include IDs you don't have.`;
     if (recurrence.until) normalized.until = recurrence.until;
     
     return normalized;
+  }
+
+  /** Ensure days is always a numeric array [0-6] regardless of LLM output format. */
+  private normalizeDaysArray(days: any): number[] | null {
+    if (!days) return null;
+
+    const dayNameMap: Record<string, number> = {
+      sunday: 0, sun: 0, ראשון: 0,
+      monday: 1, mon: 1, שני: 1,
+      tuesday: 2, tue: 2, שלישי: 2,
+      wednesday: 3, wed: 3, רביעי: 3,
+      thursday: 4, thu: 4, חמישי: 4,
+      friday: 5, fri: 5, שישי: 5,
+      saturday: 6, sat: 6, שבת: 6,
+    };
+
+    const toNum = (v: any): number | null => {
+      if (typeof v === 'number' && v >= 0 && v <= 6) return v;
+      if (typeof v === 'string') {
+        const n = parseInt(v, 10);
+        if (!isNaN(n) && n >= 0 && n <= 6) return n;
+        const mapped = dayNameMap[v.toLowerCase().trim()];
+        if (mapped !== undefined) return mapped;
+      }
+      return null;
+    };
+
+    if (Array.isArray(days)) {
+      const result = days.map(toNum).filter((n): n is number => n !== null);
+      return result.length > 0 ? result : null;
+    }
+
+    if (typeof days === 'string') {
+      const parts = days.split(/[,;\s]+/).filter(Boolean);
+      const result = parts.map(toNum).filter((n): n is number => n !== null);
+      return result.length > 0 ? result : null;
+    }
+
+    const single = toNum(days);
+    return single !== null ? [single] : null;
   }
   
   protected getEntityType(): 'calendar' | 'database' | 'gmail' | 'second-brain' | 'error' {

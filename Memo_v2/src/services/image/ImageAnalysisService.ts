@@ -3,7 +3,7 @@
  * Analyzes images using GPT-4 Vision and returns structured data (copied from V1 OpenAIService.analyzeImage)
  */
 
-import { getImageAnalysisPrompt } from "../../config/image-analysis-prompt.js";
+import { getImageAnalysisLanguageMessage, getImageAnalysisPrompt, type ImageResponseLanguage } from "../../config/image-analysis-prompt.js";
 import { getOpenAI } from "../../config/llm-config.js";
 import type { ImageAnalysisResult } from "../../types/imageAnalysis.js";
 import { logger } from "../../utils/logger.js";
@@ -13,14 +13,18 @@ import { ImageProcessor } from "./ImageProcessor.js";
 
 const imageCache = ImageCache.getInstance();
 
+/**
+ * @param userLanguage - User's preferred response language ('he' | 'en' | 'other'). Response (formattedMessage) will be in this language.
+ */
 export async function analyzeImage(
 	imageBuffer: Buffer,
 	userCaption?: string,
+	userLanguage?: ImageResponseLanguage,
 ): Promise<ImageAnalysisResult> {
 	try {
-		logger.info("🔍 Starting image analysis...");
+		logger.info("🔍 Starting image analysis...", { userLanguage });
 
-		const cachedResult = imageCache.get(imageBuffer);
+		const cachedResult = imageCache.get(imageBuffer, userLanguage);
 		if (cachedResult) {
 			logger.info("✅ Using cached image analysis result");
 			return cachedResult;
@@ -63,10 +67,13 @@ export async function analyzeImage(
 		const mimeType = ImageProcessor.getMimeType(validation.format || "jpeg");
 		const base64Image = processedBuffer.toString("base64");
 
-		let userPrompt = getImageAnalysisPrompt();
-		if (userCaption) {
-			userPrompt += `\n\nUser's caption: "${userCaption}"\nUse this caption to help understand the context of the image.`;
-		}
+		// System prompt is static (cacheable). Language is passed only in the user message.
+		const systemPrompt = getImageAnalysisPrompt();
+		const languageMessage = getImageAnalysisLanguageMessage(userLanguage);
+		const taskText = userCaption
+			? `Analyze this image. The user provided this caption: "${userCaption}". Extract structured data if possible.`
+			: "Analyze this image and extract structured data if possible.";
+		const userTextContent = languageMessage + taskText;
 
 		const openai = getOpenAI();
 		let completion: any;
@@ -83,15 +90,13 @@ export async function analyzeImage(
 					openai.chat.completions.create({
 						model: "gpt-4o",
 						messages: [
-							{ role: "system", content: userPrompt },
+							{ role: "system", content: systemPrompt },
 							{
 								role: "user",
 								content: [
 									{
 										type: "text",
-										text: userCaption
-											? `Analyze this image. The user provided this caption: "${userCaption}". Extract structured data if possible.`
-											: "Analyze this image and extract structured data if possible.",
+										text: userTextContent,
 									},
 									{
 										type: "image_url",
@@ -184,7 +189,7 @@ export async function analyzeImage(
 				ImageAnalysisHelper.generateFallbackFormattedMessage(analysisResult);
 		}
 
-		imageCache.set(imageBuffer, analysisResult);
+		imageCache.set(imageBuffer, analysisResult, userLanguage);
 		logger.info(
 			`✅ Image analysis complete: ${analysisResult.imageType} (confidence: ${analysisResult.confidence})`,
 		);

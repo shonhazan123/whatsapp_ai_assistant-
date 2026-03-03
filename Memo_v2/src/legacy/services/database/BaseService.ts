@@ -90,6 +90,9 @@ export abstract class BaseService {
     if (typeof input === 'string') {
       return input.trim();
     }
+    if (Array.isArray(input)) {
+      return input.map(item => this.sanitizeInput(item));
+    }
     if (typeof input === 'object' && input !== null) {
       const sanitized: any = {};
       for (const [key, value] of Object.entries(input)) {

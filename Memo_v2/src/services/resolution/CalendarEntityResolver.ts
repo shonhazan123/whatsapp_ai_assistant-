@@ -13,6 +13,7 @@ import type { RequestUserContext } from '../../legacy/types/UserContext.js';
 import type { AuthContext } from '../../types/index.js';
 import { FuzzyMatcher } from '../../utils/fuzzy.js';
 import { TimeParser } from '../../utils/time.js';
+import { getEndOfDayInTimezone, getStartOfDayInTimezone } from '../../utils/userTimezone.js';
 import { getCalendarService } from '../v1-services.js';
 import {
   RESOLUTION_THRESHOLDS,
@@ -332,10 +333,9 @@ export class CalendarEntityResolver implements IEntityResolver {
         criteria.timeMin = derived.timeMin;
         criteria.timeMax = derived.timeMax;
       } else {
-        // Default to wide window
-        const now = new Date();
-        criteria.timeMin = new Date(now.getTime() - TIME_WINDOW_DEFAULTS.CALENDAR_DEFAULT_DAYS_BACK * 24 * 60 * 60 * 1000).toISOString();
-        criteria.timeMax = new Date(now.getTime() + TIME_WINDOW_DEFAULTS.CALENDAR_DEFAULT_DAYS_FORWARD * 24 * 60 * 60 * 1000).toISOString();
+        const { timeMin, timeMax } = this.getDefaultTimeWindowInUserTz(context);
+        criteria.timeMin = timeMin;
+        criteria.timeMax = timeMax;
       }
     }
 
@@ -427,10 +427,9 @@ export class CalendarEntityResolver implements IEntityResolver {
         criteria.timeMin = derived.timeMin;
         criteria.timeMax = derived.timeMax;
       } else {
-        // Default window
-        const now = new Date();
-        criteria.timeMin = new Date(now.getTime() - TIME_WINDOW_DEFAULTS.CALENDAR_DEFAULT_DAYS_BACK * 24 * 60 * 60 * 1000).toISOString();
-        criteria.timeMax = new Date(now.getTime() + TIME_WINDOW_DEFAULTS.CALENDAR_DEFAULT_DAYS_FORWARD * 24 * 60 * 60 * 1000).toISOString();
+        const { timeMin, timeMax } = this.getDefaultTimeWindowInUserTz(context);
+        criteria.timeMin = timeMin;
+        criteria.timeMax = timeMax;
       }
     }
 
@@ -645,9 +644,9 @@ export class CalendarEntityResolver implements IEntityResolver {
         timeMin = derived.timeMin;
         timeMax = derived.timeMax;
       } else {
-        const now = new Date();
-        timeMin = new Date(now.getTime() - TIME_WINDOW_DEFAULTS.CALENDAR_DEFAULT_DAYS_BACK * 24 * 60 * 60 * 1000).toISOString();
-        timeMax = new Date(now.getTime() + TIME_WINDOW_DEFAULTS.CALENDAR_DEFAULT_DAYS_FORWARD * 24 * 60 * 60 * 1000).toISOString();
+        const window = this.getDefaultTimeWindowInUserTz(context);
+        timeMin = window.timeMin;
+        timeMax = window.timeMax;
       }
     }
 
@@ -976,9 +975,9 @@ export class CalendarEntityResolver implements IEntityResolver {
     // Ensure we have a time window
     let { timeMin, timeMax } = criteria;
     if (!timeMin || !timeMax) {
-      const now = new Date();
-      timeMin = timeMin || new Date(now.getTime() - TIME_WINDOW_DEFAULTS.CALENDAR_DEFAULT_DAYS_BACK * 24 * 60 * 60 * 1000).toISOString();
-      timeMax = timeMax || new Date(now.getTime() + TIME_WINDOW_DEFAULTS.CALENDAR_DEFAULT_DAYS_FORWARD * 24 * 60 * 60 * 1000).toISOString();
+      const window = this.getDefaultTimeWindowInUserTz(context);
+      timeMin = timeMin || window.timeMin;
+      timeMax = timeMax || window.timeMax;
     }
 
     // Fetch events (CalendarService.getEvents expects context first, then request)
@@ -1238,6 +1237,18 @@ export class CalendarEntityResolver implements IEntityResolver {
   // ==========================================================================
   // UTILITY METHODS (Ported from V1)
   // ==========================================================================
+
+  /** Default time window in user timezone (never server). */
+  private getDefaultTimeWindowInUserTz(context: EntityResolverContext): { timeMin: string; timeMax: string } {
+    const tz = context.timeContext?.timezone || 'Asia/Jerusalem';
+    const now = Date.now();
+    const back = new Date(now - TIME_WINDOW_DEFAULTS.CALENDAR_DEFAULT_DAYS_BACK * 24 * 60 * 60 * 1000);
+    const forward = new Date(now + TIME_WINDOW_DEFAULTS.CALENDAR_DEFAULT_DAYS_FORWARD * 24 * 60 * 60 * 1000);
+    return {
+      timeMin: getStartOfDayInTimezone(tz, back),
+      timeMax: getEndOfDayInTimezone(tz, forward),
+    };
+  }
 
   /**
    * Derive time window from params or phrase

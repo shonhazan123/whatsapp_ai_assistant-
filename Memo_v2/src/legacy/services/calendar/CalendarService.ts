@@ -2,6 +2,7 @@ import { calendar_v3, google } from 'googleapis';
 import { RequestContext } from '../../core/context/RequestContext';
 import { IResponse } from '../../core/types/AgentTypes';
 import { RequestUserContext } from '../../types/UserContext';
+import { buildDateTimeISOInZone, getDatePartsInTimezone, getStartOfDayInTimezone } from '../../../utils/userTimezone.js';
 import { UpsertGoogleTokenPayload, UserService } from '../database/UserService';
 
 export interface CalendarReminderOverride {
@@ -70,6 +71,8 @@ export interface RecurringEventRequest {
   location?: string;
   until?: string; // Optional ISO date to stop recurrence
   reminders?: CalendarReminders;
+  /** User timezone (e.g. Asia/Jerusalem). All start/end are built in this zone, never server. */
+  timeZone?: string;
 }
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
@@ -622,110 +625,58 @@ export class CalendarService {
    */
   async createRecurringEvent(context: RequestUserContext, request: RecurringEventRequest): Promise<IResponse> {
     try {
-      this.logger.info(`📅 Creating recurring event: ${request.summary} on ${request.days.join(', ')} (${request.recurrence})`);
+      const tz = request.timeZone || context.user?.timezone || 'Asia/Jerusalem';
+      this.logger.info(`📅 Creating recurring event: ${request.summary} on ${request.days.join(', ')} (${request.recurrence}) [tz: ${tz}]`);
 
-      const startDate = new Date();
+      const now = new Date();
+      const todayParts = getDatePartsInTimezone(tz, now);
+      let dateStr: string;
       let rrule: string;
 
-      // Handle different recurrence types
       if (request.recurrence === 'monthly') {
-        // Monthly recurrence: days are day of month (1-31)
         const dayOfMonth = parseInt(request.days[0], 10);
         if (isNaN(dayOfMonth) || dayOfMonth < 1 || dayOfMonth > 31) {
-          return {
-            success: false,
-            error: 'Invalid day of month. Must be between 1 and 31.'
-          };
+          return { success: false, error: 'Invalid day of month. Must be between 1 and 31.' };
         }
-
-        // Find the next occurrence of this day of month
-        const today = new Date();
-        const currentDay = today.getDate();
-
-        if (currentDay < dayOfMonth) {
-          // This month, set to the day
-          startDate.setDate(dayOfMonth);
-        } else {
-          // Next month, set to the day
-          startDate.setMonth(today.getMonth() + 1);
-          startDate.setDate(dayOfMonth);
+        let y = todayParts.year;
+        let m = todayParts.month;
+        const d = Math.min(dayOfMonth, new Date(y, m, 0).getDate());
+        if (todayParts.day >= dayOfMonth) {
+          m += 1;
+          if (m > 12) {
+            m = 1;
+            y += 1;
+          }
         }
-
-        // Handle months with fewer days (e.g., Feb 30 -> Feb 28/29)
-        const maxDayInMonth = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0).getDate();
-        if (dayOfMonth > maxDayInMonth) {
-          startDate.setDate(maxDayInMonth);
-        }
-
-        // Set the start time
-        const [startHour, startMinute] = request.startTime.split(':').map(Number);
-        startDate.setHours(startHour, startMinute, 0, 0);
-
-        // Build RRULE for monthly recurrence
+        dateStr = `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
         const monthDays = request.days.map(day => parseInt(day, 10)).filter(day => !isNaN(day) && day >= 1 && day <= 31);
         rrule = `RRULE:FREQ=MONTHLY;BYMONTHDAY=${monthDays.join(',')}`;
-
       } else if (request.recurrence === 'daily') {
-        // Daily recurrence
-        const [startHour, startMinute] = request.startTime.split(':').map(Number);
-        startDate.setHours(startHour, startMinute, 0, 0);
+        dateStr = `${todayParts.year}-${String(todayParts.month).padStart(2, '0')}-${String(todayParts.day).padStart(2, '0')}`;
         rrule = 'RRULE:FREQ=DAILY';
-
       } else {
-        // Weekly recurrence (default): days are day names
-        // Find the NEAREST day from the requested days (not just the first one)
-        const today = new Date();
-        const currentDayIndex = today.getDay();
-
-        // Map all requested days to their indices and find nearest occurrence
         const dayIndices = request.days.map(day => this.getDayIndex(day));
-        let nearestDayIndex = -1;
-        let daysToAdd = 7; // Max days to look ahead
-
-        // Find the nearest day (including today if it's one of the requested days)
+        let daysToAdd = 7;
         for (let i = 0; i <= 6; i++) {
-          const checkDayIndex = (currentDayIndex + i) % 7;
-          if (dayIndices.includes(checkDayIndex)) {
-            nearestDayIndex = checkDayIndex;
+          const check = (todayParts.dayOfWeek + i) % 7;
+          if (dayIndices.includes(check)) {
             daysToAdd = i;
             break;
           }
         }
-
-        // If no day found (shouldn't happen), fall back to first day
-        if (nearestDayIndex === -1) {
-          nearestDayIndex = dayIndices[0];
-          daysToAdd = 0;
-          while (startDate.getDay() !== nearestDayIndex) {
-            startDate.setDate(startDate.getDate() + 1);
-            daysToAdd++;
-          }
-        } else {
-          // Set to the nearest day
-          startDate.setDate(startDate.getDate() + daysToAdd);
-        }
-
-        // Log which day we're starting from
+        const startOfToday = new Date(getStartOfDayInTimezone(tz, now));
+        const targetDate = new Date(startOfToday.getTime() + daysToAdd * 24 * 60 * 60 * 1000);
+        const targetParts = getDatePartsInTimezone(tz, targetDate);
+        dateStr = `${targetParts.year}-${String(targetParts.month).padStart(2, '0')}-${String(targetParts.day).padStart(2, '0')}`;
         const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-        this.logger.info(`📅 Starting recurring event from ${dayNames[nearestDayIndex]} (${startDate.toDateString()}), days to add: ${daysToAdd}`);
-
-        // Set the start time
-        const [startHour, startMinute] = request.startTime.split(':').map(Number);
-        startDate.setHours(startHour, startMinute, 0, 0);
-
-        // Build RRULE for weekly recurrence
-        const dayAbbreviations = request.days.map(day => this.getDayAbbreviation(day));
-        rrule = `RRULE:FREQ=WEEKLY;BYDAY=${dayAbbreviations.join(',')}`;
+        this.logger.info(`📅 Starting recurring event from ${dayNames[targetParts.dayOfWeek]} (${dateStr}), days to add: ${daysToAdd}`);
+        rrule = `RRULE:FREQ=WEEKLY;BYDAY=${request.days.map(day => this.getDayAbbreviation(day)).join(',')}`;
       }
 
-      // Set the end time
-      const endDate = new Date(startDate);
-      const [endHour, endMinute] = request.endTime.split(':').map(Number);
-      endDate.setHours(endHour, endMinute, 0, 0);
+      const startISO = buildDateTimeISOInZone(dateStr, request.startTime, tz);
+      const endISO = buildDateTimeISOInZone(dateStr, request.endTime, tz);
 
-      // Add UNTIL if provided, otherwise default to 1 year from start date
       if (request.until) {
-        // Convert until date to UTC and format as YYYYMMDDTHHMMSSZ (RRULE format)
         const untilDate = new Date(request.until);
         const year = untilDate.getUTCFullYear();
         const month = String(untilDate.getUTCMonth() + 1).padStart(2, '0');
@@ -733,33 +684,22 @@ export class CalendarService {
         const hours = String(untilDate.getUTCHours()).padStart(2, '0');
         const minutes = String(untilDate.getUTCMinutes()).padStart(2, '0');
         const seconds = String(untilDate.getUTCSeconds()).padStart(2, '0');
-        const untilFormatted = `${year}${month}${day}T${hours}${minutes}${seconds}Z`;
-        rrule += `;UNTIL=${untilFormatted}`;
+        rrule += `;UNTIL=${year}${month}${day}T${hours}${minutes}${seconds}Z`;
       } else {
-        // Default to 1 year from start date
-        const oneYearLater = new Date(startDate);
-        oneYearLater.setFullYear(oneYearLater.getFullYear() + 1);
+        const oneYearLater = new Date(new Date(startISO).getTime() + 365 * 24 * 60 * 60 * 1000);
         const year = oneYearLater.getUTCFullYear();
         const month = String(oneYearLater.getUTCMonth() + 1).padStart(2, '0');
         const day = String(oneYearLater.getUTCDate()).padStart(2, '0');
         const hours = String(oneYearLater.getUTCHours()).padStart(2, '0');
         const minutes = String(oneYearLater.getUTCMinutes()).padStart(2, '0');
         const seconds = String(oneYearLater.getUTCSeconds()).padStart(2, '0');
-        const untilFormatted = `${year}${month}${day}T${hours}${minutes}${seconds}Z`;
-        rrule += `;UNTIL=${untilFormatted}`;
+        rrule += `;UNTIL=${year}${month}${day}T${hours}${minutes}${seconds}Z`;
       }
 
-      // Create the recurring event
       const event: any = {
         summary: request.summary,
-        start: {
-          dateTime: startDate.toISOString(),
-          timeZone: 'Asia/Jerusalem'
-        },
-        end: {
-          dateTime: endDate.toISOString(),
-          timeZone: 'Asia/Jerusalem'
-        },
+        start: { dateTime: startISO, timeZone: tz },
+        end: { dateTime: endISO, timeZone: tz },
         description: request.description,
         location: request.location,
         recurrence: [rrule]
