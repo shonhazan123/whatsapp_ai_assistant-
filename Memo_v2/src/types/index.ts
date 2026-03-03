@@ -120,6 +120,9 @@ export interface DisambiguationContext {
 		| "recurring_scope"
 		| "conflict_override";
 
+	/** Resolver-supplied question (e.g. conflict context). HITLGateNode uses this over its generic template when present. */
+	question?: string;
+
 	// For errors
 	error?: string;
 	searchedFor?: string;

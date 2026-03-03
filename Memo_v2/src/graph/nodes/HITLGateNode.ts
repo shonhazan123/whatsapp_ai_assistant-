@@ -267,7 +267,8 @@ export class HITLGateNode {
       label: c.displayText,
     }));
 
-    const question = this.getDisambiguationQuestion(language, candidates, disambiguation.allowMultiple);
+    const question = disambiguation.question
+      || this.getDisambiguationQuestion(language, candidates, disambiguation.allowMultiple);
     const expectedInput: HITLExpectedInput = disambiguation.allowMultiple ? 'multi_choice' : 'single_choice';
 
     const hitlId = randomUUID();

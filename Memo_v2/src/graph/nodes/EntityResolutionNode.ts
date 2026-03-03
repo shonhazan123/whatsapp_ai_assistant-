@@ -101,13 +101,14 @@ export class EntityResolutionNode {
           break;
 
         case 'disambiguation':
-          // Machine-only disambiguation: candidates + metadata, no user-facing question text
           console.log(`[EntityResolutionNode] Disambiguation needed for step ${stepId}`);
           return {
             disambiguation: {
               type: selectedEntityResolver.domain as DisambiguationContext['type'],
               candidates: resolution.candidates || [],
               allowMultiple: resolution.allowMultiple,
+              disambiguationKind: resolution.disambiguationKind,
+              question: resolution.question,
               resolverStepId: stepId,
               originalArgs: result.args,
             },

@@ -92,6 +92,14 @@ export class SecondBrainEntityResolver implements IEntityResolver {
     if (typeof selection === 'string') {
       const lower = selection.toLowerCase();
       if (lower === 'both' || lower === 'all' || lower === 'שניהם' || lower === 'כולם') {
+        const hasConflictSentinel = candidates.some(c => c.id === INSERT_NEW_SENTINEL);
+        if (hasConflictSentinel) {
+          // Conflict scenario: "both"/"שניהם" means "keep both" = insert new
+          return {
+            type: 'resolved',
+            args: { ...args, conflictDecision: 'insert' },
+          };
+        }
         return {
           type: 'resolved',
           resolvedIds: candidates.map(c => c.id),
@@ -148,10 +156,14 @@ export class SecondBrainEntityResolver implements IEntityResolver {
 
     let conflicts: ConflictMatch[];
     try {
+      const conflictOpts = memory.type === 'kv' && memory.metadata?.subject
+        ? { subject: memory.metadata.subject }
+        : undefined;
       conflicts = await vault.findConflicts(
         context.userPhone,
         memory.content,
-        memory.type
+        memory.type,
+        conflictOpts
       );
     } catch (error) {
       console.error('[SecondBrainEntityResolver] Conflict check failed, proceeding with insert:', error);
@@ -191,6 +203,7 @@ export class SecondBrainEntityResolver implements IEntityResolver {
       candidates,
       question,
       allowMultiple: false,
+      disambiguationKind: 'conflict_override' as const,
     };
   }
 
@@ -234,7 +247,7 @@ export class SecondBrainEntityResolver implements IEntityResolver {
       memories = await vault.hybridSearch(
         context.userPhone,
         searchQuery,
-        { type: args.type, limit: 10 }
+        { type: args.memory?.type || args.type, limit: 10 }
       );
     } catch (error) {
       console.error('[SecondBrainEntityResolver] Search failed:', error);

@@ -24,7 +24,8 @@
 - Override: DELETE existing + INSERT new. No version history.
 
 ### kv (key-value)
-- Used for: factual data points (e.g., "electricity bill is 500", "WiFi password is 1234").
+- Used for: factual data points (e.g., "electricity bill is 500", "WiFi password is 1234", "I owe Liron for 3 haircuts").
+- Classification covers: "X is/costs/equals Y" patterns, debts/obligations ("I owe X for Y"), counters/quantities.
 - Behavior: extract `subject` + `value` → conflict check by vector similarity and subject overlap (when subject present), so same-subject value updates trigger HITL; if strong match → disambiguation.
 - Required metadata: `subject`, `value`.
 - Override: DELETE existing + INSERT new. No version history.
@@ -97,22 +98,31 @@ Table: `second_brain_memories` (created by `scripts/migrations/003-second-brain-
 ### When resolution happens
 
 1. **Conflict detection** for `storeMemory` when `_needsConflictCheck` is true (contact/kv only):
-   - Runs `SecondBrainVaultService.findConflicts()` (hybrid: vector ≥ 0.85 AND keyword match)
-   - If strong match → disambiguation HITL with two options:
+   - Runs `SecondBrainVaultService.findConflicts()` with `opts.subject` for kv type (enables subject-based matching).
+   - If strong match → disambiguation HITL with `disambiguationKind: 'conflict_override'` and two options:
      - "Update existing (override)" → `conflictDecision: 'override'`, `conflictTargetId: <id>`
      - "Keep both (insert new)" → `conflictDecision: 'insert'`
+   - The resolver supplies a custom `question` (context-aware conflict description) that HITLGateNode uses directly instead of its generic template.
    - If no strong match → passthrough (insert)
 
 2. **Entity lookup** for `updateMemory`, `deleteMemory`, `getMemoryById` (when no `memoryId`):
-   - Runs `hybridSearch()` → candidates → disambiguation if needed
+   - Runs `hybridSearch()` with `args.memory?.type || args.type` → candidates → disambiguation if needed
 
 ### HITL behavior (disambiguation)
 
 - `note` type: NEVER triggers HITL
 - `contact`: HITL only if vector similarity ≥ 0.85 AND keyword overlap (`content_tsv`).
-- `kv`: HITL if vector similarity ≥ 0.85 AND (keyword overlap OR, when `metadata.subject` is present, subject overlap so value-only updates trigger disambiguation).
+- `kv`: HITL if vector similarity ≥ 0.85 AND (keyword overlap OR, when `metadata.subject` is present, subject overlap so value-only updates trigger disambiguation). Entity resolver passes `{ subject: memory.metadata.subject }` to `findConflicts()` for kv type.
 - For delete: `allowMultiple: true`
-- For conflict: `allowMultiple: false` (pick override or insert)
+- For conflict: `allowMultiple: false`, `disambiguationKind: 'conflict_override'` (pick override or insert)
+- "both"/"שניהם" in conflict context → treated as "keep both" (insert new), not multi-select
+
+### HITL resume flow (shared with all capabilities)
+
+Conflict disambiguation uses the same two-layer resume logic as all other entity disambiguation:
+1. **Layer 1 (deterministic)**: `validateSingleChoice()` catches numeric ("1"/"2"), exact label match, "all"/"שניהם"
+2. **Layer 2 (LLM fallback)**: `callDisambiguationInterpreter()` normalizes free-text like "תעדכן" (update) or "שמור את שניהם" (keep both) into a selection number or null
+3. **Switch intent**: If LLM returns null (user changed topic), reply goes back to planner as a fresh request
 
 ## Execution contract (adapters)
 
@@ -152,4 +162,7 @@ Table: `second_brain_memories` (created by `scripts/migrations/003-second-brain-
 
 ### Conflict detection (contact/kv store)
 - **contact**: Vector similarity ≥ 0.85 and keyword overlap (`content_tsv @@ plainto_tsquery('simple', content)`). Both required.
-- **kv**: When `metadata.subject` is provided: vector-only search (≥ 0.85) then filter by subject overlap (normalized equality or one contains the other), so same-subject value changes (e.g. "3 תספורות" → "ארבע תספורות") trigger HITL. When subject is not provided: same as contact (vector + keyword).
+- **kv**: Entity resolver passes `{ subject: memory.metadata.subject }` to `findConflicts()`. When subject is present: `findConflictsKvBySubject()` does vector-only search (≥ 0.85) then filters by subject overlap (normalized equality or one contains the other), so same-subject value changes (e.g. "3 תספורות" → "ארבע תספורות", "1 haircut" → "2 haircuts") trigger HITL. When subject is not present: same as contact (vector + keyword).
+
+### hybridSearch SQL parameter handling
+- `queryText` parameter index is computed dynamically (`$5` when no type filter, `$6` when type filter is present) to avoid PostgreSQL parameter type inference errors.

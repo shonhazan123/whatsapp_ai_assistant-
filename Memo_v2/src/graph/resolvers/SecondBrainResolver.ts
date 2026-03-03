@@ -64,8 +64,12 @@ Detection signals:
 Used for: factual data points that pair a SUBJECT with a VALUE.
 Detection signals:
 - Pattern: "<subject> is/costs/equals <value>"
+- Pattern: "I owe <person> for <amount/thing>" (debt/obligation tracking)
+- Pattern: "<thing> count/quantity is <number>" (counters/tallies)
 - Examples: "electricity bill is 500", "WiFi password is 1234", "gym membership costs 300"
+- Examples: "אני חייב ללירון על 3 תספורות" (I owe Liron for 3 haircuts), "I owe mom 200 shekels"
 - The user is storing a FACT that can be looked up by subject later
+- Debts, obligations, counters, scores, quantities are ALL kv — subject=what/who, value=amount
 - MUST extract into metadata: subject, value
 
 ## OPERATIONS
@@ -225,7 +229,21 @@ User: "הסיסמא של הוויי פיי היא 1234"
   }
 }
 
-### Example 5 — Store a meeting summary:
+### Example 5 — Store a key-value (debt/obligation):
+User: "אני חייב ללירון הספר על 3 תספורות"
+→
+{
+  "operation": "storeMemory",
+  "memory": {
+    "type": "kv",
+    "content": "אני חייב ללירון הספר על 3 תספורות",
+    "summary": "חוב ללירון הספר - 3 תספורות",
+    "tags": ["לירון", "ספר", "תספורת", "חוב"],
+    "metadata": { "subject": "חוב ללירון הספר", "value": "3 תספורות" }
+  }
+}
+
+### Example 6 — Store a meeting summary:
 User: "remember that in the meeting with the bank we discussed refinancing at 4.2%"
 →
 {

@@ -201,31 +201,36 @@ export class SecondBrainVaultService {
     const vectorStr = this.toVectorString(embedding);
     const limit = opts?.limit || HYBRID_THRESHOLDS.SEARCH_LIMIT;
 
-    const typeFilter = opts?.type ? 'AND type = $5' : '';
     const params: any[] = [
       vectorStr,
       userId,
       HYBRID_THRESHOLDS.SEARCH_SIMILARITY_MIN,
       limit,
     ];
-    if (opts?.type) params.push(opts.type);
+
+    let typeFilter = '';
+    if (opts?.type) {
+      params.push(opts.type);
+      typeFilter = `AND type = $${params.length}`;
+    }
+
+    params.push(queryText);
+    const queryParamIdx = `$${params.length}`;
 
     const sql = `
       SELECT
         id, user_id, type, content, summary, tags, metadata, created_at,
         1 - (embedding <=> $1::vector) AS similarity,
-        ts_rank_cd(content_tsv, plainto_tsquery('simple', $6)) AS keyword_score
+        ts_rank_cd(content_tsv, plainto_tsquery('simple', ${queryParamIdx})) AS keyword_score
       FROM second_brain_memories
       WHERE user_id = $2
         AND (1 - (embedding <=> $1::vector)) >= $3
         ${typeFilter}
       ORDER BY
         (1 - (embedding <=> $1::vector)) * 0.7
-        + ts_rank_cd(content_tsv, plainto_tsquery('simple', $6)) * 0.3 DESC
+        + ts_rank_cd(content_tsv, plainto_tsquery('simple', ${queryParamIdx})) * 0.3 DESC
       LIMIT $4
     `;
-
-    params.push(queryText);
 
     const result = await query(sql, params);
     return result.rows.map((r: any) => ({
