@@ -113,6 +113,10 @@ Patterns: "מייל", "email", "inbox", "שלח מייל"
 - User uses scheduling language: "schedule", "book", "תקבע", "תוסיף ליומן"
 - User asks about their schedule: "מה יש לי מחר", "what do I have"
 
+**CALENDAR OVERRIDE (takes priority over DATABASE rule above):**
+- User says **"תזכורת ביומן"** / **"reminder in the calendar"** / **"event with reminder"** → capability = **calendar**, action = "create event"
+- When user asks for a calendar event AND mentions **"הודעה מראש"** / **"advance notice"** / **"remind me X before"**, this is a calendar event with a Google Calendar reminder (maps to reminderMinutesBefore). It is NOT a database reminder. Route to **calendar** with action "create event" and do NOT set any missingFields.
+
 ### Step 5: Fallback to GENERAL
 Route to **general** when the user asks about **themselves** (name, account), about **what the assistant did** (last/recent actions, "did you create X?"), or sends **acknowledgments** (thank you, okay). If none of the above capabilities match and the message fits this scope → capability = **general**. General is NOT for general knowledge or open-ended advice.
 
@@ -150,10 +154,11 @@ Use action hints from the RESOLVER CAPABILITIES section above. Examples:
 
 ### 5) HITL signals (missingFields)
 If critical info is unclear, keep confidence low and include:
-- "reminder_time_required" - **CRITICAL for reminders**: A REMINDER must have BOTH a specific date AND a specific time. Use when:
+- "reminder_time_required" - **CRITICAL for DATABASE reminders ONLY** (capability=database). A database reminder must have BOTH a specific date AND a specific time. Use when:
   * User said "תזכיר לי" / "remind me" and gave a day/date (e.g. היום, מחר, ברביעי) but did NOT specify a time → set missingFields: ["reminder_time_required"].
   * User said "תזכיר לי" / "remind me" with no date and no time at all → set missingFields: ["reminder_time_required"].
   * Do NOT use "create reminder" when the user has no time at all and is just listing things to do; use "create task" instead (see Reminder vs Task below).
+  * **NEVER** set "reminder_time_required" for CALENDAR events. When user says "תזכורת ביומן" / "הודעה מראש" / "advance notice", the reminder offset is handled by the calendar resolver (reminderMinutesBefore). Do NOT set any missingFields for this.
 - "target_unclear" - ONLY when user says "delete the reminders/events" WITHOUT specifying EITHER:
   * Names/titles of specific items to delete, OR
   * Time window (tomorrow, next week, etc.) to search within
@@ -280,6 +285,25 @@ User: "תקבע פגישה עם דני מחר ב-10"
     "capability": "calendar",
     "action": "create event",
     "constraints": { "rawMessage": "תקבע פגישה עם דני מחר ב-10" },
+    "changes": {},
+    "dependsOn": []
+  }]
+}
+
+### C2) Calendar event with reminder + location (all info provided) → calendar_mutate_resolver
+User says "תזכורת ביומן" with date+time+advance notice+summary+location — everything is specified, route to CALENDAR (not database). Do NOT set missingFields.
+User: "תעשי לי תזכורת ביומן ב-23/03 בשעה 13:10 עם שעתיים הודעה מראש, אורולוג לאלי במודיעין בית יונתן"
+{
+  "intentType": "operation",
+  "confidence": 0.95,
+  "riskLevel": "low",
+  "needsApproval": false,
+  "missingFields": [],
+  "plan": [{
+    "id": "A",
+    "capability": "calendar",
+    "action": "create event",
+    "constraints": { "rawMessage": "תעשי לי תזכורת ביומן ב-23/03 בשעה 13:10 עם שעתיים הודעה מראש, אורולוג לאלי במודיעין בית יונתן" },
     "changes": {},
     "dependsOn": []
   }]
@@ -692,10 +716,12 @@ export class PlannerNode extends LLMNode {
       // Validate and clamp confidence
       normalized.confidence = Math.max(0, Math.min(1, normalized.confidence ?? 0.7));
 
-      // Validate riskLevel
+      // Validate riskLevel string, then enforce documented rules
       if (!['low', 'medium', 'high'].includes(normalized.riskLevel)) {
         normalized.riskLevel = this.inferRiskLevel(normalized.plan);
       }
+      normalized.riskLevel = this.enforceRiskLevel(normalized.plan, normalized.riskLevel);
+      normalized.needsApproval = normalized.riskLevel === 'high' ? true : normalized.needsApproval;
 
       // Ensure arrays exist
       normalized.missingFields = normalized.missingFields || [];
@@ -886,6 +912,24 @@ export class PlannerNode extends LLMNode {
     }
 
     return 'low';
+  }
+
+  /**
+   * Enforce documented risk rules: create/read→low, update→medium, delete/send→high.
+   * Overrides the LLM when it returns a level higher than the action warrants.
+   */
+  private enforceRiskLevel(plan: PlanStep[], llmRisk: 'low' | 'medium' | 'high'): 'low' | 'medium' | 'high' {
+    const correctRisk = this.inferRiskLevel(plan);
+
+    if (correctRisk === llmRisk) return llmRisk;
+
+    const riskOrder = { low: 0, medium: 1, high: 2 };
+    if (riskOrder[llmRisk] > riskOrder[correctRisk]) {
+      console.log(`[PlannerNode] enforceRiskLevel: LLM returned '${llmRisk}' but actions warrant '${correctRisk}' — downgrading`);
+      return correctRisk;
+    }
+
+    return llmRisk;
   }
 
   /**
