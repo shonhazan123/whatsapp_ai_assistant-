@@ -76,7 +76,7 @@ export interface MessageInput {
 // ============================================================================
 
 export interface TimeContext {
-	formatted: string; // "[Current time: Day, DD/MM/YYYY HH:mm (ISO+offset), Timezone: Asia/Jerusalem]"
+	formatted: string; // "[Current time: Day, YYYY-MM-DD HH:mm, Timezone: Asia/Jerusalem]" (ISO date avoids DD/MM vs MM/DD confusion for LLMs)
 	iso: string;
 	timezone: string;
 	dayOfWeek: number; // 0-6 (Sunday-Saturday)

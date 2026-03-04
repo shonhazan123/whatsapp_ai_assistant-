@@ -281,28 +281,15 @@ export class ContextAssemblyNode extends CodeNode {
     const now = new Date();
     const tz = userTimezone || 'Asia/Jerusalem';
 
-    const options: Intl.DateTimeFormatOptions = {
-      weekday: 'long',
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-      timeZone: tz,
-    };
-
-    const formatter = new Intl.DateTimeFormat('en-GB', options);
-    const parts = formatter.formatToParts(now);
-
-    const day = parts.find(p => p.type === 'weekday')?.value || '';
-    const date = `${parts.find(p => p.type === 'day')?.value}/${parts.find(p => p.type === 'month')?.value}/${parts.find(p => p.type === 'year')?.value}`;
-    const time = `${parts.find(p => p.type === 'hour')?.value}:${parts.find(p => p.type === 'minute')?.value}`;
-
     const p = getDatePartsInTimezone(tz, now);
+    // Use ISO date (YYYY-MM-DD) so LLMs interpret "today" and "tomorrow" correctly (avoids DD/MM vs MM/DD confusion)
+    const dateIso = `${p.year}-${String(p.month).padStart(2, '0')}-${String(p.day).padStart(2, '0')}`;
+    const time = `${String(p.hour).padStart(2, '0')}:${String(p.minute).padStart(2, '0')}`;
+    const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const day = weekdays[p.dayOfWeek] ?? '';
 
     return {
-      formatted: `[Current time: ${day}, ${date} ${time}, Timezone: ${tz}]`,
+      formatted: `[Current time: ${day}, ${dateIso} ${time}, Timezone: ${tz}]`,
       iso: now.toISOString(),
       timezone: tz,
       dayOfWeek: p.dayOfWeek,

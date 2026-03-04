@@ -603,7 +603,7 @@ function contextAssembly(input: TriggerInput): MemoState {
 			whatsappMessageId: input.whatsappMessageId,
 			replyToMessageId: input.replyToMessageId,
 		},
-		now: getCurrentTimeContext(), // Format: [Current time: Day, DD/MM/YYYY HH:mm (ISO+offset)]
+		now: getCurrentTimeContext(), // Format: [Current time: Day, YYYY-MM-DD HH:mm, Timezone: ...] (ISO date for correct today/tomorrow resolution)
 		recentMessages,
 		longTermSummary,
 		// ... rest initialized as null/empty

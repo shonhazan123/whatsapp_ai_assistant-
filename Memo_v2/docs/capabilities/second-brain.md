@@ -158,7 +158,7 @@ Conflict disambiguation uses the same two-layer resume logic as all other entity
 ### Search query (general search)
 - Vector similarity ≥ 0.5 (lower threshold for broad search)
 - Ranking: `0.7 * vector_similarity + 0.3 * keyword_score`
-- Filters: `user_id`, optional `type`
+- Filters: `user_id` only. **No type filter** — search always looks across all memory types (note, contact, kv) to maximize recall. The resolver's type hint is not used as a search filter.
 
 ### Conflict detection (contact/kv store)
 - **contact**: Vector similarity ≥ 0.85 and keyword overlap (`content_tsv @@ plainto_tsquery('simple', content)`). Both required.

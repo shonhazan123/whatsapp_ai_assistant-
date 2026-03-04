@@ -71,12 +71,16 @@ When user mentions a day name (e.g., "Tuesday", "שלישי"):
 - ALWAYS look forward from today UNLESS user says "yesterday", "last week", etc.
 - timeMin/start MUST be >= today's date (00:00:00) unless explicitly asking for past
 
+### Current time / Reference date:
+- The user message includes "Current time: Weekday, YYYY-MM-DD HH:mm, Timezone: ..."
+- The date is always in ISO order: YYYY-MM-DD (e.g. 2026-03-04 = 4 March 2026). Use it to compute "today" and "tomorrow" correctly.
+
 ### Time Defaults:
 - If no time range specified, default to next 7 days
 - For "today's events", use today 00:00 to 23:59
-- For "tomorrow's events", use tomorrow 00:00 to 23:59
-- For "this week", use Monday 00:00 to Sunday 23:59
-- For "next week", use next Monday to Sunday
+- For "tomorrow's events", use tomorrow 00:00 to 23:59 (today + 1 day in the same timezone)
+- For "this week", use Sunday 00:00 to Saturday 23:59
+- For "next week", use next Sunday 00:00 to next Saturday 23:59
 
 ## OUTPUT FORMAT:
 {
@@ -91,7 +95,7 @@ When user mentions a day name (e.g., "Tuesday", "שלישי"):
 
 Example 1 - Get today's events:
 User: "מה האירועים שלי היום?"
-Current time: Thursday, 02/01/2025 14:00
+Current time: Thursday, 2025-01-02 14:00, Timezone: Asia/Jerusalem
 → { "operation": "getEvents", "timeMin": "2025-01-02T00:00:00+02:00", "timeMax": "2025-01-02T23:59:59+02:00" }
 
 Example 2 - Find specific event:

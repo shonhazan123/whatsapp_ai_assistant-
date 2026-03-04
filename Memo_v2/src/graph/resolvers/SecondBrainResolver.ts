@@ -164,7 +164,7 @@ Type-specific metadata:
 7. "tags" should be 1-5 relevant lowercase keywords.
 8. For contacts: ALWAYS extract "name" into metadata even if phone/email are missing.
 9. For kv: ALWAYS extract "subject" and "value" into metadata.
-10. When searching, infer the type filter if the user says "find contact Jones" → type="contact".
+10. When searching, set type=null by default. ONLY set a type filter if the user EXPLICITLY asks for a specific type (e.g. "find contact Jones" → type="contact"). Do NOT guess the type — semantic search works across all types.
 
 ## EXAMPLES
 

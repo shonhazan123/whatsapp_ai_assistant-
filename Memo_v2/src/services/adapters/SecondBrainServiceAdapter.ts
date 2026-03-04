@@ -136,7 +136,7 @@ export class SecondBrainServiceAdapter {
     const results = await vault.hybridSearch(
       this.userPhone,
       args.query,
-      { type: args.type, limit: args.limit || 5 }
+      { limit: args.limit || 5 }
     );
 
     return { success: true, data: { results } };
