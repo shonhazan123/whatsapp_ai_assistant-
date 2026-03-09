@@ -945,7 +945,7 @@ export class ReminderService {
           timeZone: user.timezone || 'Asia/Jerusalem',
           timeStyle: 'short'
         }) : '';
-        data += `- ${event.summary || 'Untitled Event'}${startTime ? ` from ${startTime}` : ''}${endTime ? ` to ${endTime}` : ''}\n`;
+        data += `- ${event.summary }${startTime ? ` from ${startTime}` : ''}${endTime ? ` to ${endTime}` : ''}\n`;
         if (event.location) {
           data += `  Location: ${event.location}\n`;
         }

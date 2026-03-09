@@ -1391,7 +1391,7 @@ export class CalendarEntityResolver implements IEntityResolver {
    * Format event for display
    */
   private formatEventDisplay(event: any): string {
-    const summary = event.summary || 'Untitled Event';
+    const summary = event.summary ;
     const start = event.start?.dateTime || event.start?.date || event.start;
 
     if (start) {

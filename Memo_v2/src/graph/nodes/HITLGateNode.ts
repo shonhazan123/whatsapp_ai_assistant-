@@ -404,7 +404,9 @@ export class HITLGateNode {
     }));
 
     // Build interrupt payload and pause the graph
-    const payload = this.buildInterruptPayloadFromPending(pending, state);
+    const payload = this. 
+    
+    buildInterruptPayloadFromPending(pending, state);
     this.addInterruptMessageToMemory(state, pending.question);
     const userResponse = interrupt(payload);
 
