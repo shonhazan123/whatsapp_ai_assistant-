@@ -173,8 +173,19 @@ export class CalendarServiceAdapter {
       };
     }
 
-    const start = args.start ? normalizeToISOWithOffset(args.start, tz) : '';
-    const end = args.end ? normalizeToISOWithOffset(args.end, tz) : '';
+    let start: string;
+    let end: string;
+
+    if (args.allDay) {
+      start = this.toDateOnly(args.start || '');
+      end = this.toDateOnly(args.end || '');
+      if (start && (!end || end <= start)) {
+        end = this.nextDay(start);
+      }
+    } else {
+      start = args.start ? normalizeToISOWithOffset(args.start, tz) : '';
+      end = args.end ? normalizeToISOWithOffset(args.end, tz) : '';
+    }
 
     const result = await calendarService.createEvent(context, {
       summary: args.summary || '',
@@ -356,16 +367,27 @@ export class CalendarServiceAdapter {
       timeMax: args.timeMax || getEndOfDayInTimezone(tz, new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)),
     });
 
-    // Apply excludeSummaries filter if provided
-    if (result.success && args.excludeSummaries && result.data?.events) {
-      const filtered = result.data.events.filter((e: any) =>
-        !args.excludeSummaries!.some(exclude =>
-          e.summary?.toLowerCase().includes(exclude.toLowerCase())
-        )
-      );
+    if (result.success && result.data?.events) {
+      let events = result.data.events;
+
+      if (args.summary) {
+        const needle = args.summary.toLowerCase();
+        events = events.filter((e: any) =>
+          e.summary?.toLowerCase().includes(needle)
+        );
+      }
+
+      if (args.excludeSummaries) {
+        events = events.filter((e: any) =>
+          !args.excludeSummaries!.some(exclude =>
+            e.summary?.toLowerCase().includes(exclude.toLowerCase())
+          )
+        );
+      }
+
       return {
         success: true,
-        data: { ...result.data, events: filtered },
+        data: { ...result.data, events },
       };
     }
 
@@ -414,6 +436,15 @@ export class CalendarServiceAdapter {
         },
         error: result.error,
       };
+    }
+
+    // Preserve duration: when start is given but end is missing, compute end from
+    // the original event's duration so multi-day events stay multi-day on postpone.
+    if (args.originalEvent && updateFields.start && !updateFields.end) {
+      const computed = this.calculateUpdatedTimes(args.originalEvent, updateFields);
+      updateFields.start = computed.start;
+      updateFields.end = computed.end;
+      if (computed.allDay) updateFields.allDay = true;
     }
 
     // If allDay requested, compute per-event all-day dates from original event
@@ -720,6 +751,25 @@ export class CalendarServiceAdapter {
       },
       error: errors.length > 0 ? `Failed to update ${errors.length} events` : undefined,
     };
+  }
+
+  /**
+   * Strip an ISO datetime or date-only string to YYYY-MM-DD.
+   * If already date-only, returns as-is.
+   */
+  private toDateOnly(value: string): string {
+    if (!value) return value;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+    return value.split('T')[0];
+  }
+
+  /**
+   * Given a YYYY-MM-DD string, return the next calendar day as YYYY-MM-DD.
+   */
+  private nextDay(dateStr: string): string {
+    const d = new Date(dateStr + 'T00:00:00');
+    d.setDate(d.getDate() + 1);
+    return d.toISOString().split('T')[0];
   }
 
   /**

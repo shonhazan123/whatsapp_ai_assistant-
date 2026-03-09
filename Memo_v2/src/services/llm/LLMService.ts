@@ -155,8 +155,21 @@ export async function callLLM(
 }
 
 /**
- * Try to fix malformed JSON by extracting JSON from text
- * Based on V1's OpenAIFunctionHelper.tryFixJson
+ * Try to repair JSON with common LLM issues (e.g. unescaped " inside string values like Hebrew י"ב).
+ * Escapes a double-quote that sits between two word characters (letters/digits, including Hebrew).
+ */
+function repairJsonStringQuotes(jsonStr: string): string {
+  // Match " that is between two word-like chars (letter, digit, underscore, Hebrew block) — not key/value boundaries
+  return jsonStr.replace(
+    /([\p{L}\p{N}\s_])"([\p{L}\p{N}_])/gu,
+    '$1\\"$2'
+  );
+}
+
+/**
+ * Try to fix malformed JSON by extracting JSON from text and repairing common issues.
+ * Based on V1's OpenAIFunctionHelper.tryFixJson.
+ * Repairs unescaped double-quotes inside string values (e.g. Hebrew gershayim י"ב).
  */
 function tryFixJson(raw: string): any {
   const trimmed = raw.trim();
@@ -166,11 +179,18 @@ function tryFixJson(raw: string): any {
     // Attempt to extract JSON from text
     const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
+      let extracted = jsonMatch[0];
       try {
-        return JSON.parse(jsonMatch[0]);
+        return JSON.parse(extracted);
       } catch (parseError) {
-        console.error('[LLMService] Failed to parse extracted JSON:', parseError);
-        throw new Error('Could not extract valid JSON from response');
+        // Try repairing unescaped quotes inside string values (e.g. Hebrew י"ב)
+        try {
+          extracted = repairJsonStringQuotes(extracted);
+          return JSON.parse(extracted);
+        } catch (repairError) {
+          console.error('[LLMService] Failed to parse extracted JSON:', parseError);
+          throw new Error('Could not extract valid JSON from response');
+        }
       }
     }
     throw error;

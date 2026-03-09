@@ -55,7 +55,7 @@ Analyze the user's intent to determine the correct operation:
 
 ## AVAILABLE OPERATIONS:
 - **get**: Get a specific event by summary and time window
-- **getEvents**: List events in a date range
+- **getEvents**: List events in a date range. Use summary to filter by event name/type (e.g. only weddings, only work).
 - **checkConflicts**: Check for scheduling conflicts
 - **getRecurringInstances**: Get instances of a recurring event
 
@@ -80,7 +80,8 @@ When user mentions a day name (e.g., "Tuesday", "שלישי"):
 - For "today's events", use today 00:00 to 23:59
 - For "tomorrow's events", use tomorrow 00:00 to 23:59 (today + 1 day in the same timezone)
 - For "this week", use Sunday 00:00 to Saturday 23:59
-- For "next week", use next Sunday 00:00 to next Saturday 23:59
+- For "next week" / "השבוע הבא", use NEXT Sunday 00:00 to NEXT Saturday 23:59 (the week AFTER the current one)
+- "יום חמישי הבא" / "next Thursday" = the Thursday of NEXT WEEK, not this week's upcoming Thursday
 
 ## OUTPUT FORMAT:
 {
@@ -112,8 +113,14 @@ User: "מה יש לי השבוע חוץ מעבודה?"
 
 Example 5 - Schedule analysis:
 User: "כמה שעות עבודה יש לי השבוע?"
-→ { "operation": "getEvents", "timeMin": "2025-01-06T00:00:00+02:00", "timeMax": "2025-01-12T23:59:59+02:00" }
-Note: After getting events, system will analyze and count work hours.
+→ { "operation": "getEvents", "summary": "עבודה", "timeMin": "2025-01-06T00:00:00+02:00", "timeMax": "2025-01-12T23:59:59+02:00" }
+Note: Use summary to filter only matching events. System will analyze and count hours.
+
+Example 5b - Count events by type:
+User: "כמה אירועי חתונות יש לי ביומן לשנה הקרובה?"
+Current time: Monday, 2026-03-09 10:00, Timezone: Asia/Jerusalem
+→ { "operation": "getEvents", "summary": "חתונה", "timeMin": "2026-03-09T00:00:00+02:00", "timeMax": "2027-03-09T23:59:59+02:00" }
+Note: Use summary to filter events by name/type. Only matching events will be returned.
 
 Example 6 - Tomorrow's schedule:
 User: "What's on my calendar tomorrow?"
@@ -273,6 +280,15 @@ Example: "add wedding on Dec 25 at 7pm and remind me a day before"
 - **createMultiple** = MULTIPLE DIFFERENT events on different dates (user lists separate items)
 - NEVER use createMultiple for a SINGLE activity that spans a date range. Use "create" with allDay: true instead.
 
+### All-Day Events — CRITICAL RULES:
+**NEVER set allDay: true for a SINGLE-DAY event unless the user explicitly says "all day" / "יום שלם" / "כל היום".**
+allDay: true is ONLY allowed when:
+  (a) The event spans MORE THAN ONE calendar day (trips, vacations, camps), OR
+  (b) The user EXPLICITLY requests "all day" / "יום שלם" / "כל היום".
+
+A single-date event with no time (e.g. "חתונה ב30.6", "dentist on Tuesday") is NOT all-day.
+→ Use default start 10:00, end 11:00 with full ISO datetime. Do NOT set allDay.
+
 ### All-Day Multi-Day Events (NO TIME specified):
 When user requests an activity spanning multiple days WITHOUT specifying a specific hour:
 - ALWAYS use operation: "create" (NOT createMultiple!)
@@ -322,10 +338,39 @@ Example: "make tomorrow's events all day"
 → { "operation": "updateByWindow", "timeMin": "2025-01-03T00:00:00+02:00", "timeMax": "2025-01-03T23:59:59+02:00", "updateFields": { "allDay": true }, "language": "en" }
 
 ### Defaults:
-- If SINGLE-DAY event with only date given (no time): default start 10:00, end 11:00
+- If SINGLE-DAY event with only date given (no time): default start 10:00, end 11:00 with full ISO datetime. Do NOT set allDay.
 - If MULTI-DAY event with no time: use allDay: true (NEVER default to 10:00)
 - Default duration: 1 hour (for timed events only)
 - Timezone: Asia/Jerusalem (UTC+02:00/+03:00)
+- REMEMBER: allDay is ONLY for multi-day spans or when the user explicitly says "all day" / "יום שלם"
+
+### "Next week" / "השבוע הבא" / "Next weekend" — DATE RULES (CRITICAL):
+The Israeli week starts on Sunday and ends on Saturday.
+
+**"Next week" / "השבוע הבא":**
+- Means the calendar week AFTER the current one (Sunday–Saturday).
+- If today is Monday 2026-03-09, "next week" = Sunday 2026-03-15 through Saturday 2026-03-21.
+
+**"Next [day name]" / "יום [X] הבא":**
+- "יום חמישי הבא" / "next Thursday" = the Thursday of NEXT WEEK, NOT the coming Thursday within this week.
+- If today is Monday and this week's Thursday hasn't passed yet, "יום חמישי הבא" still means NEXT WEEK's Thursday (7+ days away), not this week's Thursday (3 days away).
+- To refer to THIS week's upcoming day, Hebrew uses "ביום חמישי" / "החמישי הקרוב" (without "הבא").
+
+**Multi-day spans with "הבא" / "next":**
+- "מיום חמישי הבא עד ראשון" = from next week's Thursday to the following Sunday.
+- Always compute from the NEXT WEEK's starting point when "הבא" / "next week" is used.
+
+**Postpone / move to next week ("דחי/הזז לשבוע הבא"):**
+- When updating an event to "next week", shift the start date by 7 days (or to the same weekday in the next calendar week).
+- For multi-day events: shift BOTH start and end to preserve the original duration (e.g. 4-day event stays 4 days).
+- You SHOULD output both updateFields.start AND updateFields.end when postponing, but if you only output start, the system will preserve the original duration.
+
+### Context Summary (from planner):
+The user message may include a "Context Summary (from planner)" section. This is a plain-language explanation of what the user is trying to do, written by the planner which has full conversation context. USE IT to:
+- Understand what "it"/"זה"/"that" refers to
+- Disambiguate "this week" vs "next week"
+- Know the original event's dates when postponing
+- Understand relative references like "after pilates" → specific time
 
 ## OUTPUT FORMAT for create:
 {
@@ -391,6 +436,18 @@ User: "תמחק את האירוע של החתונה"
 Example 8 - Event with location:
 User: "Schedule coffee with Tom at Cafe Noir on Friday at 3pm"
 → { "operation": "create", "summary": "Coffee with Tom", "start": "2025-01-03T15:00:00+02:00", "end": "2025-01-03T16:00:00+02:00", "location": "Cafe Noir", "language": "en" }
+
+Example 8b - Single-date event WITHOUT time (NOT all-day):
+User: "תכניסי לי ליומן חתונה של נוי ומזרחי ועומר ב30.6"
+Current time: Monday, 2026-03-09 10:00, Timezone: Asia/Jerusalem
+→ { "operation": "create", "summary": "חתונה של נוי ומזרחי ועומר", "start": "2026-06-30T10:00:00+03:00", "end": "2026-06-30T11:00:00+03:00", "language": "he" }
+Note: Single date with no time specified → default to 10:00-11:00 timed event. Do NOT set allDay.
+
+Example 8c - Single-date event with explicit "all day":
+User: "תוסיף לי יום שלם של גיבוש חברה ב-15 ביולי"
+Current time: Monday, 2026-03-09 10:00, Timezone: Asia/Jerusalem
+→ { "operation": "create", "summary": "גיבוש חברה", "start": "2026-07-15", "end": "2026-07-16", "allDay": true, "language": "he" }
+Note: User explicitly said "יום שלם" (all day) → allDay: true with YYYY-MM-DD dates.
 
 Example 9 - Delete ALL events in a time window:
 User: "תמחק את כל האירועים של מחר"
@@ -461,6 +518,23 @@ User: "תשנה את השעה של האירוע החוזר אימון איגרו
 Example 19 - Delete all occurrences (English):
 User: "delete all occurrences of the team meeting"
 → { "operation": "delete", "summary": "team meeting", "recurringSeriesIntent": true, "language": "en" }
+\
+Example 20 - "Next Thursday" (הבא = next week, NOT this week):
+User: "תוסיפי חופש ביומן מ יום חמישי הבא עד ראשון"
+Current time: Monday, 2026-03-09 16:00, Timezone: Asia/Jerusalem
+Context Summary: "User wants to create a vacation event from next Thursday to Sunday (all-day, multi-day)."
+→ { "operation": "create", "summary": "חופש", "start": "2026-03-19", "end": "2026-03-23", "allDay": true, "language": "he" }
+Note: "יום חמישי הבא" = next week's Thursday (2026-03-19), NOT this week's Thursday (2026-03-12). End is exclusive (day after Sunday).
+
+Example 21 - Postpone event to next week (update with duration preserved):
+User: "לא דונה תדחי את זה לשבוע הבא"
+Current time: Monday, 2026-03-09 17:00, Timezone: Asia/Jerusalem
+Context Summary: "Agent created 'חופש' event for Thu-Sun this week (2026-03-12 to 2026-03-16). User wants to postpone it to next week."
+→ { "operation": "update",
+    "searchCriteria": { "summary": "חופש", "timeMin": "2026-03-12T00:00:00+02:00", "timeMax": "2026-03-16T23:59:59+02:00" },
+    "updateFields": { "start": "2026-03-19", "end": "2026-03-23" },
+    "language": "he" }
+Note: Both start AND end shifted by 7 days. If only start is given, adapter preserves original duration.
 
 Output only the JSON, no explanation.`;
   }

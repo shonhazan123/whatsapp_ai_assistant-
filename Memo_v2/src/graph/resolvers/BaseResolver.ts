@@ -333,6 +333,11 @@ export abstract class LLMResolver extends BaseResolver {
 
     let userMessage = `${timeContext}\n\n`;
 
+    // Planner context summary — resolved references and intent in plain language
+    if (step.contextSummary) {
+      userMessage += `## Context Summary (from planner)\n${step.contextSummary}\n\n`;
+    }
+
     // Include user's clarification response from canonical hitlResults
     const clarification = this.findClarificationResult(state);
     if (clarification) {

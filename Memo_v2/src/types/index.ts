@@ -210,6 +210,8 @@ export interface PlanStep {
 	constraints: Record<string, any>;
 	changes: Record<string, any>;
 	dependsOn: string[];
+	/** Plain-language summary of what the user intends for this step, produced by the planner using full conversation context. Helps resolvers understand references like "it"/"זה", relative time ("after pilates"), etc. */
+	contextSummary?: string;
 }
 
 export interface PlannerOutput {

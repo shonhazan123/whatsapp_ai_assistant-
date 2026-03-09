@@ -33,11 +33,32 @@ Common fields:
 
 `args.operation ∈ ['create', 'createMultiple', 'createRecurring', 'createMultipleRecurring', 'update', 'updateByWindow', 'delete', 'deleteByWindow', 'deleteBySummary', 'truncateRecurring']`
 
+### Create defaults
+
+- **Single date, no time**: Resolver defaults to a **timed event** (start 10:00, end 11:00 in user timezone). `allDay` is NOT set.
+- **Multi-day, no time**: Resolver sets `allDay: true` with `YYYY-MM-DD` dates; end date is exclusive (day after last day).
+- **Explicit "all day"**: Resolver sets `allDay: true` only when user explicitly says "all day" / "יום שלם" / "כל היום".
+- When `allDay: true`, the adapter normalizes start/end to date-only (`YYYY-MM-DD`) and ensures end > start (exclusive). `CalendarService` has a defensive normalization as a safety net.
+
 Common fields (by operation):
 - Create/update: `summary`, `start`, `end`, `description`, `location`, `attendees`, `allDay`, `reminderMinutesBefore`
 - Recurring: `startTime`, `endTime`, `days`, `until`
 - Bulk window: `timeMin`, `timeMax`, optional `excludeSummaries`
 - Update: `searchCriteria` + `updateFields`
+
+### Planner context summary
+
+Each `PlanStep` may include an optional `contextSummary` string — a plain-language sentence written by the planner that explains what the user is trying to achieve for that step. The planner has full conversation context (recent messages, latest actions) and resolves ambiguities like "it"/"זה", "next week", "after pilates" into the summary. `BaseResolver.buildUserMessage()` prepends this summary to the resolver's LLM input so the resolver can correctly determine dates, operations, and targets.
+
+### "Next week" / "next weekend" date rules
+
+- "Next week" / "השבוע הבא" = the calendar week **after** the current one.
+- "יום חמישי הבא" / "next Thursday" = the Thursday of **next** week, not the upcoming Thursday within this week.
+- The CalendarMutateResolver prompt contains explicit rules and examples for this.
+
+### Duration preservation on update
+
+When updating a single event and only `updateFields.start` is provided (no `end`), the adapter computes the new end from the original event's duration using `calculateUpdatedTimes(originalEvent, updateFields)`. This ensures multi-day events remain multi-day when the user says "postpone to next week" and the resolver only outputs a new start date.
 
 ## Entity resolution contract (semantic → IDs)
 
