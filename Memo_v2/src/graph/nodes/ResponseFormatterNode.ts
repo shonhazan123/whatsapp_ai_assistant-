@@ -764,15 +764,21 @@ export class ResponseFormatterNode extends CodeNode {
 
 		const isDeleteBySummaryBulk = action === "delete event" && typeof meta.deleted === "number" && meta.deleted > 1;
 
+		const hasSearchCriteria = data && typeof data === "object" && data.searchCriteria?.summary;
+		const isFindEvent = action === "find event" || !!hasSearchCriteria;
+
 		const context: CalendarResponseContext = {
 			isRecurring: false,
-			isRecurringSeries: meta.isRecurringSeries || false, // Check metadata first (from wrapper)
+			isRecurringSeries: meta.isRecurringSeries || false,
 			isToday: false,
 			isTomorrowOrLater: false,
 			isListing,
+			isFindEvent,
 			isBulkOperation:
 				action === "delete events by window" || action === "update events by window" || isDeleteBySummaryBulk,
 			isEmpty: events.length === 0,
+			...(hasSearchCriteria ? { searchCriteria: data.searchCriteria } : {}),
+			...(data?.timeWindow ? { timeWindow: data.timeWindow } : {}),
 		};
 
 		const now = new Date();
@@ -824,7 +830,7 @@ export class ResponseFormatterNode extends CodeNode {
 		}
 
 		console.log(
-			`[ResponseFormatter] Calendar context: isListing=${isListing}, isRecurring=${context.isRecurring}, isRecurringSeries=${context.isRecurringSeries}, eventCount=${events.length}`,
+			`[ResponseFormatter] Calendar context: isListing=${isListing}, isFindEvent=${isFindEvent}, isRecurring=${context.isRecurring}, isRecurringSeries=${context.isRecurringSeries}, eventCount=${events.length}`,
 		);
 		return context;
 	}

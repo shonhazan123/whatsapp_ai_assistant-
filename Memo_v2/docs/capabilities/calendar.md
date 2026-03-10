@@ -115,7 +115,23 @@ Source: `Memo_v2/src/graph/nodes/ExecutorNode.ts`
 
 - `ResponseFormatterNode` consumes `executionResults` and builds calendar-specific response context.
 - `ResponseWriterNode` turns the formatted context into the final user-facing text.
-- Formatting conventions live in `src/config/response-formatter-prompt.ts`.
+- `ResponseWriterNode` passes `userMessage` and `plannerSummary` into each capability writer so the LLM can reference the user's original question.
+- Formatting conventions live in the per-capability writer: `Memo_v2/src/services/responseWriters/CalendarResponseWriter.ts`.
+
+### Find-event response behavior
+
+When `context.calendar.isFindEvent === true` (user asked about a specific event):
+
+- The adapter returns **all** events in the searched period plus `searchCriteria: { summary }` and `timeWindow: { timeMin, timeMax }`.
+- The writer receives these along with the user's original message (`_metadata.userMessage`).
+- The writer performs **semantic matching** on event summaries and answers:
+  - **Match found**: reports the event details (title, date, time, location).
+  - **No match**: states the time period searched, says no match was found, and optionally mentions how many other events exist in that period.
+- The writer NEVER says a generic "no events found" when events exist but don't match the search criteria.
+
+### Default time window
+
+When the user gives no explicit time context, the resolver and adapter default to **today + 30 days**.
 
 Canonical references:
 - `Memo_v2/docs/RESPONSE_DATA_PATTERNS.md`
@@ -141,4 +157,13 @@ Canonical references:
 3. Executor calls `CalendarServiceAdapter.execute({ operation: "deleteBySummary", eventIds, ... })`.
 4. Adapter loops through `eventIds`, deletes each, returns `{ deleted: 3, events: [...] }`.
 5. ResponseFormatter detects `meta.deleted > 1` → flags `isBulkOperation`, writer produces bulk confirmation.
+
+### Find event (search with informative response)
+
+1. Planner produces `action: "find event"`, resolver outputs `{ operation: "getEvents", summary: "רופא", timeMin: "2026-03-01T...", timeMax: "2026-03-31T..." }`.
+2. Adapter fetches **all** events in March (no summary filter), returns `{ events: [...all 7...], searchCriteria: { summary: "רופא" }, timeWindow: { timeMin, timeMax } }`.
+3. ResponseFormatter sets `isFindEvent: true`, passes `searchCriteria` and `timeWindow` in context, `eventCount` reflects all events (7).
+4. CalendarResponseWriter receives all events + user message + search criteria, performs semantic matching:
+   - **Match**: "כן, יש לך ביקור אצל הרופא ב-15 במרץ ב-10:00."
+   - **No match**: "חיפשתי ביומן שלך במרץ ולא מצאתי אירוע שמתאים ל'רופא'. יש לך 7 אירועים אחרים בתקופה הזו."
 

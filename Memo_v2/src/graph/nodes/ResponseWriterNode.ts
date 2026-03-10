@@ -70,6 +70,11 @@ export class ResponseWriterNode extends CodeNode {
     const formattedResponse = state.formattedResponse;
     const language = state.user.language === 'he' ? 'he' : 'en';
     const requestId = (state.input as any).requestId;
+    const userMessage = state.input?.message || state.input?.enhancedMessage || undefined;
+    const primaryStep = state.plannerOutput?.plan?.[0];
+    const plannerSummary = primaryStep
+      ? `${primaryStep.capability}:${primaryStep.action}`
+      : undefined;
 
     // Handle errors with no formatted data
     if (state.error && !formattedResponse?.failedOperations?.length) {
@@ -107,7 +112,7 @@ export class ResponseWriterNode extends CodeNode {
     // Partial failure (some success + some failure)
     if (hasFailures && hasSuccesses) {
       console.log('[ResponseWriter] Partial failure detected, generating combined response');
-      const successResponse = await this.callCapabilityWriter(formattedResponse, state.user.userName, requestId);
+      const successResponse = await this.callCapabilityWriter(formattedResponse, state.user.userName, requestId, userMessage, plannerSummary);
       const failureExplanation = await this.generateErrorExplanation(formattedResponse.failedOperations!, language, requestId);
       const separator = language === 'he' ? '\n\nלצערי, ' : '\n\nHowever, ';
       return {
@@ -136,17 +141,19 @@ export class ResponseWriterNode extends CodeNode {
     }
 
     // Dispatch to per-capability writer
-    const successResponse = await this.callCapabilityWriter(formattedResponse, state.user.userName, requestId);
+    const successResponse = await this.callCapabilityWriter(formattedResponse, state.user.userName, requestId, userMessage, plannerSummary);
     return { finalResponse: successResponse };
   }
 
   private async callCapabilityWriter(
     formattedResponse: FormattedResponse,
     userName?: string,
-    requestId?: string
+    requestId?: string,
+    userMessage?: string,
+    plannerSummary?: string,
   ): Promise<string> {
     try {
-      return await writeResponse({ formattedResponse, userName, requestId });
+      return await writeResponse({ formattedResponse, userName, requestId, userMessage, plannerSummary });
     } catch (error: any) {
       console.error('[ResponseWriter] Capability writer failed:', error);
       return '❌ משהו השתבש. נסה שוב בבקשה.';

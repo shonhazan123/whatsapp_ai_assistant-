@@ -59,7 +59,12 @@ The result contains a _metadata field that tells you:
 - context.isRecurring: TRUE if this is recurring
 - context.isRecurringSeries: TRUE if this is a SUCCESSFUL operation on an entire recurring series
 - context.isListing: TRUE if this is a listing operation (getAll/get) - NEVER say "יצרתי" when true
+- context.calendar.isFindEvent: TRUE if the user is searching for a specific event
+- context.calendar.searchCriteria: { summary } — what the user was looking for (if searching)
+- context.calendar.timeWindow: { timeMin, timeMax } — the date range that was searched
 - operation: The operation performed (create, update, getAll, delete, etc.)
+- userMessage: The user's original message (available for context)
+- plannerSummary: Short summary of what the system planned to do
 
 **IMPORTANT:** When context.isRecurringSeries === true OR data.isRecurringSeries === true, this means the operation on the recurring series was SUCCESSFUL. This is NOT an error!
 
@@ -209,7 +214,7 @@ English format:
 - Extract times from start/end ISO strings or use start_formatted/end_formatted if available
 - NEVER omit time information when showing deleted events
 
-**Event Listing (operation: list events / getEvents, when _metadata.context.isListing is true):**
+**Event Listing (operation: list events / getEvents, when _metadata.context.isListing is true AND context.calendar.isFindEvent is false/missing):**
 - NEVER include any link (neither data.htmlLink nor per-event htmlLink). Links are only for create/update.
 - Use title, date, start, end only.
 
@@ -220,6 +225,41 @@ English format:
 
 [emoji] [title]
 🕒 [date] [start] - [end]
+
+====================================================
+📌 FIND EVENT / SEARCH (HIGHEST PRIORITY for calendar queries)
+====================================================
+
+**When context.calendar.isFindEvent === true OR data.searchCriteria exists:**
+
+This is the most important calendar response pattern. The user asked a QUESTION about their calendar (e.g. "Do I have a doctor visit this month?", "When is my meeting with Dan?"). You receive:
+
+1. **data.events** — ALL events in the searched period (not filtered)
+2. **data.searchCriteria.summary** — what the user is looking for (e.g. "רופא", "doctor")
+3. **data.timeWindow** — { timeMin, timeMax } — the date range that was searched
+4. **_metadata.userMessage** — the user's original question
+
+Your job:
+1. **Scan data.events** and look for events whose summary (title) semantically matches searchCriteria.summary. Use fuzzy/semantic matching: "ביקור רופא", "Doctor Visit", "ד\"ר כהן" all match a search for "רופא"/"doctor".
+2. **If you find matching event(s):** Answer the user's question directly with all available details:
+   - Event title, date, time (start-end), location (if available), description (if available)
+   - Be natural and conversational: "כן, יש לך ביקור אצל הרופא ב-[date] ב-[time]" / "Yes, you have a doctor visit on [date] at [time]"
+   - If multiple matches, list them all
+3. **If NO matching event found:** Tell the user clearly:
+   - State the time period you searched (derive human-readable period from timeWindow: e.g. "במרץ" / "in March", "השבוע" / "this week", "ב-30 הימים הקרובים" / "in the next 30 days")
+   - Say you didn't find what they were looking for
+   - Optionally mention how many events ARE in that period (so the user knows the calendar was checked)
+   - Example HE: "חיפשתי ביומן שלך ב[time period] ולא מצאתי אירוע שמתאים ל'[search term]'. יש לך [X] אירועים אחרים בתקופה הזו."
+   - Example EN: "I looked through your calendar for [time period] and didn't find an event matching '[search term]'. You have [X] other events in that period."
+4. **NEVER say a generic "לא מצאתי אירועים ביומן שלך"** when events exist but don't match the search. Always provide context.
+5. **NEVER include links** for find/search operations.
+
+**Time Period Formatting (from timeWindow):**
+- Same month start-to-end → "במרץ" / "in March"
+- 7-day window → "השבוע" / "this week"
+- 1-day window → "היום" / "today" or "מחר" / "tomorrow"
+- Generic → "בין [start date] ל-[end date]" / "between [start date] and [end date]"
+- 30-day window → "ב-30 הימים הקרובים" / "in the next 30 days"
 
 ====================================================
 📌 OPTIONAL CLOSER (SAFE, DOESN'T BREAK UX)
@@ -260,7 +300,10 @@ Return a generic message:
 
 export async function write(input: ResponseWriterInput): Promise<string> {
   const modelConfig = getResponseWriterModel('calendar');
-  const promptData = buildPromptData(input.formattedResponse, input.userName);
+  const promptData = buildPromptData(input.formattedResponse, input.userName, {
+    userMessage: input.userMessage,
+    plannerSummary: input.plannerSummary,
+  });
   const userMessage = JSON.stringify(promptData, null, 2);
   const response = await callLLM(
     {

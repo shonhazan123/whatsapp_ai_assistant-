@@ -1,8 +1,14 @@
 import type { FormattedResponse } from '../../types/index.js';
 
+export interface BuildPromptDataOptions {
+  userMessage?: string;
+  plannerSummary?: string;
+}
+
 export function buildPromptData(
   formattedResponse: FormattedResponse,
-  userName?: string
+  userName?: string,
+  options?: BuildPromptDataOptions,
 ): Record<string, any> {
   const isMultiStep =
     formattedResponse.stepResults && formattedResponse.stepResults.length > 1;
@@ -21,9 +27,29 @@ export function buildPromptData(
     metadata.startWithUserName = startWithUserName;
   }
 
+  if (options?.userMessage) {
+    metadata.userMessage = options.userMessage;
+  }
+  if (options?.plannerSummary) {
+    metadata.plannerSummary = options.plannerSummary;
+  }
+
+  // Normalize formattedData: if it's a single-element array wrapping an object
+  // (common for single-step results), unwrap to a plain object so writers can
+  // reference data.events / data.searchCriteria directly.
+  let dataToSpread = formattedResponse.formattedData;
+  if (
+    Array.isArray(dataToSpread) &&
+    dataToSpread.length === 1 &&
+    dataToSpread[0] &&
+    typeof dataToSpread[0] === 'object'
+  ) {
+    dataToSpread = dataToSpread[0];
+  }
+
   const promptData: Record<string, any> = {
     _metadata: metadata,
-    ...formattedResponse.formattedData,
+    ...(typeof dataToSpread === 'object' && dataToSpread !== null ? dataToSpread : {}),
   };
 
   if (isMultiStep && formattedResponse.stepResults) {

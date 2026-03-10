@@ -76,7 +76,7 @@ When user mentions a day name (e.g., "Tuesday", "שלישי"):
 - The date is always in ISO order: YYYY-MM-DD (e.g. 2026-03-04 = 4 March 2026). Use it to compute "today" and "tomorrow" correctly.
 
 ### Time Defaults:
-- If no time range specified, default to next 7 days
+- If no time range specified, default to next 30 days
 - For "today's events", use today 00:00 to 23:59
 - For "tomorrow's events", use tomorrow 00:00 to 23:59 (today + 1 day in the same timezone)
 - For "this week", use Sunday 00:00 to Saturday 23:59
@@ -171,11 +171,11 @@ Output only the JSON, no explanation.`;
         args.operation = 'getEvents';
       }
 
-      // Apply time defaults in user timezone (never server)
+      // Apply time defaults in user timezone (never server) — 30-day window
       if (!args.timeMin && !args.timeMax) {
         const tz = state.user?.timezone || state.input?.timezone || 'Asia/Jerusalem';
         args.timeMin = getStartOfDayInTimezone(tz);
-        args.timeMax = getEndOfDayInTimezone(tz, new Date(Date.now() + 7 * 24 * 60 * 60 * 1000));
+        args.timeMax = getEndOfDayInTimezone(tz, new Date(Date.now() + 30 * 24 * 60 * 60 * 1000));
       }
 
       console.log(`[${this.name}] LLM determined operation: ${args.operation}`);
@@ -195,7 +195,7 @@ Output only the JSON, no explanation.`;
         args: {
           operation: 'getEvents',
           timeMin: getStartOfDayInTimezone(tz),
-          timeMax: getEndOfDayInTimezone(tz, new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)),
+          timeMax: getEndOfDayInTimezone(tz, new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)),
           _fallback: true,
         },
       };

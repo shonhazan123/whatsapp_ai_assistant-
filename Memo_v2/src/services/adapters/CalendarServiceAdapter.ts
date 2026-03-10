@@ -362,21 +362,16 @@ export class CalendarServiceAdapter {
 
   private async getEvents(calendarService: any, context: RequestUserContext, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
     const tz = this.getUserTimezone();
-    const result = await calendarService.getEvents(context, {
-      timeMin: args.timeMin || getStartOfDayInTimezone(tz),
-      timeMax: args.timeMax || getEndOfDayInTimezone(tz, new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)),
-    });
+    const timeMin = args.timeMin || getStartOfDayInTimezone(tz);
+    const timeMax = args.timeMax || getEndOfDayInTimezone(tz, new Date(Date.now() + 30 * 24 * 60 * 60 * 1000));
+    const result = await calendarService.getEvents(context, { timeMin, timeMax });
 
     if (result.success && result.data?.events) {
       let events = result.data.events;
 
-      if (args.summary) {
-        const needle = args.summary.toLowerCase();
-        events = events.filter((e: any) =>
-          e.summary?.toLowerCase().includes(needle)
-        );
-      }
-
+      // Only apply excludeSummaries filter (explicit exclusion).
+      // Do NOT filter by args.summary — pass all events so the response
+      // writer can do semantic matching and give an informative answer.
       if (args.excludeSummaries) {
         events = events.filter((e: any) =>
           !args.excludeSummaries!.some(exclude =>
@@ -385,10 +380,16 @@ export class CalendarServiceAdapter {
         );
       }
 
-      return {
-        success: true,
-        data: { ...result.data, events },
-      };
+      const data: Record<string, any> = { ...result.data, events };
+
+      // Attach searchCriteria + timeWindow so the response writer knows
+      // what the user was looking for and the period that was searched.
+      if (args.summary) {
+        data.searchCriteria = { summary: args.summary };
+      }
+      data.timeWindow = { timeMin, timeMax };
+
+      return { success: true, data };
     }
 
     return {

@@ -418,8 +418,11 @@ export interface CalendarResponseContext {
 	isToday: boolean; // Event start is today
 	isTomorrowOrLater: boolean; // Event start is tomorrow or later
 	isListing: boolean; // getEvents operation
+	isFindEvent: boolean; // User is searching for a specific event (summary filter present)
 	isBulkOperation: boolean; // deleteByWindow, updateByWindow
 	isEmpty: boolean; // No events returned
+	searchCriteria?: { summary: string }; // What the user was looking for
+	timeWindow?: { timeMin: string; timeMax: string }; // The period that was searched
 }
 
 /**
