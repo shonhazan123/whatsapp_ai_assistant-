@@ -188,15 +188,22 @@ export class ResolverRouterNode extends CodeNode {
    */
   private async routeAndExecute(step: PlanStep, state: MemoState): Promise<RoutingResult> {
     // Check if we already have a result for this step (e.g., resuming from HITL)
-    // This prevents unnecessary LLM calls when resuming after user confirmation
     const existingResult = state.resolverResults?.get(step.id);
     if (existingResult) {
-      console.log(`[ResolverRouter] Skipping ${step.id} - already has result from previous run`);
-      return {
-        stepId: step.id,
-        resolverName: 'cached',
-        result: existingResult,
-      };
+      // Do NOT reuse a general-style result (response/text only) for a function-call capability.
+      // After replan, step may be calendar/database/etc but cache might be from general_resolver.
+      const args = existingResult.type === 'execute' ? (existingResult as any).args : undefined;
+      const looksGeneral = args && args.response !== undefined && args.operation === undefined;
+      if (step.capability !== 'general' && looksGeneral) {
+        console.log(`[ResolverRouter] Not reusing cached result for ${step.id} - calendar/function step requires operation, cache is general response`);
+      } else {
+        console.log(`[ResolverRouter] Skipping ${step.id} - already has result from previous run`);
+        return {
+          stepId: step.id,
+          resolverName: 'cached',
+          result: existingResult,
+        };
+      }
     }
     
     // Get intent hint from step.action (which now contains rough intent from Planner)

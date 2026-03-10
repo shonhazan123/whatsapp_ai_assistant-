@@ -173,8 +173,19 @@ export class CalendarServiceAdapter {
       };
     }
 
-    const start = args.start ? normalizeToISOWithOffset(args.start, tz) : '';
-    const end = args.end ? normalizeToISOWithOffset(args.end, tz) : '';
+    let start: string;
+    let end: string;
+
+    if (args.allDay) {
+      start = this.toDateOnly(args.start || '');
+      end = this.toDateOnly(args.end || '');
+      if (start && (!end || end <= start)) {
+        end = this.nextDay(start);
+      }
+    } else {
+      start = args.start ? normalizeToISOWithOffset(args.start, tz) : '';
+      end = args.end ? normalizeToISOWithOffset(args.end, tz) : '';
+    }
 
     const result = await calendarService.createEvent(context, {
       summary: args.summary || '',
@@ -351,22 +362,34 @@ export class CalendarServiceAdapter {
 
   private async getEvents(calendarService: any, context: RequestUserContext, args: CalendarOperationArgs): Promise<CalendarOperationResult> {
     const tz = this.getUserTimezone();
-    const result = await calendarService.getEvents(context, {
-      timeMin: args.timeMin || getStartOfDayInTimezone(tz),
-      timeMax: args.timeMax || getEndOfDayInTimezone(tz, new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)),
-    });
+    const timeMin = args.timeMin || getStartOfDayInTimezone(tz);
+    const timeMax = args.timeMax || getEndOfDayInTimezone(tz, new Date(Date.now() + 30 * 24 * 60 * 60 * 1000));
+    const result = await calendarService.getEvents(context, { timeMin, timeMax });
 
-    // Apply excludeSummaries filter if provided
-    if (result.success && args.excludeSummaries && result.data?.events) {
-      const filtered = result.data.events.filter((e: any) =>
-        !args.excludeSummaries!.some(exclude =>
-          e.summary?.toLowerCase().includes(exclude.toLowerCase())
-        )
-      );
-      return {
-        success: true,
-        data: { ...result.data, events: filtered },
-      };
+    if (result.success && result.data?.events) {
+      let events = result.data.events;
+
+      // Only apply excludeSummaries filter (explicit exclusion).
+      // Do NOT filter by args.summary — pass all events so the response
+      // writer can do semantic matching and give an informative answer.
+      if (args.excludeSummaries) {
+        events = events.filter((e: any) =>
+          !args.excludeSummaries!.some(exclude =>
+            e.summary?.toLowerCase().includes(exclude.toLowerCase())
+          )
+        );
+      }
+
+      const data: Record<string, any> = { ...result.data, events };
+
+      // Attach searchCriteria + timeWindow so the response writer knows
+      // what the user was looking for and the period that was searched.
+      if (args.summary) {
+        data.searchCriteria = { summary: args.summary };
+      }
+      data.timeWindow = { timeMin, timeMax };
+
+      return { success: true, data };
     }
 
     return {
@@ -414,6 +437,15 @@ export class CalendarServiceAdapter {
         },
         error: result.error,
       };
+    }
+
+    // Preserve duration: when start is given but end is missing, compute end from
+    // the original event's duration so multi-day events stay multi-day on postpone.
+    if (args.originalEvent && updateFields.start && !updateFields.end) {
+      const computed = this.calculateUpdatedTimes(args.originalEvent, updateFields);
+      updateFields.start = computed.start;
+      updateFields.end = computed.end;
+      if (computed.allDay) updateFields.allDay = true;
     }
 
     // If allDay requested, compute per-event all-day dates from original event
@@ -720,6 +752,25 @@ export class CalendarServiceAdapter {
       },
       error: errors.length > 0 ? `Failed to update ${errors.length} events` : undefined,
     };
+  }
+
+  /**
+   * Strip an ISO datetime or date-only string to YYYY-MM-DD.
+   * If already date-only, returns as-is.
+   */
+  private toDateOnly(value: string): string {
+    if (!value) return value;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+    return value.split('T')[0];
+  }
+
+  /**
+   * Given a YYYY-MM-DD string, return the next calendar day as YYYY-MM-DD.
+   */
+  private nextDay(dateStr: string): string {
+    const d = new Date(dateStr + 'T00:00:00');
+    d.setDate(d.getDate() + 1);
+    return d.toISOString().split('T')[0];
   }
 
   /**

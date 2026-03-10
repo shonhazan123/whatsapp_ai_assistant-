@@ -3,36 +3,18 @@
  * 
  * Generates the final user-facing message from formatted data.
  * 
- * According to BLUEPRINT.md section 10.2:
  * - For general responses (capability = 'general'): Use data.response directly (already LLM-generated)
- * - For function call results: Use LLM with ResponseFormatterPrompt
- * - Templates only for simple fallback cases
+ * - For function call results: Dispatch to per-capability ResponseWriter (separate LLM call per capability)
+ * - For multi-capability: Dispatch to MultiCapabilityResponseWriter (full prompt)
  * - For failed operations: Use LLM to generate contextual error explanations
- * 
- * Responsibilities:
- * - Use LLM with ResponseFormatterPrompt for function call results
- * - Pass through general responses (already LLM-generated)
- * - Ensure Memo speaks (not the capabilities)
- * - Handle Hebrew/English language differences
- * - Generate contextual error explanations for failed operations
  */
 
 import { getNodeModel } from '../../config/llm-config.js';
 import { callLLM } from '../../services/llm/LLMService.js';
+import { writeResponse } from '../../services/responseWriters/index.js';
 import type { FailedOperationContext, FormattedResponse } from '../../types/index.js';
 import type { MemoState } from '../state/MemoState.js';
 import { CodeNode } from './BaseNode.js';
-
-// Import V1 ResponseFormatterPrompt
-let ResponseFormatterPrompt: any;
-try {
-  // Path: From Memo_v2/dist/graph/nodes/ to workspace root src/config/response-formatter-prompt
-  // Up 4 levels: nodes/ -> graph/ -> dist/ -> Memo_v2/ -> workspace root
-  const promptModule = require('../../legacy/config/response-formatter-prompt');
-  ResponseFormatterPrompt = promptModule.ResponseFormatterPrompt;
-} catch (error) {
-  console.error('[ResponseWriterNode] Failed to load ResponseFormatterPrompt:', error);
-}
 
 // ============================================================================
 // ERROR EXPLANATION PROMPT
@@ -80,75 +62,65 @@ export class ResponseWriterNode extends CodeNode {
   readonly name = 'response_writer';
 
   protected async process(state: MemoState): Promise<Partial<MemoState>> {
-    // If finalResponse is already set (e.g., from CapabilityCheckNode), use it directly
     if (state.finalResponse) {
       console.log('[ResponseWriter] finalResponse already set, using it directly');
-      return {
-        finalResponse: state.finalResponse,
-      };
+      return { finalResponse: state.finalResponse };
     }
 
     const formattedResponse = state.formattedResponse;
     const language = state.user.language === 'he' ? 'he' : 'en';
     const requestId = (state.input as any).requestId;
+    const userMessage = state.input?.message || state.input?.enhancedMessage || undefined;
+    const primaryStep = state.plannerOutput?.plan?.[0];
+    const plannerSummary = primaryStep
+      ? `${primaryStep.capability}:${primaryStep.action}`
+      : undefined;
 
-    // Handle errors - but try to generate contextual explanation if possible
+    // Handle errors with no formatted data
     if (state.error && !formattedResponse?.failedOperations?.length) {
       console.log('[ResponseWriter] Writing error response (no context available)');
-      const errorMessage = language === 'he'
-        ? '❌ משהו השתבש. נסה שוב בבקשה.'
-        : '❌ Something went wrong. Please try again.';
       return {
-        finalResponse: errorMessage,
+        finalResponse: language === 'he'
+          ? '❌ משהו השתבש. נסה שוב בבקשה.'
+          : '❌ Something went wrong. Please try again.',
       };
     }
 
-    // Handle missing formatted response
     if (!formattedResponse) {
       console.log('[ResponseWriter] No formatted response, using fallback');
-      const fallbackMessage = language === 'he'
-        ? 'לא הבנתי. אפשר לנסח אחרת?'
-        : "I didn't understand. Could you rephrase?";
       return {
-        finalResponse: fallbackMessage,
+        finalResponse: language === 'he'
+          ? 'לא הבנתי. אפשר לנסח אחרת?'
+          : "I didn't understand. Could you rephrase?",
       };
     }
 
     console.log(`[ResponseWriter] Generating response for ${formattedResponse.agent}:${formattedResponse.operation}`);
 
-    // Check for failed operations that need contextual explanation
     const hasFailures = formattedResponse.failedOperations && formattedResponse.failedOperations.length > 0;
     const hasSuccesses = formattedResponse.formattedData &&
       (Array.isArray(formattedResponse.formattedData) ? formattedResponse.formattedData.length > 0 : true);
 
-    // Handle complete failure (only failures, no successes)
+    // Complete failure (only failures, no successes)
     if (hasFailures && !hasSuccesses) {
-      console.log(`[ResponseWriter] All operations failed (${formattedResponse.failedOperations!.length} failures), generating contextual explanation`);
-      const errorExplanation = await this.generateErrorExplanation(formattedResponse.failedOperations!, language, requestId);
+      console.log(`[ResponseWriter] All operations failed (${formattedResponse.failedOperations!.length} failures)`);
       return {
-        finalResponse: errorExplanation,
+        finalResponse: await this.generateErrorExplanation(formattedResponse.failedOperations!, language, requestId),
       };
     }
 
-    // Handle partial failure (some success + some failure)
+    // Partial failure (some success + some failure)
     if (hasFailures && hasSuccesses) {
-      console.log(`[ResponseWriter] Partial failure detected, generating combined response`);
-
-      // First generate success response
-      const successResponse = await this.generateSuccessResponse(formattedResponse, language, requestId, state.user.userName);
-
-      // Then generate failure explanation
+      console.log('[ResponseWriter] Partial failure detected, generating combined response');
+      const successResponse = await this.callCapabilityWriter(formattedResponse, state.user.userName, requestId, userMessage, plannerSummary);
       const failureExplanation = await this.generateErrorExplanation(formattedResponse.failedOperations!, language, requestId);
-
-      // Combine them
       const separator = language === 'he' ? '\n\nלצערי, ' : '\n\nHowever, ';
       return {
         finalResponse: successResponse + separator + failureExplanation.toLowerCase(),
       };
     }
 
-    // For general responses (capability = 'general'), use data.response directly
-    // GeneralResolver already generated the LLM response and put it in data.response
+    // General responses pass through (already LLM-generated)
     if (formattedResponse.agent === 'general') {
       console.log('[ResponseWriter] Using general response directly (already LLM-generated)');
       const generalData = Array.isArray(formattedResponse.formattedData)
@@ -156,33 +128,38 @@ export class ResponseWriterNode extends CodeNode {
         : formattedResponse.formattedData;
 
       const response = generalData?.response || generalData?.text || generalData?.message;
-
       if (response) {
-        return {
-          finalResponse: response,
-        };
+        return { finalResponse: response };
       }
 
-      // Fallback if response not found
       console.warn('[ResponseWriter] General response data missing response field');
-      const fallbackMessage = language === 'he'
-        ? 'לא הבנתי. אפשר לנסח אחרת?'
-        : "I didn't understand. Could you rephrase?";
       return {
-        finalResponse: fallbackMessage,
+        finalResponse: language === 'he'
+          ? 'לא הבנתי. אפשר לנסח אחרת?'
+          : "I didn't understand. Could you rephrase?",
       };
     }
 
-    // For function call results (calendar, database, gmail, second-brain), use LLM with ResponseFormatterPrompt
-    const successResponse = await this.generateSuccessResponse(formattedResponse, language, requestId, state.user.userName);
-    return {
-      finalResponse: successResponse,
-    };
+    // Dispatch to per-capability writer
+    const successResponse = await this.callCapabilityWriter(formattedResponse, state.user.userName, requestId, userMessage, plannerSummary);
+    return { finalResponse: successResponse };
   }
 
-  /**
-   * Generate contextual error explanation using LLM
-   */
+  private async callCapabilityWriter(
+    formattedResponse: FormattedResponse,
+    userName?: string,
+    requestId?: string,
+    userMessage?: string,
+    plannerSummary?: string,
+  ): Promise<string> {
+    try {
+      return await writeResponse({ formattedResponse, userName, requestId, userMessage, plannerSummary });
+    } catch (error: any) {
+      console.error('[ResponseWriter] Capability writer failed:', error);
+      return '❌ משהו השתבש. נסה שוב בבקשה.';
+    }
+  }
+
   private async generateErrorExplanation(
     failedOperations: FailedOperationContext[],
     language: 'he' | 'en',
@@ -190,8 +167,6 @@ export class ResponseWriterNode extends CodeNode {
   ): Promise<string> {
     try {
       const modelConfig = getNodeModel('errorExplainer');
-
-      // Build context for the LLM
       const failureDetails = failedOperations.map(op => ({
         capability: op.capability,
         operation: op.operation,
@@ -200,12 +175,9 @@ export class ResponseWriterNode extends CodeNode {
         errorMessage: op.errorMessage,
       }));
 
-      const userMessage = `Failed operations to explain (respond in ${language === 'he' ? 'Hebrew' : 'English'}):
-
-${JSON.stringify(failureDetails, null, 2)}`;
+      const userMessage = `Failed operations to explain (respond in ${language === 'he' ? 'Hebrew' : 'English'}):\n\n${JSON.stringify(failureDetails, null, 2)}`;
 
       console.log('[ResponseWriter] Calling LLM for error explanation');
-
       const response = await callLLM(
         {
           messages: [
@@ -213,129 +185,25 @@ ${JSON.stringify(failureDetails, null, 2)}`;
             { role: 'user', content: userMessage },
           ],
           model: modelConfig.model,
-          temperature: 0.5,  // Lower temperature for consistent explanations
-          maxTokens: 200,    // Short responses only
+          temperature: 0.5,
+          maxTokens: 200,
         },
         requestId
       );
 
-      if (response.content) {
-        return response.content;
-      }
-
+      if (response.content) return response.content;
       throw new Error('No content in error explanation response');
     } catch (error: any) {
       console.error('[ResponseWriter] Error explanation LLM call failed:', error);
-      // Fallback to generic but slightly more informative message
       const firstFailure = failedOperations[0];
       if (language === 'he') {
-        if (firstFailure.searchedFor) {
-          return `לא הצלחתי לבצע את הפעולה עבור "${firstFailure.searchedFor}".`;
-        }
-        return 'לא הצלחתי לבצע את הבקשה.';
-      } else {
-        if (firstFailure.searchedFor) {
-          return `I couldn't complete the operation for "${firstFailure.searchedFor}".`;
-        }
-        return "I couldn't complete the request.";
+        return firstFailure.searchedFor
+          ? `לא הצלחתי לבצע את הפעולה עבור "${firstFailure.searchedFor}".`
+          : 'לא הצלחתי לבצע את הבקשה.';
       }
-    }
-  }
-
-  /**
-   * Generate success response using ResponseFormatterPrompt
-   */
-  private async generateSuccessResponse(
-    formattedResponse: FormattedResponse,
-    language: 'he' | 'en',
-    requestId?: string,
-    userName?: string
-  ): Promise<string> {
-    console.log('[ResponseWriter] Using LLM with ResponseFormatterPrompt for function call results');
-
-    try {
-      // Get model config for response writer
-      const modelConfig = getNodeModel('responseWriter');
-
-      // Check if this is a multi-capability response
-      const isMultiStep = formattedResponse.stepResults && formattedResponse.stepResults.length > 1;
-
-      // Build the prompt data for ResponseFormatterPrompt
-      // The prompt expects JSON with _metadata field containing capability-specific context
-      const metadata: Record<string, any> = {
-        agent: formattedResponse.agent,
-        entityType: formattedResponse.entityType,
-        operation: formattedResponse.operation,
-        context: formattedResponse.context,
-        isMultiStep: isMultiStep,  // Flag for multi-capability responses
-      };
-      if (userName != null && userName !== '') {
-        metadata.userName = userName;
-        // Randomly require name at start (~50% of the time) so the agent actually uses it
-        const startWithUserName = Math.random() < 0.5;
-        metadata.startWithUserName = startWithUserName;
-        console.log(`[ResponseWriter] userName=${userName}, startWithUserName=${startWithUserName}`);
-        if (startWithUserName) {
-          console.log(`[ResponseWriter] Including user name at start for this response: ${userName}`);
-        }
-      }
-      const promptData: Record<string, any> = {
-        _metadata: metadata,
-        ...formattedResponse.formattedData,
-      };
-
-      // If multi-capability, include all step results with their individual contexts
-      if (isMultiStep && formattedResponse.stepResults) {
-        promptData.stepResults = formattedResponse.stepResults.map(sr => ({
-          capability: sr.capability,
-          action: sr.action,
-          data: sr.data,
-          context: sr.context[sr.capability as keyof typeof sr.context] || sr.context,
-        }));
-        console.log(`[ResponseWriter] Multi-step response with ${formattedResponse.stepResults.length} capabilities: ${formattedResponse.stepResults.map(sr => sr.capability).join(', ')}`);
-      }
-
-      // Log the capability-specific context for debugging
-      const ctx = formattedResponse.context;
-      console.log(`[ResponseWriter] Context for ${ctx.capability}: ${JSON.stringify(ctx[ctx.capability as keyof typeof ctx] || {})}`);
-
-
-      // Get system prompt from ResponseFormatterPrompt
-      if (!ResponseFormatterPrompt) {
-        throw new Error('ResponseFormatterPrompt not available');
-      }
-
-      const systemPrompt = ResponseFormatterPrompt.getSystemPrompt();
-
-      // Build user message with formatted data
-      const userMessage = JSON.stringify(promptData, null, 2);
-
-      // Call LLM
-      const response = await callLLM(
-        {
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userMessage },
-          ],
-          model: modelConfig.model,
-          temperature: modelConfig.temperature || 0.7,
-          maxTokens: modelConfig.maxTokens || 2000,
-        },
-        requestId
-      );
-
-      if (!response.content) {
-        throw new Error('No content in LLM response');
-      }
-
-      return response.content;
-    } catch (error: any) {
-      console.error('[ResponseWriter] LLM call failed:', error);
-      // Fallback to error message
-      const errorMessage = language === 'he'
-        ? '❌ משהו השתבש. נסה שוב בבקשה.'
-        : '❌ Something went wrong. Please try again.';
-      return errorMessage;
+      return firstFailure.searchedFor
+        ? `I couldn't complete the operation for "${firstFailure.searchedFor}".`
+        : "I couldn't complete the request.";
     }
   }
 }

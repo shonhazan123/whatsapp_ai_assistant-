@@ -45,7 +45,11 @@ ServiceAdapter → Executor → ResponseFormatterNode
     { id, summary, start, end, attendees, description, location, recurringEventId },
     // ... more events
   ],
-  count: 4
+  count: 4,
+  // Present when user searched for a specific event (find event):
+  searchCriteria?: { summary: string },
+  // Always present — the date range that was searched:
+  timeWindow?: { timeMin: string, timeMax: string }
 }
 ```
 

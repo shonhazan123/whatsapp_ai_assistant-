@@ -187,15 +187,16 @@ export class CalendarService {
 
       // Handle all-day events vs timed events
       if (request.allDay) {
-        // All-day event: use date format (YYYY-MM-DD)
-        // For all-day events, end date should be exclusive (day after last day)
-        event.start = {
-          date: request.start
-        };
-        event.end = {
-          date: request.end
-        };
-        this.logger.info(`📅 Creating all-day event from ${request.start} to ${request.end}`);
+        const startDate = this.isDateOnlyFormat(request.start) ? request.start : request.start.split('T')[0];
+        let endDate = this.isDateOnlyFormat(request.end) ? request.end : request.end.split('T')[0];
+        if (!endDate || endDate <= startDate) {
+          const d = new Date(startDate + 'T00:00:00');
+          d.setDate(d.getDate() + 1);
+          endDate = d.toISOString().split('T')[0];
+        }
+        event.start = { date: startDate };
+        event.end = { date: endDate };
+        this.logger.info(`📅 Creating all-day event from ${startDate} to ${endDate}`);
       } else {
         // Timed event: use dateTime format
         event.start = {

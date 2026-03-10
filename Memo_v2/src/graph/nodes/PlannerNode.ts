@@ -78,10 +78,19 @@ ${resolverSchemasSection}
       "action": string,
       "constraints": { "rawMessage": string, "extractedInfo"?: object },
       "changes": object,
-      "dependsOn": string[]
+      "dependsOn": string[],
+      "contextSummary": string
     }
   ]
 }
+
+### contextSummary (REQUIRED for every step)
+For each step, write ONE plain-language sentence that explains what the user is trying to achieve for this step, using all available context (conversation history, Latest Actions, references like "it"/"זה"/"that", relative time like "after X"/"next week").
+The resolver that processes this step will see this summary — so resolve ambiguities HERE:
+- If user says "תדחי את זה לשבוע הבא" and Latest Actions shows a calendar event created for this weekend → contextSummary: "User wants to postpone the 'חופש' event (currently Thu-Sun this week) to the same days next week."
+- If user says "remind me after pilates to take the bag" and conversation shows pilates is at 10am → contextSummary: "User wants a reminder shortly after 10am (when pilates ends) to take the bag."
+- If user says "תוסיפי חופש ביומן מיום חמישי הבא עד ראשון" → contextSummary: "User wants to create a vacation event from next Thursday to Sunday (all-day, multi-day)."
+- For simple requests with no ambiguity, still provide a brief summary: "User wants to create a calendar event for a meeting with Danny tomorrow at 10am."
 
 ## ROUTING DECISION TREE (USE IN THIS ORDER)
 
@@ -286,7 +295,8 @@ User: "תקבע פגישה עם דני מחר ב-10"
     "action": "create event",
     "constraints": { "rawMessage": "תקבע פגישה עם דני מחר ב-10" },
     "changes": {},
-    "dependsOn": []
+    "dependsOn": [],
+    "contextSummary": "User wants to create a calendar event: meeting with Danny tomorrow at 10am."
   }]
 }
 
@@ -408,8 +418,8 @@ User: "תמחק את התזכורת של מחר ותזכיר לי לעשות ב�
   "needsApproval": true,
   "missingFields": ["reminder_time_required"],
   "plan": [
-    { "id": "A", "capability": "database", "action": "delete reminder", "constraints": { "rawMessage": "תמחק את התזכורת של מחר" }, "changes": {}, "dependsOn": [] },
-    { "id": "B", "capability": "database", "action": "create reminder", "constraints": { "rawMessage": "תזכיר לי לעשות בדיקה בחמישי" }, "changes": {}, "dependsOn": [] }
+    { "id": "A", "capability": "database", "action": "delete reminder", "constraints": { "rawMessage": "תמחק את התזכורת של מחר" }, "changes": {}, "dependsOn": [], "contextSummary": "User wants to delete their reminder(s) for tomorrow." },
+    { "id": "B", "capability": "database", "action": "create reminder", "constraints": { "rawMessage": "תזכיר לי לעשות בדיקה בחמישי" }, "changes": {}, "dependsOn": [], "contextSummary": "User wants a reminder on Thursday to do a checkup, but didn't specify a time." }
   ]
 }
 
@@ -510,7 +520,8 @@ Latest Actions shows: [database] create reminder: "לקנות חלב" | 2026-02-
     "action": "create event",
     "constraints": { "rawMessage": "תכניסי לי את זה גם ליומן", "extractedInfo": { "summary": "לקנות חלב", "when": "2026-02-24T08:00", "source": "latestAction_reference" } },
     "changes": {},
-    "dependsOn": []
+    "dependsOn": [],
+    "contextSummary": "User wants to also add 'לקנות חלב' as a calendar event at 08:00 on 2026-02-24, same as the reminder just created."
   }]
 }
 
@@ -773,10 +784,10 @@ export class PlannerNode extends LLMNode {
         action: step.action || step.intent || 'process',
         constraints: {
           ...step.constraints,
-          // Ensure rawMessage is always present
           rawMessage: step.constraints?.rawMessage || message,
         },
         changes: step.changes || {},
+        contextSummary: step.contextSummary || step.context_summary || undefined,
         dependsOn: step.dependsOn || step.depends_on || [],
       })),
     };

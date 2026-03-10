@@ -208,8 +208,15 @@ export interface NodeModelAssignment {
     meta: string;
   };
   responseWriter: string;
+  responseWriters: {
+    database: string;
+    calendar: string;
+    gmail: string;
+    secondBrain: string;
+    multi: string;
+  };
   imageAnalysis: string;
-  errorExplainer: string;  // Lightweight model for contextual error explanations
+  errorExplainer: string;
 }
 
 /**
@@ -230,9 +237,18 @@ export const DEFAULT_NODE_MODELS: NodeModelAssignment = {
     meta: process.env.LLM_RESOLVER_META_MODEL || 'gpt-4o-mini',
   },
   
-  // Response writer: cheap, fast
+  // Response writer: cheap, fast (legacy single-model fallback)
   responseWriter: process.env.LLM_RESPONSE_WRITER_MODEL || 'gpt-4o-mini',
-  
+
+  // Per-capability response writer models
+  responseWriters: {
+    database: process.env.LLM_RESPONSE_WRITER_DATABASE_MODEL || process.env.LLM_RESPONSE_WRITER_MODEL || 'gpt-4o-mini',
+    calendar: process.env.LLM_RESPONSE_WRITER_CALENDAR_MODEL || process.env.LLM_RESPONSE_WRITER_MODEL || 'gpt-4o-mini',
+    gmail: process.env.LLM_RESPONSE_WRITER_GMAIL_MODEL || process.env.LLM_RESPONSE_WRITER_MODEL || 'gpt-4o-mini',
+    secondBrain: process.env.LLM_RESPONSE_WRITER_SECONDBRAIN_MODEL || process.env.LLM_RESPONSE_WRITER_MODEL || 'gpt-4o-mini',
+    multi: process.env.LLM_RESPONSE_WRITER_MULTI_MODEL || process.env.LLM_RESPONSE_WRITER_MODEL || 'gpt-4o-mini',
+  },
+
   // Image analysis: needs vision
   imageAnalysis: process.env.LLM_IMAGE_ANALYSIS_MODEL || 'gpt-4o',
   
@@ -257,9 +273,16 @@ export function getNodeModel(
   if (isResolver) {
     modelName = DEFAULT_NODE_MODELS.resolvers[nodeType as keyof NodeModelAssignment['resolvers']];
   } else {
-    modelName = DEFAULT_NODE_MODELS[nodeType as keyof Omit<NodeModelAssignment, 'resolvers'>];
+    modelName = DEFAULT_NODE_MODELS[nodeType as keyof Omit<NodeModelAssignment, 'resolvers' | 'responseWriters'>];
   }
   
+  return getModelConfig(modelName);
+}
+
+export type ResponseWriterCapability = keyof NodeModelAssignment['responseWriters'];
+
+export function getResponseWriterModel(capability: ResponseWriterCapability): LLMModelConfig {
+  const modelName = DEFAULT_NODE_MODELS.responseWriters[capability];
   return getModelConfig(modelName);
 }
 
