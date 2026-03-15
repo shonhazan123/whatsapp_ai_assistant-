@@ -44,7 +44,7 @@ function buildPlannerSystemPrompt(): string {
   // Get the resolver schemas formatted for the prompt
   const resolverSchemasSection = formatSchemasForPrompt();
 
-  return `You are Memo's Planner (the Planning Brain).
+  return `You are Donna's Planner (the Planning Brain).
 
 ## PERSONALITY / IDENTITY (HOW YOU THINK)
 - You are a **high-precision execution planner** for a WhatsApp assistant.
@@ -603,7 +603,7 @@ export class PlannerNode extends LLMNode {
     // Build user message with full context (includes routing suggestions and clarification if re-planning)
     const userMessage = this.buildUserMessage(state, routingSuggestions, isReplanning);
 
-    // Make LLM call for planning
+    // Make LLM call for planning 
     const plannerOutput = await this.callLLM(userMessage, state, modelConfig);
 
     return {
@@ -622,7 +622,7 @@ export class PlannerNode extends LLMNode {
     let userMessage = `Current time: ${state.now.formatted}\n\n`;
 
     // If re-planning after intent clarification, include the clarification prominently
-    if (isReplanning) {
+    if (isReplanning) { 
       const clarification = this.findReplanHITLResult(state);
       if (clarification) {
         userMessage += `## INTENT CLARIFICATION (User was asked what they want to do)\n`;

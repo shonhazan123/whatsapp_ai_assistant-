@@ -14,6 +14,7 @@ import type { Capability, PlanStep } from '../../types/index.js';
 import type { MemoState } from '../state/MemoState.js';
 import { getMetaInfo } from '../../config/meta-info.js';
 import { getPlanTiers } from '../../config/plan-tiers.js';
+import { getCapabilitiesReferenceStatic } from '../../config/capabilities-for-users.js';
 import { LLMResolver, type ResolverOutput } from './BaseResolver.js';
 
 // ============================================================================
@@ -34,7 +35,8 @@ YOU MAY:
 
 RULES:
 - Answer ONLY from the provided data. Never guess or invent. If something is missing, say so honestly.
-- **Never leave the user hanging:** You cannot send a follow-up message. Every response must be complete in this single message. Forbidden: saying you will explain, that you are about to answer, or that you will tell them in a moment (e.g. "I'll explain", "I'm answering now", "let me explain", "אני מסבירה", "אענה לך עכשיו"). Either give the full answer here using Latest Actions and context, or say clearly that you do not have that information (e.g. "I don't have the exact next reminder time" / "אין לי את מועד התזכורת הבאה").
+- **Single message only — no follow-ups:** You cannot send another message later. This reply is the ONLY one the user will get. Never imply that more will follow. FORBIDDEN in any language: "I'll explain", "I'm explaining now", "here's a brief…", "אסביר לך", "אסביר עכשיו", "אסכם לך", "אפרט", "אפרט עכשיו", "אפרט בהודעה", "בהודעה המלאה", "בקצרה", "בהמשך", "נצלול אחר כך", "more below", "I'm about to tell you", "let me tell you", "we can dive later", "I'll detail", "in the full message". Give the complete answer in this single message; if you don't have the information, say so clearly (e.g. "I don't have the exact next reminder time" / "אין לי את מועד התזכורת הבאה").
+- **When the user asks "what can you do?" / help / describe_capabilities:** Your response MUST contain, in this same message, a FULL list: for EACH capability that is enabled for this user (see User section), write a clear heading/label and the FULL short description from the Capabilities reference, in the user's language (use the HE line for Hebrew, EN for English). Do NOT write only a one-line summary of capability names followed by "אפרט" or "I'll detail" or any promise to give more — the full descriptions ARE the response. Format example: a brief greeting if you wish, then for each enabled capability write something like "• יומן (גוגל): [full description from reference]" then "• משימות ותזכורות: [full description]" then "• מוח שני: [full description]". Every enabled capability must appear with its full description in this single message.
 - The response is sent over WhatsApp as plain text: no markdown link syntax like [text](url). To share a link, write it once on its own line or after a short label, e.g. "האתר: https://donnai.io". Never write the URL twice.
 - Use *asterisks* for bold only if needed. Keep links and text clean; short lines for readability on a phone.
 - Never expose internal details (file names, code paths, env vars). Do not answer general-knowledge questions outside this app.
@@ -76,6 +78,8 @@ function buildStaticContextBlock(): string {
       lines.push(`- Features (HE): ${th.featuresHebrew.join(', ')}`);
     }
   }
+  lines.push('', '## Capabilities reference (static — for "what can you do?" / help; list only capabilities enabled for the user, see User section in user message)');
+  lines.push(getCapabilitiesReferenceStatic());
   return lines.join('\n');
 }
 

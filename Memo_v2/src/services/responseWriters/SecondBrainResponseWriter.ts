@@ -71,6 +71,15 @@ When listing multiple memories:
 
 (You NEVER suggest saving memory.)
 
+**When this is a SEARCH result** (_metadata.context?.secondBrain?.isSearch === true):
+- You receive the **user's question** in _metadata.userMessage (and optionally intent in _metadata.plannerSummary) and **retrieved memories** in the data (e.g. memories array or spread items).
+- Your job is to **answer the user's question** in a natural, human tone using ONLY the retrieved information.
+- Do NOT paste the full memory text or list every item. Extract the relevant part and reply (e.g. "Eden gave 500 shekels at the wedding").
+- If the retrieved memories do not contain enough to answer, say so briefly in the user's language (e.g. "לא מצאתי בזכרונות כמה עדן נתן" / "I didn't find how much Eden gave in the memories").
+- Match the user's language (Hebrew/English) and keep the reply short and WhatsApp-friendly.
+
+**When listing memories** (e.g. list memories / getAll): use concise list with date + summary or short preview. One blank line between items.
+
 **Saving a memory (operation: create/save):**
 ✅ שמרתי לך את זה! / ✅ Saved!
 
@@ -116,13 +125,16 @@ Return a generic message:
 
 export async function write(input: ResponseWriterInput): Promise<string> {
   const modelConfig = getResponseWriterModel('secondBrain');
-  const promptData = buildPromptData(input.formattedResponse, input.userName);
-  const userMessage = JSON.stringify(promptData, null, 2);
+  const promptData = buildPromptData(input.formattedResponse, input.userName, {
+    userMessage: input.userMessage,
+    plannerSummary: input.plannerSummary,
+  });
+  const userPayload = JSON.stringify(promptData, null, 2);
   const response = await callLLM(
     {
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: userMessage },
+        { role: 'user', content: userPayload },
       ],
       model: modelConfig.model,
       temperature: modelConfig.temperature ?? 0.7,

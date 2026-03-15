@@ -382,7 +382,8 @@ Output only the JSON, no explanation.`;
 
       const args = await this.callLLM(step, state);
 
-      if (!args.operation) {
+      if (!args.
+        operation) {
         console.warn(`[${this.name}] LLM did not return operation, defaulting to 'searchMemory'`);
         args.operation = 'searchMemory';
       }
