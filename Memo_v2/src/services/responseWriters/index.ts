@@ -12,6 +12,7 @@ const CAPABILITY_WRITERS: Record<string, (input: ResponseWriterInput) => Promise
   calendar: writeCalendar,
   gmail: writeGmail,
   secondBrain: writeSecondBrain,
+  'second-brain': writeSecondBrain,
   memory: writeSecondBrain,
 };
 

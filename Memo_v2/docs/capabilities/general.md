@@ -15,6 +15,7 @@
 |--------|------------------|
 | `Memo_v2/src/config/meta-info.ts` | Agent name, description, website URL, help links |
 | `Memo_v2/src/config/plan-tiers.ts` | Subscription tier pricing and included features |
+| `Memo_v2/src/config/capabilities-for-users.ts` | **User-facing capability descriptions** — included in GeneralResolver **system prompt** (static, cacheable) as "Capabilities reference"; user message only indicates which capabilities are enabled for this user |
 | `MemoState.user` | Name, plan tier, googleConnected, capabilities, language, timezone |
 | State (latestActions, recentMessages) | What the assistant did, recent conversation |
 
@@ -36,7 +37,7 @@ Resolver supports all of: `respond`, `greet`, `acknowledge`, `ask_about_recent_a
 
 ### Context
 
-One unified `buildUserMessage`: current time, clarification (if any), latest actions, user block, **agent information** (meta-info), **subscription plans** (plan-tiers), user account summary, recent conversation, user message and action hint.
+One unified **system prompt** (cacheable): instructions, Agent Information, Subscription Plans, **Capabilities reference** (all capabilities from `capabilities-for-users.ts`). One unified **user message**: current time, clarification (if any), latest actions, user block (including **Enabled capabilities**), recent conversation, user message and action hint. For "what can you do?" / help, the model lists only the enabled capabilities from the Capabilities reference.
 
 ### Output
 

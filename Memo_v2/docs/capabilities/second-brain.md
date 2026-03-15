@@ -152,6 +152,8 @@ Conflict disambiguation uses the same two-layer resume logic as all other entity
 - Uses generic formatter + writer behavior.
 - `SecondBrainResponseContext` includes: `isStored`, `isSearch`, `isOverride`, `memoryType`, `isEmpty`.
 - Per-item `_itemContext` includes: `isNew`, `isOverride`, `memoryType`, `hasMetadata`.
+- **Search memory**: The response writer receives the user's question (`userMessage`) and retrieved memories (full content from the adapter). It must **answer the user's question** in natural, human tone using only the retrieved data — e.g. "Eden gave 500 shekels at the wedding" — and must **not** dump the raw memory list. If the memories do not contain enough to answer, the writer says so briefly in the user's language. Retrieval continues to return full saved data; only the formatted response is answer-from-data.
+- **List memories / store memory**: Unchanged — concise list with date + preview for list; short confirmation (e.g. "Saved!") for store.
 
 ## Hybrid retrieval details
 
