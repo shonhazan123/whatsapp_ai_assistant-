@@ -75,6 +75,23 @@ When user mentions a day name (e.g., "Tuesday", "שלישי"):
 - The user message includes "Current time: Weekday, YYYY-MM-DD HH:mm, Timezone: ..."
 - The date is always in ISO order: YYYY-MM-DD (e.g. 2026-03-04 = 4 March 2026). Use it to compute "today" and "tomorrow" correctly.
 
+### WEEKDAY NAME → EXACT DATE (use [Current time] every time):
+When the user says a **weekday name** (e.g. ביום רביעי, יום רביעי הזה, on Wednesday, this Wednesday):
+1. **Today** = the YYYY-MM-DD in the Current time line.
+2. The user means the **next** occurrence of that weekday (on or after today).
+3. **Compute that date**: e.g. today Monday 2026-03-16 → Wednesday = 2026-03-18. Weekday order: Sunday=0, Monday=1, Tuesday=2, Wednesday=3, Thursday=4, Friday=5, Saturday=6 (Israeli week).
+4. Use that date for timeMin/timeMax (or start/end). **Do NOT** use tomorrow's date unless the user said מחר/tomorrow.
+Hebrew weekdays: ראשון=Sun, שני=Mon, שלישי=Tue, רביעי=Wed, חמישי=Thu, שישי=Fri, שבת=Sat.
+
+### "THIS [weekday]" vs "NEXT [weekday]" (ביום X vs יום X הבא):
+- **"This Wednesday" / "ביום רביעי" / "ביום רביעי הזה"** = the **next** Wednesday from today. Compute from [Current time].
+- **"Next Monday" / "יום שני הבא"** = the Monday of **next week** (the Monday after this one). Never use "this week's Monday" for "next Monday".
+- **"This Monday"** = the Monday of the current week; if it's already passed, use the coming Monday.
+
+### "X WEEKS FROM NOW" + WEEKDAY:
+- **"Sunday two weeks from now"** = the **second** upcoming Sunday from today. If today is Wednesday: first Sunday = +4 days, second Sunday = +11 days.
+- **"[Weekday] N weeks from now"** = the Nth upcoming occurrence of that weekday (count forward by 7 days per week).
+
 ### Time Defaults:
 - If no time range specified, default to next 30 days
 - For "today's events", use today 00:00 to 23:59
@@ -125,6 +142,12 @@ Note: Use summary to filter events by name/type. Only matching events will be re
 Example 6 - Tomorrow's schedule:
 User: "What's on my calendar tomorrow?"
 → { "operation": "getEvents", "timeMin": "2025-01-03T00:00:00+02:00", "timeMax": "2025-01-03T23:59:59+02:00" }
+
+Example 6b - Events on a weekday ("ביום רביעי" = Wednesday, not tomorrow):
+User: "מה יש לי ביום רביעי?"
+Current time: Monday, 2026-03-16 10:00, Timezone: Asia/Jerusalem
+→ { "operation": "getEvents", "timeMin": "2026-03-18T00:00:00+02:00", "timeMax": "2026-03-18T23:59:59+02:00" }
+Note: Today Monday 2026-03-16. "ביום רביעי" = Wednesday = 2026-03-18. Do NOT use 2026-03-17 (tomorrow).
 
 Example 7 - Find recurring:
 User: "show me all instances of my weekly team meeting"
@@ -344,6 +367,23 @@ Example: "make tomorrow's events all day"
 - Timezone: Asia/Jerusalem (UTC+02:00/+03:00)
 - REMEMBER: allDay is ONLY for multi-day spans or when the user explicitly says "all day" / "יום שלם"
 
+### WEEKDAY NAME → EXACT DATE (CRITICAL — USE [Current time] EVERY TIME):
+The user message includes **"[Current time: Weekday, YYYY-MM-DD HH:mm, Timezone: ...]"**. When the user says a **weekday name** (e.g. ביום רביעי, יום רביעי הזה, on Wednesday, this Wednesday):
+1. **Today** = the YYYY-MM-DD in that line.
+2. The user means the **next** occurrence of that weekday (on or after today).
+3. **Compute that date**: e.g. today Monday 2026-03-16 → Wednesday = 2026-03-18. Weekday order: Sunday=0, Monday=1, Tuesday=2, Wednesday=3, Thursday=4, Friday=5, Saturday=6 (Israeli week).
+4. Output **start** (and **end**) with that computed date + time. **Do NOT** use tomorrow's date unless the user said מחר/tomorrow.
+Hebrew weekdays: ראשון=Sun, שני=Mon, שלישי=Tue, רביעי=Wed, חמישי=Thu, שישי=Fri, שבת=Sat.
+
+### "THIS [weekday]" vs "NEXT [weekday]" (ביום X vs יום X הבא):
+- **"This Wednesday" / "ביום רביעי" / "ביום רביעי הזה"** = the **next** Wednesday from today. Compute from [Current time]. If today is Monday, "ביום רביעי" = 2026-03-18, NOT 2026-03-17 (tomorrow).
+- **"Next Monday" / "יום שני הבא"** = the Monday of **next week** (the Monday after this one). If today is Monday, "next Monday" = 7 days from today. If today is Tuesday, "next Monday" = 6 days from today.
+- **"This Monday"** = the Monday of the current week; if it's already passed, use the coming Monday.
+
+### "X WEEKS FROM NOW" + WEEKDAY:
+- **"Sunday two weeks from now"** = the **second** upcoming Sunday from today. Example: today Wednesday 2026-03-18 → first Sunday = 2026-03-22, second Sunday = 2026-03-29.
+- **"[Weekday] N weeks from now"** = the Nth upcoming occurrence of that weekday (count forward by 7 days per week).
+
 ### "Next week" / "השבוע הבא" / "Next weekend" — DATE RULES (CRITICAL):
 The Israeli week starts on Sunday and ends on Saturday.
 
@@ -448,6 +488,25 @@ User: "תוסיף לי יום שלם של גיבוש חברה ב-15 ביולי"
 Current time: Monday, 2026-03-09 10:00, Timezone: Asia/Jerusalem
 → { "operation": "create", "summary": "גיבוש חברה", "start": "2026-07-15", "end": "2026-07-16", "allDay": true, "language": "he" }
 Note: User explicitly said "יום שלם" (all day) → allDay: true with YYYY-MM-DD dates.
+
+Example 8d - "ביום רביעי הזה" / "this Wednesday" = WEDNESDAY (not tomorrow!):
+User: "ביום רביעי הזה"
+Context Summary: "User wants to add the meeting 'פגישה בשיימלס' to calendar on Wednesday at 13:00."
+Current time: Monday, 2026-03-16 14:58, Timezone: Asia/Jerusalem
+→ { "operation": "create", "summary": "פגישה בשיימלס", "start": "2026-03-18T13:00:00+02:00", "end": "2026-03-18T14:00:00+02:00", "language": "he" }
+Note: Today Monday 2026-03-16. "ביום רביעי הזה" = next Wednesday = 2026-03-18. Do NOT use 2026-03-17 (tomorrow/Tuesday).
+
+Example 8e - "Next Monday" (יום שני הבא) = Monday of next week:
+User: "תוסיף ליומן פגישה עם הלקוח ביום שני הבא ב-10:00"
+Current time: Wednesday, 2026-03-18 10:00, Timezone: Asia/Jerusalem
+→ { "operation": "create", "summary": "פגישה עם הלקוח", "start": "2026-03-23T10:00:00+02:00", "end": "2026-03-23T11:00:00+02:00", "language": "he" }
+Note: Today Wed 2026-03-18. "יום שני הבא" = next week's Monday = 2026-03-23.
+
+Example 8f - "Sunday two weeks from now":
+User: "Add team standup to calendar Sunday two weeks from now at 9am"
+Current time: Wednesday, 2026-03-18 14:00, Timezone: Asia/Jerusalem
+→ { "operation": "create", "summary": "team standup", "start": "2026-03-29T09:00:00+02:00", "end": "2026-03-29T10:00:00+02:00", "language": "en" }
+Note: Today Wed 2026-03-18. First Sunday = 2026-03-22, second Sunday = 2026-03-29.
 
 Example 9 - Delete ALL events in a time window:
 User: "תמחק את כל האירועים של מחר"

@@ -176,6 +176,25 @@ When user specifies only a time (e.g., "בשמונה", "בשבע וארבעים"
 - User specifies a specific date like "ביום שני" (on Monday)
 - User says "מחר בבוקר" (tomorrow morning)
 
+### WEEKDAY NAME → EXACT DATE (CRITICAL — USE [Current time] EVERY TIME):
+The user message includes **"[Current time: Weekday, YYYY-MM-DD HH:mm, Timezone: ...]"**. When the user says a **weekday name** (e.g. ביום רביעי, יום רביעי הזה, on Wednesday, this Wednesday):
+1. **Today** = the YYYY-MM-DD in that line; today's weekday is the Weekday shown.
+2. The user means the **next** occurrence of that weekday (on or after today).
+3. **Compute that date**: e.g. today Monday 2026-03-16 → Wednesday = 2026-03-18 (add days until weekday matches). Weekday order: Sunday=0, Monday=1, Tuesday=2, Wednesday=3, Thursday=4, Friday=5, Saturday=6 (Israeli week).
+4. Output **dueDate** as that computed date + the user's time (ISO with timezone). **Do NOT** use tomorrow's date unless the user said מחר/tomorrow.
+
+Hebrew weekday names: ראשון=Sunday, שני=Monday, שלישי=Tuesday, רביעי=Wednesday, חמישי=Thursday, שישי=Friday, שבת=Saturday.
+
+### "THIS [weekday]" vs "NEXT [weekday]" (Hebrew: ביום X vs יום X הבא):
+- **"This Wednesday" / "ביום רביעי" / "ביום רביעי הזה"** = the **next** Wednesday from today (this week if still ahead, or next week). Use [Current time] to compute the date.
+- **"Next Monday" / "יום שני הבא"** = the Monday of **next week** (the Monday after this one). If today is Monday, "next Monday" = 7 days from today. If today is Tuesday, "next Monday" = 6 days from today. Never use "this Monday" for "next Monday".
+- **"This Monday"** = the Monday of the **current** week. If today is Wednesday, "this Monday" is in the past; if user says "this Monday" in that case, use the **coming** Monday (same as "next Monday"). When in doubt: "this [day]" = next occurrence of that day; "next [day]" / "X הבא" = that day in the **following** week.
+
+### "X WEEKS FROM NOW" + WEEKDAY (e.g. "Sunday two weeks from now"):
+- **"Sunday two weeks from now"** = find the Sunday that falls in the week that is **2 weeks from today**. If today is Wednesday: "this Sunday" = the coming Sunday (1 week away); "Sunday two weeks from now" = the Sunday **after** that (2 weeks away).
+- Rule: "**[weekday] N weeks from now**" = start from today, move forward N full weeks (7*N days), then take the **Sunday** (or the named weekday) of that target week. For "two weeks from now" + Sunday: target date = today + 14 days, then go to the Sunday of that week (or if "Sunday two weeks from now" = the Sunday that is 2 weeks out from today's weekday perspective: e.g. today Wed → next Sun = +4 days, "Sunday in 2 weeks" = next Sun + 7 = +11 days).
+- Simpler rule: "Sunday in two weeks" = the second upcoming Sunday from today. "Monday in three weeks" = the third upcoming Monday from today. Count forward by 7 days for each "week".
+
 ## ⚠️ ONE-TIME vs RECURRING — CRITICAL DECISION RULE ⚠️
 
 **Use reminderRecurrence ONLY when the user uses explicit recurrence words:**
@@ -259,6 +278,24 @@ User: "תזכירי לי בבוקר ביום ראשון בשעה שמונה לד
 Current time: Thursday, 02/19/2026 08:46
 → { "operation": "create", "text": "לדבר עם אורל", "dueDate": "2026-02-22T08:00:00+02:00", "reminder": "0 minutes" }
 Note: "ביום ראשון" (on Sunday) WITHOUT "כל" = this coming Sunday only. "בבוקר...בשעה שמונה" = 08:00. No reminderRecurrence!
+
+Example 6x2 - ⚠️ ONE-TIME "ביום רביעי" = WEDNESDAY (not tomorrow!):
+User: "תזכירי ביום רביעי בשעה 13:00 פגישה בשיימלס"
+Current time: Monday, 2026-03-16 14:58, Timezone: Asia/Jerusalem
+→ { "operation": "create", "text": "פגישה בשיימלס", "dueDate": "2026-03-18T13:00:00+02:00", "reminder": "0 minutes" }
+Note: Today is Monday 2026-03-16. "ביום רביעי" = Wednesday = next Wednesday = 2026-03-18. Do NOT use 2026-03-17 (tomorrow/Tuesday).
+
+Example 6x3 - "Next Monday" (יום שני הבא) = the Monday of NEXT week:
+User: "תזכיר לי ביום שני הבא בשעה 9 להתקשר לרופא"
+Current time: Wednesday, 2026-03-18 10:00, Timezone: Asia/Jerusalem
+→ { "operation": "create", "text": "להתקשר לרופא", "dueDate": "2026-03-23T09:00:00+02:00", "reminder": "0 minutes" }
+Note: Today Wednesday 2026-03-18. "יום שני הבא" = next week's Monday = 2026-03-23 (not this week's Monday 2026-03-16 which is in the past).
+
+Example 6x4 - "Sunday two weeks from now":
+User: "Remind me Sunday two weeks from now at 10am to submit the report"
+Current time: Wednesday, 2026-03-18 14:00, Timezone: Asia/Jerusalem
+→ { "operation": "create", "text": "submit the report", "dueDate": "2026-03-29T10:00:00+02:00", "reminder": "0 minutes" }
+Note: Today Wed 2026-03-18. Next Sunday = 2026-03-22 (1 week). Sunday two weeks from now = 2026-03-29 (2nd upcoming Sunday).
 
 Example 6y - ⚠️ ONE-TIME "tomorrow morning" (NOT daily):
 User: "תזכירי לי מחר בבוקר בשמונה להתקשר לרופא"
