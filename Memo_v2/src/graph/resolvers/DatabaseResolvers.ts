@@ -165,6 +165,14 @@ When user specifies only a time (e.g., "בשמונה", "בשבע וארבעים"
   - "בערב" (evening) or "בבוקר" (morning) makes it explicit
 - Times 13:00+ (1pm+) are unambiguous (24-hour format)
 
+### Time-of-day ONLY (day + morning/evening/afternoon/night, no specific hour):
+When user says a day + time-of-day descriptor but NO specific hour (e.g. "tomorrow morning", "מחר בבוקר", "מחר בערב", "Thursday afternoon"), assign a default hour for dueDate:
+- **morning / בוקר** → 09:00 (range 08:00–11:00)
+- **afternoon / צהריים** → 14:00 (range 12:00–17:00)
+- **evening / ערב** → 18:00 (range 17:00–21:00)
+- **night / לילה** → 21:00 (range 20:00–23:00)
+Example: "תזכיר לי מחר בבוקר להתקשר" → dueDate = tomorrow 09:00. "Remind me Wednesday evening" → dueDate = that Wednesday 18:00.
+
 ### Examples of correct date inference:
 - Current time: 17:22 → "בשבע וארבעים" = TODAY at 19:47 (7:47 PM)
 - Current time: 17:22 → "בשמונה וחצי" = TODAY at 20:30 (8:30 PM)
@@ -297,11 +305,17 @@ Current time: Wednesday, 2026-03-18 14:00, Timezone: Asia/Jerusalem
 → { "operation": "create", "text": "submit the report", "dueDate": "2026-03-29T10:00:00+02:00", "reminder": "0 minutes" }
 Note: Today Wed 2026-03-18. Next Sunday = 2026-03-22 (1 week). Sunday two weeks from now = 2026-03-29 (2nd upcoming Sunday).
 
-Example 6y - ⚠️ ONE-TIME "tomorrow morning" (NOT daily):
+Example 6y - ⚠️ ONE-TIME "tomorrow morning" with specific hour (NOT daily):
 User: "תזכירי לי מחר בבוקר בשמונה להתקשר לרופא"
 Current time: Thursday, 02/19/2026 20:00
 → { "operation": "create", "text": "להתקשר לרופא", "dueDate": "2026-02-20T08:00:00+02:00", "reminder": "0 minutes" }
 Note: "מחר בבוקר" = tomorrow morning. No "כל" → one-time only. No reminderRecurrence!
+
+Example 6z - ONE-TIME with time-of-day ONLY (no specific hour) → use default for that period:
+User: "תזכיר לי מחר בבוקר לקנות חלב" or "remind me tomorrow evening to call mom"
+Current time: Thursday, 02/19/2026 20:00
+→ { "operation": "create", "text": "לקנות חלב", "dueDate": "2026-02-20T09:00:00+02:00", "reminder": "0 minutes" }
+Note: "מחר בבוקר" with no hour → use morning default 09:00. "Tomorrow evening" → use 18:00. Planner does NOT trigger HITL for these.
 
 Example 5a - Time only WITHOUT date (MUST be TODAY):
 User: "תזכיר לי בשבע וארבעים למשוך כסף"

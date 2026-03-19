@@ -3,6 +3,9 @@ import { BaseService } from './BaseService';
 
 export type UserPlanType = 'free' | 'standard' | 'pro';
 
+/** Subscription status from billing (e.g. Stripe). 'active' = can use paid features. */
+export type SubscriptionStatus = 'active' | 'canceled' | 'past_due' | 'trialing' | 'unpaid' | null;
+
 export interface UserRecord {
   id: string;
   whatsapp_number: string;
@@ -14,6 +17,10 @@ export interface UserRecord {
   onboarding_last_prompt_at: string | null;
   created_at: string;
   updated_at: string;
+  /** Billing subscription status. When not 'active', user is considered inactive and prompted to rejoin. */
+  subscription_status: SubscriptionStatus;
+  subscription_period_end: string | null;
+  cancel_at_period_end: boolean;
 }
 
 export interface UserGoogleToken {
@@ -45,7 +52,8 @@ export class UserService extends BaseService {
 
   async findById(userId: string): Promise<UserRecord | null> {
     const row = await this.executeSingleQuery<any>(
-      `SELECT id, whatsapp_number, plan_type, timezone, settings, google_email, onboarding_complete, onboarding_last_prompt_at, created_at, updated_at
+      `SELECT id, whatsapp_number, plan_type, timezone, settings, google_email, onboarding_complete, onboarding_last_prompt_at, created_at, updated_at,
+              subscription_status, subscription_period_end, cancel_at_period_end
        FROM users
        WHERE id = $1`,
       [userId]
@@ -56,7 +64,8 @@ export class UserService extends BaseService {
 
   async findByWhatsappNumber(whatsappNumber: string): Promise<UserRecord | null> {
     const row = await this.executeSingleQuery<any>(
-      `SELECT id, whatsapp_number, plan_type, timezone, settings, google_email, onboarding_complete, onboarding_last_prompt_at, created_at, updated_at
+      `SELECT id, whatsapp_number, plan_type, timezone, settings, google_email, onboarding_complete, onboarding_last_prompt_at, created_at, updated_at,
+              subscription_status, subscription_period_end, cancel_at_period_end
        FROM users
        WHERE whatsapp_number = $1`,
       [whatsappNumber]
@@ -84,7 +93,8 @@ export class UserService extends BaseService {
       `UPDATE users
        SET plan_type = $2, updated_at = NOW()
        WHERE id = $1
-       RETURNING id, whatsapp_number, plan_type, timezone, settings, google_email, onboarding_complete, onboarding_last_prompt_at, created_at, updated_at`,
+       RETURNING id, whatsapp_number, plan_type, timezone, settings, google_email, onboarding_complete, onboarding_last_prompt_at, created_at, updated_at,
+               subscription_status, subscription_period_end, cancel_at_period_end`,
       [userId, planType]
     );
 
@@ -205,7 +215,10 @@ export class UserService extends BaseService {
       onboarding_complete: row.onboarding_complete ?? false,
       onboarding_last_prompt_at: row.onboarding_last_prompt_at ?? null,
       created_at: row.created_at,
-      updated_at: row.updated_at
+      updated_at: row.updated_at,
+      subscription_status: row.subscription_status ?? null,
+      subscription_period_end: row.subscription_period_end ?? null,
+      cancel_at_period_end: row.cancel_at_period_end === true,
     };
   }
 }

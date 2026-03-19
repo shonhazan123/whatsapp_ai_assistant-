@@ -192,6 +192,23 @@ export async function handleIncomingMessage(
 			return;
 		}
 
+		// User exists but account is inactive (subscription not active) — refer to rejoin
+		const SIGN_IN_URL = "https://donnai.io/signup";
+		if (existingUser.subscription_status !== "active") {
+			logger.info(`🚫 Inactive account: ${userPhone} (subscription_status=${existingUser.subscription_status}) — sending rejoin message`);
+			if (message.id) {
+				messageIdCache.add(message.id);
+			}
+			const rawName = existingUser.settings?.user_name;
+			const name = typeof rawName === "string" && rawName.trim() ? rawName.trim() : null;
+			const rejoinMessage =
+				(name ? `היי ${name}! ` : "היי! ") +
+				"כיף לראות אותך שוב, אני רואה שהמנוי שלך לא פעיל, אבל אפשר להתחיל שוב עם הצטרפות מחדש!\n" +
+				SIGN_IN_URL;
+			await sendWhatsAppMessage(userPhone, rejoinMessage);
+			return;
+		}
+
 		let messageText = "";
 
 		// Mark message ID as processed (before any async operations)

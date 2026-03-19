@@ -360,8 +360,17 @@ Example: "תעדכני את האירועים האלה ליום שלם" (reply to
 Example: "make tomorrow's events all day"
 → { "operation": "updateByWindow", "timeMin": "2025-01-03T00:00:00+02:00", "timeMax": "2025-01-03T23:59:59+02:00", "updateFields": { "allDay": true }, "language": "en" }
 
+### Time-of-day ONLY (day + morning/evening/afternoon/night, no specific hour):
+When user says a day + time-of-day descriptor but NO specific hour (e.g. "tomorrow morning", "מחר בבוקר", "מחר בערב", "add event Thursday afternoon"), assign a default hour for start/end:
+- **morning / בוקר** → 09:00 (range 08:00–11:00). Example: start 09:00, end 10:00.
+- **afternoon / צהריים** → 14:00 (range 12:00–17:00). Example: start 14:00, end 15:00.
+- **evening / ערב** → 18:00 (range 17:00–21:00). Example: start 18:00, end 19:00.
+- **night / לילה** → 21:00 (range 20:00–23:00). Example: start 21:00, end 22:00.
+For window operations (e.g. "delete tomorrow morning's events"): use timeMin/timeMax covering that range (e.g. morning: 08:00–11:59).
+
 ### Defaults:
 - If SINGLE-DAY event with only date given (no time): default start 10:00, end 11:00 with full ISO datetime. Do NOT set allDay.
+- If SINGLE-DAY event with date + time-of-day only (e.g. "tomorrow morning"): use the time-of-day default hour above (e.g. morning → 09:00–10:00).
 - If MULTI-DAY event with no time: use allDay: true (NEVER default to 10:00)
 - Default duration: 1 hour (for timed events only)
 - Timezone: Asia/Jerusalem (UTC+02:00/+03:00)
@@ -436,6 +445,12 @@ Current time: Thursday, 02/01/2025 14:00
 Example 2 - Event with reminder:
 User: "I have a wedding on December 25th at 7pm and remind me a day before"
 → { "operation": "create", "summary": "Wedding", "start": "2025-12-25T19:00:00+02:00", "end": "2025-12-25T21:00:00+02:00", "reminderMinutesBefore": 1440, "language": "en" }
+
+Example 2b - Event with time-of-day ONLY (no specific hour) → use default for that period:
+User: "תוסיף ליומן אימון מחר בבוקר" or "add meeting tomorrow evening"
+Current time: Thursday, 02/19/2026 20:00
+→ { "operation": "create", "summary": "אימון", "start": "2026-02-20T09:00:00+02:00", "end": "2026-02-20T10:00:00+02:00", "language": "he" }
+Note: "מחר בבוקר" / "tomorrow morning" with no hour → morning default 09:00–10:00. "Tomorrow evening" → 18:00–19:00. Planner does NOT trigger HITL.
 
 Example 3 - Multi-day vacation (all-day):
 User: "צימר בצפון מ-2 עד 6 בינואר"

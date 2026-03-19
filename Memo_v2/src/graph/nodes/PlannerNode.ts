@@ -161,11 +161,18 @@ Use action hints from the RESOLVER CAPABILITIES section above. Examples:
 - **create task** = user lists things to do with NO time (e.g. "משימות שאני צריך לעשות", "להתקשר לבנק", "לקבוע עם אמא פגישה", "תוסיפי משימה X"). No time required; do NOT set missingFields for time.
 - If user said "תזכיר לי היום X" or "תזכיר לי מחר X" but did not give a time → action "create reminder" + missingFields: ["reminder_time_required"].
 
+**Valid time-of-day (do NOT interrupt / do NOT set reminder_time_required):**
+When the user gives a **day + time-of-day descriptor** (without a specific hour), that is a **valid time claim**. Do NOT set missingFields: ["reminder_time_required"] and do NOT trigger HITL. The calendar and database resolvers will assign a concrete hour within that range.
+- **Valid descriptors (English):** "tomorrow morning", "today afternoon", "tomorrow evening", "tonight", "Monday morning", "next week in the evening", etc.
+- **Valid descriptors (Hebrew):** "מחר בבוקר", "מחר בערב", "מחר בצהריים", "היום בערב", "ביום רביעי בבוקר", "מחר בלילה", etc.
+- **Time-of-day meanings:** morning/בוקר ≈ 8–11, afternoon/צהריים ≈ 12–17, evening/ערב ≈ 17–21, night/לילה ≈ 20–23. Resolvers pick a default hour (e.g. morning → 09:00) so the user does not need to specify an exact hour.
+
 ### 5) HITL signals (missingFields)
 If critical info is unclear, keep confidence low and include:
 - "reminder_time_required" - **CRITICAL for DATABASE reminders ONLY** (capability=database). A database reminder must have BOTH a specific date AND a specific time. Use when:
-  * User said "תזכיר לי" / "remind me" and gave a day/date (e.g. היום, מחר, ברביעי) but did NOT specify a time → set missingFields: ["reminder_time_required"].
+  * User said "תזכיר לי" / "remind me" and gave a day/date (e.g. היום, מחר, ברביעי) but did NOT specify a time AND did NOT use a time-of-day descriptor (morning/evening/afternoon/night or בוקר/ערב/צהריים/לילה) → set missingFields: ["reminder_time_required"].
   * User said "תזכיר לי" / "remind me" with no date and no time at all → set missingFields: ["reminder_time_required"].
+  * **Do NOT** set "reminder_time_required" when the user gave a time-of-day (e.g. "מחר בבוקר", "tomorrow morning", "היום בערב"). These are valid; resolvers will assign a default hour.
   * Do NOT use "create reminder" when the user has no time at all and is just listing things to do; use "create task" instead (see Reminder vs Task below).
   * **NEVER** set "reminder_time_required" for CALENDAR events. When user says "תזכורת ביומן" / "הודעה מראש" / "advance notice", the reminder offset is handled by the calendar resolver (reminderMinutesBefore). Do NOT set any missingFields for this.
 - "target_unclear" - ONLY when user says "delete the reminders/events" WITHOUT specifying EITHER:
@@ -243,8 +250,8 @@ User: "תזכיר לי מחר בשמונה לקנות חלב"
   }]
 }
 
-### B2) Reminder with day but NO time → missingFields, HITL
-User said "תזכיר לי" with a day (היום/מחר/יום X) but did not specify WHEN. Reminder requires exact date+time.
+### B2) Reminder with day but NO time (and no time-of-day) → missingFields, HITL
+User said "תזכיר לי" with a day (היום/מחר/יום X) but did not specify WHEN and did not say morning/evening/afternoon. Reminder requires date+time or a time-of-day descriptor.
 User: "תזכיר לי היום לצאת לחתונה"
 {
   "intentType": "operation",
@@ -257,6 +264,25 @@ User: "תזכיר לי היום לצאת לחתונה"
     "capability": "database",
     "action": "create reminder",
     "constraints": { "rawMessage": "תזכיר לי היום לצאת לחתונה" },
+    "changes": {},
+    "dependsOn": []
+  }]
+}
+
+### B2b) Reminder with day + time-of-day (e.g. tomorrow morning) → NO missingFields, NO HITL
+User gave a time-of-day descriptor (morning/evening/afternoon/night or בוקר/ערב/צהריים/לילה). This is valid; resolvers assign a default hour (e.g. morning → 09:00).
+User: "תזכיר לי מחר בבוקר לקנות חלב" or "remind me tomorrow evening to call mom"
+{
+  "intentType": "operation",
+  "confidence": 0.9,
+  "riskLevel": "low",
+  "needsApproval": false,
+  "missingFields": [],
+  "plan": [{
+    "id": "A",
+    "capability": "database",
+    "action": "create reminder",
+    "constraints": { "rawMessage": "תזכיר לי מחר בבוקר לקנות חלב" },
     "changes": {},
     "dependsOn": []
   }]
