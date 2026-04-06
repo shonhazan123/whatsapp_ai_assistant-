@@ -99,6 +99,13 @@ If user asks about bot capabilities, help, or status → capability = **general*
 Patterns: "מה אתה יכול", "what can you do", "עזרה", "help"
 Action hints: describe_capabilities, what_can_you_do, help, status, website, about_agent, plan_info, account_status
 
+### Step 1b: Morning brief / daily digest schedule (→ general, NOT database)
+If the user wants to **change**, **set**, or **choose** the **time** for the **automated morning brief** / **daily digest** / **daily summary** (the scheduled WhatsApp message with today's tasks and calendar — **account setting**, not a task reminder) → capability = **general**, action hint = **morning_brief_time**.
+
+**Route here (examples):** "change my morning brief time", "set daily digest to 9", "when can I get the morning summary", "אני רוצה לשנות את שעת הסיכום היומי", "תשני לי את שעת הבוקר" **only when** they mean the **daily digest**, not "תזכיר לי בבוקר" (that is a **database** reminder).
+
+**Do NOT** route to database or calendar for this. Donna cannot change this setting in chat; the general resolver tells the user to open **website settings** (not login).
+
 ### Step 2: Check for SECOND-BRAIN (memory storage/recall)
 If user wants to SAVE a fact, contact, or key-value info, or RECALL saved information → capability = **second-brain**
 Patterns: "תזכור ש", "remember that", "מה אמרתי על", "what did I save", "save contact", "phone is", "password is", "bill is", "שמור את הטלפון"
@@ -154,7 +161,7 @@ Use action hints from the RESOLVER CAPABILITIES section above. Examples:
 - calendar_mutate_resolver: "create event", "update event", "delete event"
 - database_task_resolver: "create task", "create reminder", "list tasks", "complete task", "delete_all_tasks", "delete_multiple_tasks", "update_all_tasks", "update_multiple_tasks"
 - database_list_resolver: "create list", "add to list" (ONLY when "list/רשימה" is mentioned)
-- general_resolver: "respond", "greet", "acknowledge", "ask_about_recent_actions", "ask_about_user", "ask_about_what_i_did", "describe_capabilities", "what_can_you_do", "help", "status", "website", "about_agent", "plan_info", "account_status" (user/account + agent/help/plan; use Latest Actions section for recent-actions questions)
+- general_resolver: "respond", "greet", "acknowledge", "ask_about_recent_actions", "ask_about_user", "ask_about_what_i_did", "describe_capabilities", "what_can_you_do", "help", "status", "website", "about_agent", "plan_info", "account_status", "morning_brief_time" (daily digest / morning brief **schedule** on WhatsApp — user must change on website; NOT a task reminder)
 
 **Reminder vs Task (database):**
 - **create reminder** = user wants to be notified at a specific date+time ("תזכיר לי מחר בשמונה", "remind me at 5pm"). Requires BOTH date AND time; if either is missing → missingFields: ["reminder_time_required"].
@@ -996,6 +1003,9 @@ export class PlannerNode extends LLMNode {
 
   private inferMetaAction(message: string): string {
     const m = message.toLowerCase();
+    if (/morning\s*brief|daily\s*digest|daily\s*summary|סיכום\s*יומי|סיכום\s*בוקר|שעת\s*הסיכום|הודעת\s*הבוקר|digest\s*time|brief\s*time|תדרוך|שעת\s*תדרוך/i.test(m)) {
+      return 'morning_brief_time';
+    }
     if (/website|אתר|כתובת|url|link/i.test(m)) return 'website';
     if (/who are you|מי אתה|what are you|מה אתה(?! יכול)/i.test(m)) return 'about_agent';
     if (/my plan|what plan|plan price|what does.*include|תוכנית|מחיר/i.test(m)) return 'plan_info';

@@ -193,6 +193,7 @@ export class ContextAssemblyNode extends CodeNode {
         google_email: null,
         onboarding_complete: false,
         onboarding_last_prompt_at: null,
+        morning_brief_time: '08:00:00',
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
         subscription_status: null,
