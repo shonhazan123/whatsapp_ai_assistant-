@@ -166,6 +166,8 @@ export interface InterruptPayload {
 		kind?: import('./hitl.js').HITLKind;
 		source?: import('./hitl.js').HITLSource;
 		expectedInput?: import('./hitl.js').HITLExpectedInput;
+		/** Planner / gate reason — used e.g. to pick WhatsApp template (yes/no vs confirm/cancel). */
+		reason?: import('./hitl.js').HITLReason;
 		returnTo?: import('./hitl.js').HITLReturnTo;
 	};
 }

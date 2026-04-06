@@ -13,6 +13,14 @@ const WHATSAPP_API_URL = "https://graph.facebook.com/v22.0";
 const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const ACCESS_TOKEN = process.env.WHATSAPP_API_TOKEN;
 
+/** Meta limits per body variable — stay conservative. */
+export const WHATSAPP_TEMPLATE_BODY_PARAM_MAX_CHARS = 1024;
+
+export function truncateWhatsAppTemplateBodyParam(text: string): string {
+	if (text.length <= WHATSAPP_TEMPLATE_BODY_PARAM_MAX_CHARS) return text;
+	return text.slice(0, WHATSAPP_TEMPLATE_BODY_PARAM_MAX_CHARS - 3) + "...";
+}
+
 export async function sendWhatsAppMessage(
 	to: string,
 	message: string,
@@ -88,6 +96,104 @@ export async function sendWhatsAppMessage(
 				message: error.message,
 				phone: to,
 				messageLength: message.length,
+			});
+		}
+		throw error;
+	}
+}
+
+export type SendWhatsAppTemplateOptions = {
+	/** When false, skip getMemoryService assistant line (e.g. HITL question already stored by HITLGateNode). Default true. */
+	persistToMemory?: boolean;
+	/** Text stored in conversation memory when persistToMemory is true; defaults to joined body params. */
+	memoryText?: string;
+};
+
+/**
+ * Send an approved WhatsApp message template (Cloud API `type: "template"`).
+ * **Not** used for normal agent chat — only for optional morning digest + optional HITL yes/no (see `whatsappGraphSend`, `ReminderService`).
+ * Body parameters map to {{1}}, {{2}}, … in template order.
+ */
+export async function sendWhatsAppTemplateMessage(
+	to: string,
+	templateName: string,
+	languageCode: string,
+	bodyParameters: string[],
+	options: SendWhatsAppTemplateOptions = {},
+): Promise<string | null> {
+	const persistToMemory = options.persistToMemory !== false;
+	try {
+		if (!PHONE_NUMBER_ID || !ACCESS_TOKEN) {
+			throw new Error("WHATSAPP_PHONE_NUMBER_ID or WHATSAPP_API_TOKEN is not set");
+		}
+		const normalizedPhone = to.replace(/^\+/, "");
+		const normalizedParams = bodyParameters.map(truncateWhatsAppTemplateBodyParam);
+
+		const response = await axios.post(
+			`${WHATSAPP_API_URL}/${PHONE_NUMBER_ID}/messages`,
+			{
+				messaging_product: "whatsapp",
+				to: normalizedPhone,
+				type: "template",
+				template: {
+					name: templateName,
+					language: { code: languageCode },
+					components: [
+						{
+							type: "body",
+							parameters: normalizedParams.map((text) => ({
+								type: "text",
+								text,
+							})),
+						},
+					],
+				},
+			},
+			{
+				headers: {
+					Authorization: `Bearer ${ACCESS_TOKEN}`,
+					"Content-Type": "application/json",
+				},
+			},
+		);
+
+		const messageId = response.data?.messages?.[0]?.id || null;
+		logger.info(
+			`Template "${templateName}" sent to ${to}${messageId ? ` (ID: ${messageId})` : ""}`,
+		);
+
+		if (persistToMemory) {
+			try {
+				const memoryText =
+					options.memoryText ?? normalizedParams.join("\n");
+				getMemoryService().addAssistantMessage(
+					to,
+					memoryText,
+					messageId || undefined,
+				);
+			} catch (memoryError) {
+				logger.warn(
+					"Failed to save template message to conversation memory:",
+					memoryError,
+				);
+			}
+		}
+
+		return messageId;
+	} catch (error: any) {
+		if (error.response) {
+			logger.error("Error sending WhatsApp template message:", {
+				status: error.response.status,
+				statusText: error.response.statusText,
+				error: error.response.data?.error || error.response.data,
+				phone: to,
+				templateName,
+			});
+		} else {
+			logger.error("Error sending WhatsApp template message:", {
+				message: error.message,
+				phone: to,
+				templateName,
 			});
 		}
 		throw error;

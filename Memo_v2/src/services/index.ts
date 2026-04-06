@@ -35,8 +35,10 @@ export {
 // WHATSAPP SERVICE (sends + stores in Memo_v2 ConversationWindow with message ID)
 // ============================================================================
 
+export { deliverMemoGraphInvokeResult } from "./whatsappGraphSend.js";
 export {
-    downloadWhatsAppMedia, markMessageAsRead, sendTypingIndicator, sendWhatsAppMessage
+    downloadWhatsAppMedia, markMessageAsRead, sendTypingIndicator, sendWhatsAppMessage,
+    sendWhatsAppTemplateMessage,
 } from "./whatsapp.js";
 
 // ============================================================================

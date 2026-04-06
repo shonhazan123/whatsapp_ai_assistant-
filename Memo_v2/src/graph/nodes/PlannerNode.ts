@@ -588,7 +588,9 @@ User: "What's my name?" or "מה השם שלי?"
 }
 
 ## HARD RULES
-- Output ONLY JSON (no markdown, no comments).
+- Output ONLY JSON (no markdown, no comments, no trailing commas).
+- **Strict JSON values**: use JSON types only (strings, numbers, booleans, null, arrays, objects). **Numbers must be numeric literals** (e.g. 1440, 90). Never output JavaScript expressions in JSON (no multiplication like 24 * 60, no operators in numeric fields, no undefined/NaN). For "one day before" calendar reminders in minutes, output the literal integer (e.g. 1440 for 24 hours).
+- In **constraints.extractedInfo** and all nested objects, never embed expressions—only literals.
 - Always include constraints.rawMessage for every step.
 - Never invent IDs.
 - Match action hints to resolver actionHints from the schema above.`;
@@ -745,9 +747,9 @@ export class PlannerNode extends LLMNode {
 
       // Validate response structure
       if (!normalized.intentType || !Array.isArray(normalized.plan)) {
-        console.warn('[PlannerNode] Invalid LLM response structure, using fallback');
+        console.warn('[PlannerNode] Invalid LLM response structure, using planner failure output');
         console.warn('[PlannerNode] Response:', JSON.stringify(response).substring(0, 500));
-        return this.createFallbackOutput(state.input.enhancedMessage || state.input.message, state);
+        return this.createPlannerFailureOutput(state.input.enhancedMessage || state.input.message);
       }
 
       // Validate and clamp confidence
@@ -788,7 +790,7 @@ export class PlannerNode extends LLMNode {
       return normalized as PlannerOutput;
     } catch (error: any) {
       console.error('[PlannerNode] LLM call failed:', error.message);
-      return this.createFallbackOutput(state.input.enhancedMessage || state.input.message, state);
+      return this.createPlannerFailureOutput(state.input.enhancedMessage || state.input.message);
     }
   }
 
@@ -970,134 +972,26 @@ export class PlannerNode extends LLMNode {
   }
 
   /**
-   * Create fallback output when LLM fails
+   * When the planner LLM returns invalid JSON or an invalid structure, do not guess capability/action.
+   * Emit intent_unclear so HITL asks the user to rephrase; resume → replan.
    */
-  private createFallbackOutput(message: string, state: MemoState): PlannerOutput {
-    // Meta intent (agent/help/plan) — route to general capability
-    if (this.matchesMetaIntent(message)) {
-      return {
-        intentType: 'meta',
-        confidence: 0.95,
-        riskLevel: 'low',
-        needsApproval: false,
-        missingFields: [],
-        plan: [{
-          id: 'A',
-          capability: 'general' as Capability,
-          action: this.inferMetaAction(message),
-          constraints: { rawMessage: message },
-          changes: {},
-          dependsOn: [],
-        }],
-      };
-    }
-
-    // Greeting
-    if (this.matchesGreeting(message)) {
-      return {
-        intentType: 'conversation',
-        confidence: 0.9,
-        riskLevel: 'low',
-        needsApproval: false,
-        missingFields: [],
-        plan: [{
-          id: 'A',
-          capability: 'general' as Capability,
-          action: 'greeting response',
-          constraints: { rawMessage: message },
-          changes: {},
-          dependsOn: [],
-        }],
-      };
-    }
-
-    // Determine capability from keywords
-    const capability = this.inferCapability(message, state);
-    const riskLevel = this.inferRiskFromMessage(message);
-
+  private createPlannerFailureOutput(message: string): PlannerOutput {
     return {
-      intentType: 'operation',
-      confidence: 0.7, // Fallback has medium confidence
-      riskLevel,
-      needsApproval: riskLevel === 'high',
-      missingFields: [],
+      intentType: 'conversation',
+      confidence: 0.45,
+      riskLevel: 'low',
+      needsApproval: false,
+      missingFields: ['intent_unclear'],
       plan: [{
         id: 'A',
-        capability,
-        action: 'process request',
+        capability: 'general' as Capability,
+        action: 'respond',
         constraints: { rawMessage: message },
         changes: {},
         dependsOn: [],
+        contextSummary: 'Planner could not parse the model plan output; user should clarify or rephrase the request.',
       }],
     };
-  }
-
-  /**
-   * Infer capability from message keywords using schema-based pattern matching
-   */
-  private inferCapability(message: string, state: MemoState): Capability {
-    // Use schema-based pattern matching first
-    const suggestions = getRoutingSuggestions(message);
-
-    if (suggestions.length > 0) {
-      const best = suggestions[0];
-
-      // Check if the capability is available
-      if (best.capability === 'calendar' && !state.user.capabilities.calendar) {
-        // Calendar not connected, fall back to database for time-based items
-        return 'database';
-      }
-      if (best.capability === 'gmail' && !state.user.capabilities.gmail) {
-        // Gmail not connected, fall back to general
-        return 'general';
-      }
-
-      console.log(`[PlannerNode] Pattern-based capability inference: ${best.capability} (score: ${best.score})`);
-      return best.capability;
-    }
-
-    // Legacy fallback patterns (in case schema matching doesn't find anything)
-
-    // Calendar patterns
-    if (/פגישה|אירוע|יומן|לוז|meeting|event|calendar|schedule|appointment/i.test(message)) {
-      return state.user.capabilities.calendar ? 'calendar' : 'database';
-    }
-
-    // Email patterns
-    if (/מייל|אימייל|email|mail|inbox/i.test(message)) {
-      return state.user.capabilities.gmail ? 'gmail' : 'general';
-    }
-
-    // Memory patterns (remember facts, contacts, key-value info)
-    if (/תזכור ש|זכור ש|שמור.*ש|שמור את הטלפון|שמור איש קשר|הסיסמא של|חשבון חשמל|remember that|save.*that|save contact|save phone|password is|bill is/i.test(message)) {
-      return 'second-brain';
-    }
-
-    // Reminder/task patterns
-    if (/תזכיר|תזכורת|להזכיר|משימה|רשימה|remind|reminder|task|todo|list/i.test(message)) {
-      return 'database';
-    }
-
-    // Default to general
-    return 'general';
-  }
-
-  /**
-   * Infer risk level from message keywords
-   */
-  private inferRiskFromMessage(message: string): 'low' | 'medium' | 'high' {
-    if (/מחק|בטל|הסר|delete|remove|cancel|שלח.*מייל|send.*mail/i.test(message)) {
-      return 'high';
-    }
-    if (/שנה|עדכן|הזז|update|change|move|modify/i.test(message)) {
-      return 'medium';
-    }
-    return 'low';
-  }
-
-  // Pattern matchers
-  private matchesMetaIntent(message: string): boolean {
-    return /what can you do|מה אתה יכול|help|עזרה|capabilities|יכולות|who are you|מי אתה|what are you|what is the website|מה האתר|מה הכתובת|my plan|what plan|תוכנית|מחיר|plan price|am i connected|google connected|מחובר לגוגל|status|סטטוס/i.test(message);
   }
 
   private inferMetaAction(message: string): string {
@@ -1109,10 +1003,6 @@ export class PlannerNode extends LLMNode {
     if (/status|סטטוס/i.test(m)) return 'status';
     if (/help|עזרה/i.test(m)) return 'help';
     return 'describe_capabilities';
-  }
-
-  private matchesGreeting(message: string): boolean {
-    return /^(שלום|היי|הי|בוקר טוב|ערב טוב|hello|hi|hey|good morning|good evening|תודה|thanks)[\s!?]*$/i.test(message.trim());
   }
 }
 

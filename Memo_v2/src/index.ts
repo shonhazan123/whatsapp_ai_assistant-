@@ -30,6 +30,7 @@ export {
 
 // Media handlers (image and audio; memory lives in Memo V2 only)
 export {
+    invokeMemoGraphFromAudio,
     processAudioMessage,
     processImageMessage
 } from "./handlers/mediaHandlers.js";
@@ -91,8 +92,10 @@ export {
 } from "./services/adapters/index.js";
 
 // WhatsApp service (all sends use Memo_v2 memory with message ID for reply context)
+export { deliverMemoGraphInvokeResult } from "./services/whatsappGraphSend.js";
 export {
-    downloadWhatsAppMedia, markMessageAsRead, sendTypingIndicator, sendWhatsAppMessage
+    downloadWhatsAppMedia, markMessageAsRead, sendTypingIndicator, sendWhatsAppMessage,
+    sendWhatsAppTemplateMessage,
 } from "./services/whatsapp.js";
 
 // Executor exports

@@ -9,7 +9,7 @@ import { ReminderRecurrence, Task, TaskService } from '../../legacy/services/dat
 import { UserService } from '../../legacy/services/database/UserService';
 import { PerformanceTracker } from '../../legacy/services/performance/PerformanceTracker';
 import { ConversationWindow } from '../../services/memory/ConversationWindow';
-import { sendWhatsAppMessage } from '../../services/whatsapp';
+import { sendWhatsAppMessage, sendWhatsAppTemplateMessage } from '../../services/whatsapp';
 import { getDatePartsInTimezone, buildDateTimeISOInZone } from '../../utils/userTimezone.js';
 
 interface User {
@@ -268,17 +268,19 @@ export class ReminderService {
       const unplannedTasks = await this.getUnplannedTasks(user.id);
       const calendarEvents = await this.getTodaysCalendarEvents(user.id, user.timezone);
       
-      let message: string;
+      let digestBody: string;
       if (plannedTasks.length > 0 || unplannedTasks.length > 0 || calendarEvents.length > 0) {
         const rawData = this.buildDailyDigestData(plannedTasks, unplannedTasks, calendarEvents, user);
-        message = await this.enhanceMessageWithAI(rawData, user.phone);
-        await sendWhatsAppMessage(user.phone, message);
+        digestBody = await this.enhanceMessageWithAI(rawData, user.phone);
       } else {
-        // No tasks or events - send empty digest message
         const rawData = this.buildEmptyDigestData(user);
-        message = await this.enhanceMessageWithAI(rawData, user.phone);
-        await sendWhatsAppMessage(user.phone, message);
+        digestBody = await this.enhanceMessageWithAI(rawData, user.phone);
       }
+      // Debug path: same WhatsApp send as production, but do not add ConversationWindow briefContext
+      // (previous behavior: only sendWhatsAppMessage + memory from that path).
+      await this.sendMorningDigestToWhatsApp(user, digestBody, {
+        recordConversationWindow: false,
+      });
     } catch (error) {
       this.loggerInstance.error(`Failed to send morning digest to ${userPhone}:`, error);
       throw error;
@@ -1032,6 +1034,61 @@ export class ReminderService {
   }
 
   /**
+   * Full message text for memory / conversation window (matches non-template send).
+   * Template in Meta should use: בוקר טוב{{1}}! ☀️ with {{1}} = name slot (space + name or empty).
+   */
+  private buildMorningDigestDisplay(user: User, digestBody: string): string {
+    const greeting = user.userName
+      ? `בוקר טוב ${user.userName} ☀️\n\n`
+      : 'בוקר טוב ☀️\n\n';
+    return greeting + digestBody;
+  }
+
+  /**
+   * Sends morning digest: **plain text by default** (`sendWhatsAppMessage`).
+   * Uses `sendWhatsAppTemplateMessage` only when `WHATSAPP_TEMPLATE_HE_MORNING` is set (proactive / outside-session policy).
+   * Graph agent replies are not sent from here.
+   *
+   * @param recordConversationWindow — When true (scheduled digest), append to ConversationWindow with briefContext.
+   *   When false (sendMorningDigestForUser debug), match legacy behavior: send only, no brief row in ConversationWindow.
+   */
+  private async sendMorningDigestToWhatsApp(
+    user: User,
+    digestBody: string,
+    options?: { recordConversationWindow?: boolean },
+  ): Promise<void> {
+    const recordConversationWindow = options?.recordConversationWindow !== false;
+    const templateName = process.env.WHATSAPP_TEMPLATE_HE_MORNING?.trim();
+    const lang = process.env.WHATSAPP_TEMPLATE_LANG_HE || 'he';
+    const display = this.buildMorningDigestDisplay(user, digestBody);
+    if (templateName) {
+      const nameSlot = user.userName ? ` ${user.userName}` : '';
+      await sendWhatsAppTemplateMessage(
+        user.phone,
+        templateName,
+        lang,
+        [nameSlot, digestBody],
+        { memoryText: display },
+      );
+    } else {
+      await sendWhatsAppMessage(user.phone, display);
+    }
+    if (recordConversationWindow) {
+      this.conversationWindow.addMessage(
+        user.phone,
+        'assistant',
+        display,
+        {
+          briefContext: {
+            type: 'morning_digest',
+            sentAt: new Date().toISOString(),
+          },
+        },
+      );
+    }
+  }
+
+  /**
    * Validate timezone string
    * Returns true if timezone is valid, false otherwise
    */
@@ -1056,33 +1113,15 @@ export class ReminderService {
         const unplannedTasks = await this.getUnplannedTasks(user.id);
         const calendarEvents = await this.getTodaysCalendarEvents(user.id, user.timezone);
         
-        let message: string;
+        let digestBody: string;
         if (plannedTasks.length > 0 || unplannedTasks.length > 0 || calendarEvents.length > 0) {
           const rawData = this.buildDailyDigestData(plannedTasks, unplannedTasks, calendarEvents, user);
-          message = await this.enhanceMessageWithAI(rawData, user.phone);
+          digestBody = await this.enhanceMessageWithAI(rawData, user.phone);
         } else {
-          // No tasks or events - send empty digest message
           const rawData = this.buildEmptyDigestData(user);
-          message = await this.enhanceMessageWithAI(rawData, user.phone);
+          digestBody = await this.enhanceMessageWithAI(rawData, user.phone);
         }
-        // Always start morning digest with "בוקר טוב [user_name]!" (or "בוקר טוב!" if no name)
-        const greeting = user.userName
-          ? `בוקר טוב ${user.userName} ☀️\n\n`
-          : 'בוקר טוב ☀️\n\n';
-        message = greeting + message;
-        await sendWhatsAppMessage(user.phone, message);
-        // Add morning brief to conversation window for context
-        this.conversationWindow.addMessage(
-          user.phone,
-          'assistant',
-          message,
-          {
-            briefContext: {
-              type: 'morning_digest',
-              sentAt: new Date().toISOString()
-            }
-          }
-        );
+        await this.sendMorningDigestToWhatsApp(user, digestBody);
         this.loggerInstance.info(`✅ Morning digest sent successfully to ${user.phone} (attempt ${attempt + 1})`);
         return true;
       } catch (error) {

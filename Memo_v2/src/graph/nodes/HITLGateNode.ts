@@ -404,9 +404,7 @@ export class HITLGateNode {
     }));
 
     // Build interrupt payload and pause the graph
-    const payload = this. 
-    
-    buildInterruptPayloadFromPending(pending, state);
+    const payload = this.buildInterruptPayloadFromPending(pending, state);
     this.addInterruptMessageToMemory(state, pending.question);
     const userResponse = interrupt(payload);
 
@@ -1206,6 +1204,7 @@ Classify this reply. Return JSON only.`;
         kind: pending.kind,
         source: pending.source,
         expectedInput: pending.expectedInput,
+        reason: pending.reason,
         returnTo: pending.returnTo,
         stepId: pending.originStepId,
         interruptedAt: Date.now(),

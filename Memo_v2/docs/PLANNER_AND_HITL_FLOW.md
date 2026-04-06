@@ -58,6 +58,8 @@ Planner writes `state.plannerOutput`:
 
 Planner also writes `state.routingSuggestions` (pattern hints) used for HITL clarification wording.
 
+**Planner parse failure:** If the planner LLM output is not valid JSON or fails structural validation, **PlannerNode** does not infer capability via heuristics. It emits a single `general` step with `missingFields: ['intent_unclear']`, so **HITL** runs (`returnTo: planner` + `replan` after the user clarifies). `LLMService` also repairs common JSON mistakes such as `24 * 60` in numeric fields by reducing them to a literal product.
+
 Planner receives `state.latestActions` (last 3, most-recent first) as a tiny hint block. When user uses referential language ("it/that/זה/אותו"), planner uses the most-recent action as the strongest candidate. Only emits `intent_unclear` when no latestAction is plausible.
 
 ## 2) HITL trigger rules

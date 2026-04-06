@@ -28,8 +28,8 @@ Common fields (selected):
 - Single-item targeting: `text` (task text hint), optional `taskId` (if known)
 - Updates: `reminderDetails`, `category`, `dueDate`, `reminder`, `reminderRecurrence`
 - Bulk:
-  - `filters` for `getAll`
-  - `where` + `patch` for `updateAll`
+  - `filters` for `getAll` — use **`filters.window: "null"`** (string) for tasks with **no `due_date`** (DB: `due_date IS NULL`); implemented in `TaskServiceAdapter.filterTasks`.
+  - `where` + `patch` for `updateAll` — same: **`where.window: "null"`** for the no-date bucket (not a separate field).
   - `where` + `preview` for `deleteAll`
   - `tasks[]` / `updates[]` for `deleteMultiple` / `updateMultiple`
 

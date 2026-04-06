@@ -66,6 +66,19 @@ Analyze the user's intent to determine the correct operation:
 - User wants to UPDATE/CHANGE → "update"
 - User wants to DELETE/REMOVE/CANCEL → "delete" or "deleteAll"
 - Multiple items mentioned → use "createMultiple" or "deleteMultiple"
+- User refers to a **group** of **existing** tasks by bucket (tasks with **no due date**, **overdue**, etc.) **and** gives a **wall-clock time** → **"updateAll"** with **"where"** + **"patch"** — **NOT** **"create"** with **"text"** set to the bucket phrase
+
+### BULK BUCKET + WALL TIME → updateAll (NOT create)
+
+When the user schedules a time for **many existing tasks** named only by **category** (not by task title):
+
+- **Phrases like** "remind me about [bucket] at [time]" / "תזכיר לי על [bucket] ב-[time]" / "schedule all [bucket] for [time]" mean: set **dueDate** (and **reminder: "0 minutes"**) on **every** matching task — use **"updateAll"**.
+
+- **Tasks with no due date** (English: unplanned, no date, without a date; Hebrew: **משימות לא מתוזמנות**, **ללא תאריך**, **בלי תאריך**, **לא מתוזמנות**): use **"where": { "window": "null" }** — the string **"null"** means **due_date IS NULL** (same as the DB). Do **not** use **"where.type": "unplanned"** for this bucket.
+
+- **Overdue tasks** (English: overdue; Hebrew: **משימות שעברו זמנם**, **שעברו**, **עבר את הזמן**): **"where": { "window": "overdue" }**.
+
+- **"patch"** for fire-at-wall-time: **"dueDate"** (ISO, use [Current time] for date rules) and **"reminder": "0 minutes"**.
 
 ## CONTEXT EXTRACTION RULES
 
@@ -101,7 +114,7 @@ The user message you receive may be enhanced with context:
 - **getAll**: List all tasks with optional filters
 - **update**: Update task properties or add reminder
 - **updateMultiple**: Update multiple tasks at once (use "updates" array with "text" to identify each task)
-- **updateAll**: Update all tasks matching a filter (use for bulk changes like "move all overdue to tomorrow")
+- **updateAll**: Update all tasks matching a filter (use for bulk changes like "move all overdue to tomorrow", or "remind me about unplanned tasks at 5:30 PM" with **where.window** set to string **null** (no due date) or **overdue**)
 - **delete**: Delete a single task
 - **deleteMultiple**: Delete multiple specific tasks (use "tasks" array with "text" to identify each)
 - **deleteAll**: Delete all tasks matching a filter (with optional "where" filter)
@@ -366,7 +379,7 @@ User: "מה התזכורות החוזרות שלי?"
 
 Example 7c - List tasks without dates:
 User: "מה המשימות שלי ללא תאריך?"
-→ { "operation": "getAll", "filters": { "type": "unplanned" } }
+→ { "operation": "getAll", "filters": { "window": "null" } }
 
 Example 7d - List overdue tasks:
 User: "מה עבר את הזמן?"
@@ -414,9 +427,19 @@ Example 15 - Delete all overdue tasks:
 User: "תמחק את כל המשימות שעברו"
 → { "operation": "deleteAll", "where": { "window": "overdue" }, "preview": false }
 
-Example 16 - Update all unplanned tasks (no date) to tomorrow morning:
+Example 16 - Update all tasks with no due date to tomorrow morning:
 User: "תעדכן את המשימות הלא מתוכננות למחר בבוקר"
-→ { "operation": "updateAll", "where": { "type": "unplanned" }, "patch": { "dueDate": "2025-01-03T08:00:00+02:00" } }
+→ { "operation": "updateAll", "where": { "window": "null" }, "patch": { "dueDate": "2025-01-03T08:00:00+02:00", "reminder": "0 minutes" } }
+
+Example 16a - "Remind me" phrasing for no-due-date bucket + time (bulk, NOT create):
+User: "Remind me about the unplanned tasks at 5:30 PM"
+Current time: Monday, 2026-04-06 12:00, Timezone: Asia/Jerusalem
+→ { "operation": "updateAll", "where": { "window": "null" }, "patch": { "dueDate": "2026-04-06T17:30:00+03:00", "reminder": "0 minutes" } }
+
+Example 16b - Hebrew: remind about tasks without a date at a specific time:
+User: "תזכיר לי על משימות לא מתוזמנות בשבע וחצי בערב"
+Current time: Monday, 2026-04-06 14:00, Timezone: Asia/Jerusalem
+→ { "operation": "updateAll", "where": { "window": "null" }, "patch": { "dueDate": "2026-04-06T19:30:00+03:00", "reminder": "0 minutes" } }
 
 Example 17 - Delete all recurring reminders:
 User: "תמחק את כל התזכורות החוזרות"
@@ -478,8 +501,8 @@ Output only the JSON, no explanation. NEVER include IDs you don't have.`;
               category: { type: 'string' },
               window: { 
                 type: 'string', 
-                enum: ['today', 'tomorrow', 'this_week', 'overdue', 'upcoming'],
-                description: 'Time window: today, tomorrow, this_week, overdue, upcoming'
+                enum: ['today', 'tomorrow', 'this_week', 'overdue', 'upcoming', 'null'],
+                description: 'Time window: today, tomorrow, this_week, overdue, upcoming. Use string "null" for tasks with no due_date (due_date IS NULL).',
               },
               type: {
                 type: 'string',
@@ -519,8 +542,8 @@ Output only the JSON, no explanation. NEVER include IDs you don't have.`;
             properties: {
               window: { 
                 type: 'string', 
-                enum: ['today', 'this_week', 'overdue', 'upcoming', 'all'],
-                description: 'Time window filter: today, this_week, overdue, upcoming, all' 
+                enum: ['today', 'this_week', 'overdue', 'upcoming', 'all', 'null'],
+                description: 'Time window: today, this_week, overdue, upcoming, all. Use string "null" for tasks with no due_date (due_date IS NULL).' 
               },
               type: {
                 type: 'string',
@@ -639,13 +662,61 @@ Output only the JSON, no explanation. NEVER include IDs you don't have.`;
     { pattern: /\b(update|change|move|modify|reschedule)\b/i, weight: 2, label: 'update/change', operation: 'update' },
   ];
 
+  /** Phrases suggesting "tasks with no due date" bucket → where.window "null" */
+  private static readonly BULK_BUCKET_NO_DUE_DATE: RegExp[] = [
+    /\bunplanned\b/i,
+    /\bno\s+date\b/i,
+    /\bwithout\s+a\s+date\b/i,
+    /משימות\s+לא\s+מתוזמנות/i,
+    /לא\s+מתוזמנות/i,
+    /ללא\s+תאריך/i,
+    /בלי\s+תאריך/i,
+  ];
+
+  /** Phrases suggesting overdue bucket → where.window overdue */
+  private static readonly BULK_BUCKET_OVERDUE: RegExp[] = [
+    /\boverdue\b/i,
+    /משימות\s+שעברו/i,
+    /שעברו\s+זמנם/i,
+    /עבר\s*(את\s*)?הזמן/i,
+  ];
+
+  /** Wall-clock or time-of-day (co-occurring with bucket + schedule verb → likely updateAll) */
+  private static readonly BULK_TIME_SIGNALS: RegExp[] = [
+    /\d{1,2}:\d{2}/,
+    /בשעה/i,
+    /\bat\s+\d/i,
+    /\b\d{1,2}\s*(?::\d{2})?\s*(am|pm)\b/i,
+    /בשבע|בשמונה|בחמש|בתשע|בערב|בבוקר|אחרי\s*הצהריים/i,
+  ];
+
+  private static readonly BULK_SCHEDULE_VERBS: RegExp[] = [
+    /תזכיר/,
+    /\bremind\b/i,
+    /עדכן|שנה|הזז|תזמן/i,
+    /\b(update|change|move|reschedule|schedule)\b/i,
+  ];
+
+  /**
+   * True when message likely means bulk schedule (task group + time), not create-one-task.
+   */
+  private matchesBulkScheduleHint(message: string): boolean {
+    const hasNoDueBucket = DatabaseTaskResolver.BULK_BUCKET_NO_DUE_DATE.some(r => r.test(message));
+    const hasOverdueBucket = DatabaseTaskResolver.BULK_BUCKET_OVERDUE.some(r => r.test(message));
+    const hasBucket = hasNoDueBucket || hasOverdueBucket;
+    const hasTime = DatabaseTaskResolver.BULK_TIME_SIGNALS.some(r => r.test(message));
+    const hasVerb = DatabaseTaskResolver.BULK_SCHEDULE_VERBS.some(r => r.test(message));
+    return hasBucket && hasTime && hasVerb;
+  }
+
   /**
    * Analyze message keywords and return scored operation hints.
-   * Returns { reminderType, crudHint, matchDetails } for LLM guidance.
+   * Returns { reminderType, crudHint, bulkScheduleHint } for LLM guidance.
    */
   private analyzeOperationHints(message: string): {
     reminderType: { type: string; score: number; matched: string[] }[];
     crudHint: { operation: string; score: number; matched: string[] } | null;
+    bulkScheduleHint: string | null;
   } {
     const scoreGroup = (
       keywords: Array<{ pattern: RegExp; weight: number; label: string }>,
@@ -688,7 +759,11 @@ Output only the JSON, no explanation. NEVER include IDs you don't have.`;
       }
     }
 
-    return { reminderType, crudHint };
+    const bulkScheduleHint = this.matchesBulkScheduleHint(message)
+      ? '**Bulk schedule**: The user may be naming a **task group** (tasks with **no due date** → `"where": { "window": "null" }` — string **null** = due_date IS NULL; **overdue** → `"where": { "window": "overdue" }`) plus a **wall time**. Prefer **`operation`: `"updateAll"`** with **`where`** + **`patch`** (`dueDate` + `reminder`: `"0 minutes"`), **not** **`create`** with **`text`** = the bucket phrase.'
+      : null;
+
+    return { reminderType, crudHint, bulkScheduleHint };
   }
 
   /**
@@ -719,6 +794,10 @@ Output only the JSON, no explanation. NEVER include IDs you don't have.`;
       lines.push(`CRUD signal: **${hints.crudHint.operation}** (score=${hints.crudHint.score.toFixed(1)}, matched: "${hints.crudHint.matched.join('", "')}")`);
     }
 
+    if (hints.bulkScheduleHint) {
+      lines.push(hints.bulkScheduleHint);
+    }
+
     lines.push('');
     return lines.join('\n');
   }
@@ -734,12 +813,14 @@ Output only the JSON, no explanation. NEVER include IDs you don't have.`;
 
     // Inject pre-analysis hints
     const hints = this.analyzeOperationHints(message);
-    const hasHints = hints.reminderType.length > 0 || hints.crudHint !== null;
+    const hasHints =
+      hints.reminderType.length > 0 || hints.crudHint !== null || hints.bulkScheduleHint !== null;
     if (hasHints) {
       userMessage += this.formatOperationHints(hints);
       console.log(
         `[${this.name}] Operation hints: reminder=${hints.reminderType.map(r => `${r.type}(${r.score})`).join(',')}` +
-        (hints.crudHint ? `, crud=${hints.crudHint.operation}(${hints.crudHint.score})` : ''),
+        (hints.crudHint ? `, crud=${hints.crudHint.operation}(${hints.crudHint.score})` : '') +
+        (hints.bulkScheduleHint ? ', bulkSchedule=1' : ''),
       );
     }
 

@@ -167,6 +167,17 @@ function repairJsonStringQuotes(jsonStr: string): string {
 }
 
 /**
+ * LLMs sometimes emit JavaScript in JSON values, e.g. "reminderMinutesBefore": 24 * 60.
+ * Replace `:<ws><int><ws>*<ws><int>` with the computed product.
+ */
+function repairJsonMultiplicationLiterals(jsonStr: string): string {
+  return jsonStr.replace(/:\s*(\d+)\s*\*\s*(\d+)/g, (_m, a, b) => {
+    const product = Number(a) * Number(b);
+    return `: ${String(product)}`;
+  });
+}
+
+/**
  * Try to fix malformed JSON by extracting JSON from text and repairing common issues.
  * Based on V1's OpenAIFunctionHelper.tryFixJson.
  * Repairs unescaped double-quotes inside string values (e.g. Hebrew gershayim י"ב).
@@ -176,6 +187,11 @@ function tryFixJson(raw: string): any {
   try {
     return JSON.parse(trimmed);
   } catch (error) {
+    try {
+      return JSON.parse(repairJsonMultiplicationLiterals(trimmed));
+    } catch {
+      // continue with extraction / quote repair
+    }
     // Attempt to extract JSON from text
     const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
@@ -186,10 +202,17 @@ function tryFixJson(raw: string): any {
         // Try repairing unescaped quotes inside string values (e.g. Hebrew י"ב)
         try {
           extracted = repairJsonStringQuotes(extracted);
+          extracted = repairJsonMultiplicationLiterals(extracted);
           return JSON.parse(extracted);
         } catch (repairError) {
-          console.error('[LLMService] Failed to parse extracted JSON:', parseError);
-          throw new Error('Could not extract valid JSON from response');
+          try {
+            extracted = repairJsonMultiplicationLiterals(jsonMatch[0]);
+            extracted = repairJsonStringQuotes(extracted);
+            return JSON.parse(extracted);
+          } catch {
+            console.error('[LLMService] Failed to parse extracted JSON:', parseError);
+            throw new Error('Could not extract valid JSON from response');
+          }
         }
       }
     }
