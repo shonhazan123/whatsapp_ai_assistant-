@@ -42,3 +42,9 @@ coverage/
 *.token
 credentials.txt
 secrets/
+
+# Nested repo (separate git root)
+tufin_agent/
+
+# Cursor: project-local MCP config may contain API keys
+.cursor/mcp.json

@@ -1,5 +1,7 @@
 ## Gmail Agent (`gmailOperations`)
 
+> **Memo_v2 runtime**: `gmail` steps go to **`GmailResolver`** (`Memo_v2/src/graph/resolvers/GmailResolver.ts`), then entity resolution if needed, then **`GmailServiceAdapter`**. The behavioral rules below still apply.
+
 ### High-Level Role
 
 The Gmail agent is the **exclusive interface to the user’s Gmail account**. It reads, searches, and manipulates email, and can compose/send/reply/forward messages using `gmailOperations`.
