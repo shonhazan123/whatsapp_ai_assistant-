@@ -106,7 +106,13 @@ Do:
 - Confirm the adapter output is categorized and surfaced correctly
 - If the operation needs special phrasing/UX rules, add them to `response-formatter-prompt.ts`
 
-### 7) Update docs (must stay in sync with runtime)
+### 7) Pipeline trace wiring
+
+If the new operation introduces a **new LLM call** (in a resolver, response writer, or any new node), wrap it with `traceLlmReasoningLog` or `traceLlmReasoningLogJSON` from `Memo_v2/src/services/trace/traceLlmReasoningLog.ts` and return `llmSteps: [llmStep]` in the node's state update. This ensures the call is automatically recorded in `pipeline_traces`.
+
+For resolvers extending `LLMResolver`, this is handled automatically — `BaseResolver.callLLM` traces and accumulates steps into `_pendingLlmSteps`, and `ResolverRouterNode` drains them via `resolver.drainLlmSteps()` after each `resolve()` call.
+
+### 8) Update docs (must stay in sync with runtime)
 
 Update **both**:
 

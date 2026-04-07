@@ -11,6 +11,7 @@
  * ✅ Deterministic
  */
 
+import { CONVERSATION_RAW_MESSAGE_CAP } from '../../services/memory/ConversationContextStore.js';
 import type { ImageContext } from '../../types/index.js';
 import type { MemoState } from '../state/MemoState.js';
 import { CodeNode } from './BaseNode.js';
@@ -41,7 +42,7 @@ export class ReplyContextNode extends CodeNode {
       }
     }
     
-    // 2. Check for image context in recent messages (last 3) if not already found
+    // 2. Check for image context in recent rolling tail if not already found
     if (!imageContext) {
       imageContext = this.findRecentImageContext(state.recentMessages);
     }
@@ -132,8 +133,7 @@ export class ReplyContextNode extends CodeNode {
   }
   
   private findRecentImageContext(messages: MemoState['recentMessages']): ImageContext | undefined {
-    // Look at last 3 messages for image context
-    const recent = messages.slice(-3);
+    const recent = messages.slice(-CONVERSATION_RAW_MESSAGE_CAP);
     
     for (const message of recent.reverse()) {
       if (message.metadata?.imageContext) {

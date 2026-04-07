@@ -26,11 +26,12 @@
  * ✅ Uses Resolver Schemas for deterministic routing
  */
 
+import { CONVERSATION_RAW_MESSAGE_CAP } from '../../services/memory/ConversationContextStore.js';
 import { getNodeModel } from '../../config/llm-config.js';
-import { callLLMJSON } from '../../services/llm/LLMService.js';
+import { traceLlmReasoningLogJSON } from '../../services/trace/traceLlmReasoningLog.js';
 import type { Capability, PlannerOutput, PlanStep } from '../../types/index.js';
 import { formatSchemasForPrompt, getRoutingSuggestions } from '../resolvers/index.js';
-import type { MemoState } from '../state/MemoState.js';
+import type { LLMStep, MemoState } from '../state/MemoState.js';
 import { LLMNode } from './BaseNode.js';
 
 // ============================================================================
@@ -662,11 +663,12 @@ export class PlannerNode extends LLMNode {
     const userMessage = this.buildUserMessage(state, routingSuggestions, isReplanning);
 
     // Make LLM call for planning 
-    const plannerOutput = await this.callLLM(userMessage, state, modelConfig);
+    const { plannerOutput, llmStep } = await this.callLLM(userMessage, state, modelConfig);
 
     return {
       plannerOutput,
       routingSuggestions,
+      ...(llmStep ? { llmSteps: [llmStep] } : {}),
     };
   }
 
@@ -710,32 +712,23 @@ export class PlannerNode extends LLMNode {
       userMessage += `\nUse these hints to inform your routing decision, but apply the decision tree rules.\n\n`;
     }
 
-    // Recent conversation - CRITICAL for context understanding and resolving references like "it", "that", "סיימתי"
-    if (state.recentMessages && state.recentMessages.length > 0) {
-      userMessage += `## Recent Conversation (use to resolve references like "it", "that", "זה")\n`;
-      userMessage += `The user may refer in their last message to previous context (events, details, dates, etc.). If the message is ambiguous, try to match it with details from these interactions.\n\n`;
-      // Provide a larger window so the Planner can understand context, not just the last input
-      const recent = state.recentMessages.slice(-10);
+    // Rolling conversation summary + last completed messages (no latest-actions here — those are for GeneralResolver only)
+    const summaryText = state.conversationContext?.summary ?? state.longTermSummary;
+    if (summaryText) {
+      userMessage += `## Conversation summary (rolling; use to resolve references like "it", "that", "זה")\n`;
+      userMessage += `${summaryText}\n\n`;
+    }
+
+    // Graph tail includes ConversationContextStore buffer (up to 10 msgs between summarizations) + optional HITL merge.
+    const recentForPlanner = state.recentMessages;
+    if (recentForPlanner && recentForPlanner.length > 0) {
+      userMessage += `## Recent messages (completed turns only; current user text is below)\n`;
+      const recent = recentForPlanner.slice(-CONVERSATION_RAW_MESSAGE_CAP);
       for (const msg of recent) {
         const preview = msg.content.length > 350 ? msg.content.substring(0, 350) + '...' : msg.content;
         userMessage += `[${msg.role}]: ${preview}\n`;
       }
       userMessage += '\n';
-    }
-
-    // Latest executed actions (most-recent first) - for resolving "it/that/זה" references
-    if (state.latestActions && state.latestActions.length > 0) {
-      userMessage += `## Latest Actions (most-recent first)\n`;
-      for (const action of state.latestActions) {
-        const whenPart = action.when ? ` | ${action.when}` : '';
-        userMessage += `- [${action.capability}] ${action.action}: "${action.summary}"${whenPart}\n`;
-      }
-      userMessage += '\n';
-    }
-
-    // Long-term context if available
-    if (state.longTermSummary) {
-      userMessage += `## User Context\n${state.longTermSummary}\n\n`;
     }
 
     // The actual user message
@@ -758,19 +751,23 @@ export class PlannerNode extends LLMNode {
     userMessage: string,
     state: MemoState,
     modelConfig: { model: string; temperature?: number; maxTokens?: number }
-  ): Promise<PlannerOutput> {
+  ): Promise<{ plannerOutput: PlannerOutput; llmStep: LLMStep | null }> {
     try {
       const requestId = (state.input as any).requestId;
 
-      const response = await callLLMJSON<any>({
-        messages: [
-          { role: 'system', content: PLANNER_SYSTEM_PROMPT },
-          { role: 'user', content: userMessage },
-        ],
-        model: modelConfig.model,
-        temperature: modelConfig.temperature || 0.3,
-        maxTokens: modelConfig.maxTokens || 2500,
-      }, requestId);
+      const { response, llmStep } = await traceLlmReasoningLogJSON<any>(
+        'planner',
+        {
+          messages: [
+            { role: 'system', content: PLANNER_SYSTEM_PROMPT },
+            { role: 'user', content: userMessage },
+          ],
+          model: modelConfig.model,
+          temperature: modelConfig.temperature || 0.3,
+          maxTokens: modelConfig.maxTokens || 2500,
+        },
+        requestId,
+      );
 
       // Normalize and validate response
       const normalized = this.normalizeResponse(response, state);
@@ -779,7 +776,7 @@ export class PlannerNode extends LLMNode {
       if (!normalized.intentType || !Array.isArray(normalized.plan)) {
         console.warn('[PlannerNode] Invalid LLM response structure, using planner failure output');
         console.warn('[PlannerNode] Response:', JSON.stringify(response).substring(0, 500));
-        return this.createPlannerFailureOutput(state.input.enhancedMessage || state.input.message);
+        return { plannerOutput: this.createPlannerFailureOutput(state.input.enhancedMessage || state.input.message), llmStep };
       }
 
       // Validate and clamp confidence
@@ -817,10 +814,10 @@ export class PlannerNode extends LLMNode {
 
       console.log(`[PlannerNode] Intent: ${normalized.intentType}, Confidence: ${normalized.confidence}, Steps: ${normalized.plan.length}, Risk: ${normalized.riskLevel}`);
 
-      return normalized as PlannerOutput;
+      return { plannerOutput: normalized as PlannerOutput, llmStep };
     } catch (error: any) {
       console.error('[PlannerNode] LLM call failed:', error.message);
-      return this.createPlannerFailureOutput(state.input.enhancedMessage || state.input.message);
+      return { plannerOutput: this.createPlannerFailureOutput(state.input.enhancedMessage || state.input.message), llmStep: null };
     }
   }
 

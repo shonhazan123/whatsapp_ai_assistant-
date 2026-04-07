@@ -7,7 +7,6 @@ import { OpenAIService } from '../../legacy/services/ai/OpenAIService';
 import { CalendarService } from '../../legacy/services/calendar/CalendarService';
 import { ReminderRecurrence, Task, TaskService } from '../../legacy/services/database/TaskService';
 import { UserService } from '../../legacy/services/database/UserService';
-import { PerformanceTracker } from '../../legacy/services/performance/PerformanceTracker';
 import { ConversationWindow } from '../../services/memory/ConversationWindow';
 import { sendWhatsAppMessage, sendWhatsAppTemplateMessage } from '../../services/whatsapp';
 import { getDatePartsInTimezone, buildDateTimeISOInZone } from '../../utils/userTimezone.js';
@@ -33,7 +32,6 @@ export class ReminderService {
   private calendarService: CalendarService;
   private userService: UserService;
   private taskService: TaskService;
-  private performanceTracker: PerformanceTracker;
   private conversationWindow: ConversationWindow;
 
   constructor(
@@ -44,7 +42,6 @@ export class ReminderService {
     this.calendarService = new CalendarService(this.loggerInstance);
     this.userService = new UserService(this.loggerInstance);
     this.taskService = new TaskService(this.loggerInstance);
-    this.performanceTracker = PerformanceTracker.getInstance();
     this.conversationWindow = ConversationWindow.getInstance();
   }
 
@@ -650,25 +647,10 @@ export class ReminderService {
    */
   private async enhanceMessageWithAI(rawData: string, userPhone?: string): Promise<string> {
     try {
-      // For background jobs (reminders), create a requestId for tracking
-      let requestId: string | undefined;
-      
-      if (userPhone) {
-        // Create a requestId for background job tracking
-        requestId = this.performanceTracker.startRequest(userPhone);
-      }
-      
-      const response = await this.openaiService!.generateResponse(rawData, requestId, 'reminder-service');
-      
-      // End request if we created it
-      if (requestId) {
-        await this.performanceTracker.endRequest(requestId);
-      }
-      
+      const response = await this.openaiService!.generateResponse(rawData, undefined, 'reminder-service');
       return response;
     } catch (error) {
       this.loggerInstance.error('Failed to enhance message with AI, using fallback:', error);
-      // Return raw data as fallback
       return rawData;
     }
   }

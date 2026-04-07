@@ -14,6 +14,8 @@
 
 import { interrupt } from '@langchain/langgraph';
 import { getNodeModel } from '../../config/llm-config.js';
+import { CONVERSATION_RAW_MESSAGE_CAP } from '../../services/memory/ConversationContextStore.js';
+import { traceLlmReasoningLog } from '../../services/trace/traceLlmReasoningLog.js';
 import type {
   Capability,
   InterruptPayload,
@@ -21,7 +23,7 @@ import type {
   ResolverResult,
   ResolverResultClarify,
 } from '../../types/index.js';
-import type { MemoState } from '../state/MemoState.js';
+import type { LLMStep, MemoState } from '../state/MemoState.js';
 
 // ============================================================================
 // RESOLVER INTERFACE
@@ -49,6 +51,14 @@ export abstract class BaseResolver {
   abstract readonly name: string;
   abstract readonly capability: Capability;
   abstract readonly actions: string[];
+  protected _pendingLlmSteps: LLMStep[] = [];
+
+  /** Drain accumulated LLM trace steps (returns and clears). */
+  drainLlmSteps(): LLMStep[] {
+    const steps = this._pendingLlmSteps;
+    this._pendingLlmSteps = [];
+    return steps;
+  }
 
   /**
    * Get the system prompt for this resolver (cacheable)
@@ -77,7 +87,8 @@ export abstract class BaseResolver {
    * Handles interrupts for clarification
    */
   async execute(state: MemoState): Promise<Partial<MemoState>> {
-    // Find the plan step this resolver should handle
+    this._pendingLlmSteps = [];
+
     const step = this.findMyStep(state);
 
     if (!step) {
@@ -110,16 +121,19 @@ export abstract class BaseResolver {
       if (result.type === 'execute') {
         const resolverResults = new Map(state.resolverResults);
         resolverResults.set(step.id, result);
-        return { resolverResults };
+        return {
+          resolverResults,
+          ...(this._pendingLlmSteps.length > 0 ? { llmSteps: this._pendingLlmSteps } : {}),
+        };
       }
 
-      // Clarify type shouldn't reach here (handled by interrupt above)
       return {};
 
     } catch (error) {
       console.error(`[${this.name}] Error resolving step ${step.id}:`, error);
       return {
         error: `Resolver error in ${this.name}: ${error instanceof Error ? error.message : String(error)}`,
+        ...(this._pendingLlmSteps.length > 0 ? { llmSteps: this._pendingLlmSteps } : {}),
       };
     }
   }
@@ -229,7 +243,8 @@ export abstract class BaseResolver {
  */
 export abstract class LLMResolver extends BaseResolver {
   /**
-   * Call LLM to generate tool arguments using function calling
+   * Call LLM to generate tool arguments using function calling.
+   * Automatically traces the call and accumulates the LLMStep.
    */
   protected async callLLM(
     step: PlanStep,
@@ -237,19 +252,15 @@ export abstract class LLMResolver extends BaseResolver {
   ): Promise<Record<string, any>> {
     console.log(`[${this.name}] callLLM() invoked for step ${step.id} with capability ${this.capability}`);
 
-    // Map capability to resolver node type for getNodeModel
     const resolverNodeType = this.capability === 'calendar' ? 'calendar' :
       this.capability === 'database' ? 'database' :
         this.capability === 'gmail' ? 'gmail' :
           this.capability === 'second-brain' ? 'secondBrain' :
             'general';
 
-    console.log(`[${this.name}] Resolver node type: ${resolverNodeType}`);
-
     let modelConfig;
     try {
       modelConfig = getNodeModel(resolverNodeType, true);
-      console.log(`[${this.name}] Model config: ${modelConfig.model}`);
     } catch (error: any) {
       console.error(`[${this.name}] Failed to get model config:`, error);
       throw new Error(`Failed to get model config: ${error.message}`);
@@ -257,39 +268,28 @@ export abstract class LLMResolver extends BaseResolver {
 
     const systemPrompt = this.getSystemPrompt();
     const schemaSlice = this.getSchemaSlice();
-
-    console.log(`[${this.name}] System prompt length: ${systemPrompt.length}, Schema name: ${(schemaSlice as any).name}`);
-
-    // Build user message from step and state
     const userMessage = this.buildUserMessage(step, state);
-    console.log(`[${this.name}] User message length: ${userMessage.length}`);
-
-    // Get requestId from state input metadata if available
     const requestId = (state.input as any).requestId;
 
     try {
-      console.log(`[${this.name}] Importing LLMService...`);
-      // Import LLM service
-      const { callLLM: callLLMService } = await import('../../services/llm/LLMService.js');
-      console.log(`[${this.name}] LLMService imported successfully`);
+      const { response, llmStep } = await traceLlmReasoningLog(
+        `resolver:${this.capability}`,
+        {
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userMessage },
+          ],
+          model: modelConfig.model,
+          temperature: modelConfig.temperature || 0.7,
+          maxTokens: modelConfig.maxTokens || 2000,
+          functions: [schemaSlice as any],
+          functionCall: { name: (schemaSlice as any).name },
+        },
+        requestId,
+      );
 
-      console.log(`[${this.name}] Calling LLM with model: ${modelConfig.model}`);
-      // Call LLM with function calling
-      const response = await callLLMService({
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userMessage },
-        ],
-        model: modelConfig.model,
-        temperature: modelConfig.temperature || 0.7,
-        maxTokens: modelConfig.maxTokens || 2000,
-        functions: [schemaSlice as any],
-        functionCall: { name: (schemaSlice as any).name },
-      }, requestId);
+      this._pendingLlmSteps.push(llmStep);
 
-      console.log(`[${this.name}] LLM response received, has functionCall: ${!!response.functionCall}, has toolCalls: ${!!(response.toolCalls && response.toolCalls.length > 0)}`);
-
-      // Extract function call arguments
       if (response.functionCall) {
         const parsed = JSON.parse(response.functionCall.arguments);
         console.log(`[${this.name}] Parsed function call arguments:`, Object.keys(parsed));
@@ -302,13 +302,10 @@ export abstract class LLMResolver extends BaseResolver {
         return parsed;
       }
 
-      // Fallback to constraints if no function call
       console.warn(`[${this.name}] No function call in LLM response, using constraints`);
       return step.constraints;
     } catch (error: any) {
       console.error(`[${this.name}] LLM call failed, error type: ${error?.constructor?.name}, message: ${error?.message}`);
-      console.error(`[${this.name}] Error stack:`, error?.stack);
-      // Re-throw to be caught by resolve() method
       throw error;
     }
   }
@@ -346,10 +343,13 @@ export abstract class LLMResolver extends BaseResolver {
       userMessage += `This clarification applies to the original request below. Extract all relevant info from BOTH messages.\n\n`;
     }
 
-    // Add recent context if available
+    const roll = state.conversationContext?.summary ?? state.longTermSummary;
+    if (roll) {
+      userMessage += `Conversation summary:\n${roll}\n\n`;
+    }
     if (state.recentMessages.length > 0) {
       userMessage += `Recent conversation:\n`;
-      const recent = state.recentMessages.slice(-6);
+      const recent = state.recentMessages.slice(-CONVERSATION_RAW_MESSAGE_CAP);
       for (const msg of recent) {
         userMessage += `${msg.role}: ${msg.content.substring(0, 250)}...\n`;
       }

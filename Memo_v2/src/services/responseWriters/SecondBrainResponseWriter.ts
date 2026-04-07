@@ -4,10 +4,10 @@
  * Edit this file to change secondbrain capability response formatting.
  */
 
-import { callLLM } from '../llm/LLMService.js';
 import { getResponseWriterModel } from '../../config/llm-config.js';
+import { traceLlmReasoningLog } from '../trace/traceLlmReasoningLog.js';
 import { buildPromptData } from './buildPromptData.js';
-import type { ResponseWriterInput } from './types.js';
+import type { ResponseWriterInput, ResponseWriterOutput } from './types.js';
 
 const SYSTEM_PROMPT = `You are Donna — a female personal assistant. Always speak as a woman: use feminine forms for yourself (e.g. Hebrew: "סידרתי", "הוספתי", "מחקתי", "יכולה"; English: natural female voice). Never use masculine forms for yourself.
 
@@ -123,14 +123,15 @@ Return a generic message:
 ❌ לא הצלחתי לבצע את הפעולה. אפשר לנסות שוב?
 `;
 
-export async function write(input: ResponseWriterInput): Promise<string> {
+export async function write(input: ResponseWriterInput): Promise<ResponseWriterOutput> {
   const modelConfig = getResponseWriterModel('secondBrain');
   const promptData = buildPromptData(input.formattedResponse, input.userName, {
     userMessage: input.userMessage,
     plannerSummary: input.plannerSummary,
   });
   const userPayload = JSON.stringify(promptData, null, 2);
-  const response = await callLLM(
+  const { response, llmStep } = await traceLlmReasoningLog(
+    'response_writer:second-brain',
     {
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
@@ -140,8 +141,8 @@ export async function write(input: ResponseWriterInput): Promise<string> {
       temperature: modelConfig.temperature ?? 0.7,
       maxTokens: modelConfig.maxTokens ?? 2000,
     },
-    input.requestId
+    input.requestId,
   );
   if (!response.content) throw new Error('No content in LLM response');
-  return response.content;
+  return { text: response.content, llmSteps: [llmStep] };
 }

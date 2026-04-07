@@ -1,13 +1,13 @@
-import type { ResponseWriterInput } from './types.js';
+import type { ResponseWriterInput, ResponseWriterOutput } from './types.js';
 import { write as writeDatabase } from './DatabaseResponseWriter.js';
 import { write as writeCalendar } from './CalendarResponseWriter.js';
 import { write as writeGmail } from './GmailResponseWriter.js';
 import { write as writeSecondBrain } from './SecondBrainResponseWriter.js';
 import { write as writeMulti } from './MultiCapabilityResponseWriter.js';
 
-export type { ResponseWriterInput } from './types.js';
+export type { ResponseWriterInput, ResponseWriterOutput } from './types.js';
 
-const CAPABILITY_WRITERS: Record<string, (input: ResponseWriterInput) => Promise<string>> = {
+const CAPABILITY_WRITERS: Record<string, (input: ResponseWriterInput) => Promise<ResponseWriterOutput>> = {
   database: writeDatabase,
   calendar: writeCalendar,
   gmail: writeGmail,
@@ -16,7 +16,7 @@ const CAPABILITY_WRITERS: Record<string, (input: ResponseWriterInput) => Promise
   memory: writeSecondBrain,
 };
 
-export async function writeResponse(input: ResponseWriterInput): Promise<string> {
+export async function writeResponse(input: ResponseWriterInput): Promise<ResponseWriterOutput> {
   const { formattedResponse } = input;
 
   const isMultiStep =

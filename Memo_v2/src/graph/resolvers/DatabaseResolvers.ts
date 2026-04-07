@@ -11,6 +11,7 @@
  *              src/config/system-prompts.ts (getDatabaseAgentPrompt)
  */
 
+import { CONVERSATION_RAW_MESSAGE_CAP } from '../../services/memory/ConversationContextStore.js';
 import type { Capability, PlanStep } from '../../types/index.js';
 import type { MemoState } from '../state/MemoState.js';
 import { LLMResolver, type ResolverOutput } from './BaseResolver.js';
@@ -834,7 +835,7 @@ Output only the JSON, no explanation. NEVER include IDs you don't have.`;
 
     if (state.recentMessages.length > 0) {
       userMessage += `Recent conversation:\n`;
-      const recent = state.recentMessages.slice(-3);
+      const recent = state.recentMessages.slice(-CONVERSATION_RAW_MESSAGE_CAP);
       for (const msg of recent) {
         userMessage += `${msg.role}: ${msg.content.substring(0, 100)}...\n`;
       }

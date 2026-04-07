@@ -10,6 +10,7 @@
 import { Annotation } from '@langchain/langgraph';
 import type {
   AuthContext,
+  ConversationContext,
   ConversationMessage,
   DisambiguationContext,
   ExecutedOperation,
@@ -28,6 +29,26 @@ import type {
 } from '../../types/index.js';
 
 // ============================================================================
+// LLM STEP (per-call trace record, accumulated across nodes)
+// ============================================================================
+
+export interface LLMStep {
+  /** Caller-provided name identifying this LLM call (e.g. "planner", "resolver:calendar", "hitl:clarify") */
+  node: string;
+  model: string;
+  cachedInputTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  latencyMs: number;
+  cost: number;
+  /** Full messages array sent to the LLM (for debugging what went in) */
+  input: Array<{ role: string; content: string }>;
+  /** Full raw LLM response content (for debugging what came back) */
+  output: string;
+}
+
+// ============================================================================
 // METADATA TYPE (used in Annotation)
 // ============================================================================
 
@@ -43,6 +64,12 @@ export interface ExecutionMetadata {
   totalTokens: number;
   totalCost: number;
 }
+
+/**
+ * Delta shape returned by nodes — the reducer accumulates these into ExecutionMetadata.
+ * Nodes should NEVER spread state.metadata; return only new entries.
+ */
+export type MetadataDelta = Partial<Pick<ExecutionMetadata, 'nodeExecutions' | 'llmCalls' | 'totalTokens' | 'totalCost'>>;
 
 // ============================================================================
 // DEFAULT VALUES
@@ -122,11 +149,10 @@ export const MemoStateAnnotation = Annotation.Root({
   // === MEMORY ===
   recentMessages: Annotation<ConversationMessage[]>({
     default: () => [],
-    // Reducer: append new messages, keep max 10
+    // Last-write-wins: nodes return the full tail they want (conversation_context, memory_update, HITL merge).
     reducer: (existing, incoming) => {
-      if (!incoming || incoming.length === 0) return existing;
-      const combined = [...existing, ...incoming];
-      return combined.slice(-10);
+      if (incoming === undefined) return existing;
+      return incoming;
     },
   }),
 
@@ -135,7 +161,13 @@ export const MemoStateAnnotation = Annotation.Root({
     reducer: (_, update) => update,
   }),
 
-  // === LATEST ACTIONS (per-session, for referential follow-ups like "it/that/זה") ===
+  /** Rolling conversation summary + recent tail for planner (in-memory; Redis later). */
+  conversationContext: Annotation<ConversationContext | undefined>({
+    default: () => undefined,
+    reducer: (_, update) => update,
+  }),
+
+  // === LATEST ACTIONS (GeneralResolver only — operational "what did you last do") ===
   latestActions: Annotation<LatestAction[]>({
     default: () => [],
     reducer: (_, update) => update,
@@ -256,13 +288,19 @@ export const MemoStateAnnotation = Annotation.Root({
     reducer: (_, update) => update,
   }),
 
+  // === LLM STEPS (accumulated per-call trace records) ===
+  llmSteps: Annotation<LLMStep[]>({
+    default: () => [],
+    reducer: (existing, incoming) => [...existing, ...(incoming || [])],
+  }),
+
   // === METADATA ===
+  // Nodes return **deltas only** (e.g. one nodeExecution entry, llmCalls: 1).
+  // The reducer accumulates them into the running totals.
   metadata: Annotation<ExecutionMetadata>({
     default: () => ({ ...defaultMetadata, startTime: Date.now() }),
-    // Reducer: accumulate values
     reducer: (existing, incoming) => ({
-      ...existing,
-      ...incoming,
+      startTime: existing.startTime,
       nodeExecutions: [...existing.nodeExecutions, ...(incoming.nodeExecutions || [])],
       llmCalls: existing.llmCalls + (incoming.llmCalls || 0),
       totalTokens: existing.totalTokens + (incoming.totalTokens || 0),
@@ -302,6 +340,7 @@ export function createInitialState(partial: Partial<MemoState> = {}): MemoState 
     },
     recentMessages: partial.recentMessages || [],
     longTermSummary: partial.longTermSummary,
+    conversationContext: partial.conversationContext,
     latestActions: partial.latestActions || [],
     plannerOutput: partial.plannerOutput,
     routingSuggestions: partial.routingSuggestions,
@@ -318,6 +357,7 @@ export function createInitialState(partial: Partial<MemoState> = {}): MemoState 
     formattedResponse: partial.formattedResponse,
     finalResponse: partial.finalResponse,
     error: partial.error,
+    llmSteps: partial.llmSteps || [],
     metadata: partial.metadata || { ...defaultMetadata, startTime: Date.now() },
   };
 }

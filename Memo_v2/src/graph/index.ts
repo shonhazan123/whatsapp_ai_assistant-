@@ -9,19 +9,20 @@
  * - MemorySaver checkpointer (Supabase in production)
  *
  * Graph Flow:
- * 1. context_assembly → Build state from user profile, memory
- * 2. reply_context → Enrich with reply/image context
- * 3. planner → Convert message to Plan DSL
- * 4. hitl_gate → Check confidence, risk, missing fields
+ * 1. context_assembly → User profile, auth; guests skip memory writes
+ * 2. conversation_context → Rolling summary + last 3 completed (ConversationContextStore)
+ * 3. reply_context → Enrich with reply/image context
+ * 4. planner → Convert message to Plan DSL
+ * 5. hitl_gate → Check confidence, risk, missing fields
  *    ├── interrupt() → Graph pauses, state saved, await reply
  *    └── (continue) → resolver_router
- * 5. resolver_router → Route to capability resolvers, get tool args
- * 6. executor → Execute tool calls via service adapters
- * 7. join → Merge execution results
- * 8. response_formatter → Format dates, categorize
- * 9. response_writer → Generate final message
- * 10. memory_update → Update state.recent_messages
- * 11. END
+ * 6. resolver_router → Route to capability resolvers, get tool args
+ * 7. executor → Execute tool calls via service adapters
+ * 8. join → Merge execution results
+ * 9. response_formatter → Format dates, categorize
+ * 10. response_writer → Generate final message
+ * 11. memory_update → ConversationWindow + ConversationContextStore; await summarization when over cap
+ * 12. END
  */
 
 import { END, MemorySaver, StateGraph } from "@langchain/langgraph";
@@ -33,6 +34,7 @@ import { HITL_TTL_MS } from "../types/hitl.js";
 // This MUST happen before any graph execution to avoid TDZ errors
 // ============================================================================
 import { initializeServices } from "../services/v1-services.js";
+import { PipelineTraceService } from "../services/trace/PipelineTraceService.js";
 import { sendTypingIndicator } from "../services/whatsapp.js";
 import type { InterruptPayload, TriggerInput } from "../types/index.js";
 import type { MemoState } from "./state/MemoState.js";
@@ -42,6 +44,7 @@ initializeServices();
 // Node imports
 import { createCapabilityCheckNode } from "./nodes/CapabilityCheckNode.js";
 import { ContextAssemblyNode } from "./nodes/ContextAssemblyNode.js";
+import { createConversationContextNode } from "./nodes/ConversationContextNode.js";
 import { createEntityResolutionNode } from "./nodes/EntityResolutionNode.js";
 import { createExecutorNode } from "./nodes/ExecutorNode.js";
 import { createHITLGateNode } from "./nodes/HITLGateNode.js";
@@ -105,6 +108,7 @@ export function buildMemoGraph(input: TriggerInput) {
 	const graph = new StateGraph(MemoStateAnnotation)
 		// ======== NODES ========
 		.addNode("context_assembly", contextAssemblyNode.asNodeFunction())
+		.addNode("conversation_context", createConversationContextNode())
 		.addNode("reply_context", createReplyContextNode())
 		.addNode("planner", createPlannerNode())
 		.addNode("capability_check", createCapabilityCheckNode())
@@ -127,7 +131,8 @@ export function buildMemoGraph(input: TriggerInput) {
 
 		// ======== EDGES ========
 		.addEdge("__start__", "context_assembly")
-		.addEdge("context_assembly", "reply_context")
+		.addEdge("context_assembly", "conversation_context")
+		.addEdge("conversation_context", "reply_context")
 		.addEdge("reply_context", "planner")
 		.addConditionalEdges("planner", plannerRouter)
 		.addConditionalEdges("capability_check", capabilityCheckRouter)
@@ -419,6 +424,11 @@ export async function invokeMemoGraph(
 			`[MemoGraph] Interrupt payload: ${JSON.stringify(interruptPayload)}`,
 		);
 
+		// Fire-and-forget trace flush (interrupt path)
+		PipelineTraceService.flush(result).catch((e) =>
+			console.error(JSON.stringify({ event: "TRACE_FLUSH_FAILED", path: "interrupt", error: String(e) })),
+		);
+
 		return {
 			response: interruptPayload?.question || "I need more information.",
 			interrupted: true,
@@ -434,17 +444,26 @@ export async function invokeMemoGraph(
 	}
 
 	// Normal completion
-	console.log(
-		`[MemoGraph] Completed in ${Date.now() - result.metadata.startTime}ms`,
-	);
-	console.log(`[MemoGraph] LLM calls: ${result.metadata.llmCalls}`);
-	console.log(`[MemoGraph] Total tokens: ${result.metadata.totalTokens}`);
-	console.log(
-		`[MemoGraph] Total cost: $${result.metadata.totalCost.toFixed(4)}`,
+	const elapsed = Date.now() - result.metadata.startTime;
+	const steps = result.llmSteps ?? [];
+	const totalCost = steps.reduce((s, st) => s + st.cost, 0);
+	const totalTokens = steps.reduce((s, st) => s + st.totalTokens, 0);
+	console.log(JSON.stringify({
+		event: "PIPELINE_COMPLETE",
+		threadId,
+		elapsedMs: elapsed,
+		llmSteps: steps.length,
+		nodeCount: result.metadata.nodeExecutions.length,
+		totalTokens,
+		totalCost: +totalCost.toFixed(6),
+	}));
+
+	// Fire-and-forget trace flush (normal completion)
+	PipelineTraceService.flush(result).catch((e) =>
+		console.error(JSON.stringify({ event: "TRACE_FLUSH_FAILED", path: "completion", error: String(e) })),
 	);
 
 	// Clean up checkpoints after successful completion to free memory
-	// This prevents MemorySaver from accumulating checkpoints indefinitely
 	try {
 		await checkpointer.deleteThread(threadId);
 		console.log(`[MemoGraph] Cleaned up checkpoints for thread ${threadId}`);

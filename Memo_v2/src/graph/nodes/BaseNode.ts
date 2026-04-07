@@ -10,7 +10,7 @@
  */
 
 import { GraphInterrupt } from '@langchain/langgraph';
-import type { MemoState } from '../state/MemoState.js';
+import type { MetadataDelta, MemoState } from '../state/MemoState.js';
 
 export interface NodeExecutionResult<T = Partial<MemoState>> {
   output: T;
@@ -51,25 +51,15 @@ export abstract class BaseNode {
       // Process
       const result = await this.process(state);
       
-      // Add execution metadata
       const endTime = Date.now();
-      const durationMs = endTime - startTime;
       
-      return {
-        ...result,
-        metadata: {
-          ...state.metadata,
-          nodeExecutions: [
-            ...state.metadata.nodeExecutions,
-            {
-              node: this.name,
-              startTime,
-              endTime,
-              durationMs,
-            },
-          ],
-        },
+      const delta: MetadataDelta = {
+        nodeExecutions: [
+          { node: this.name, startTime, endTime, durationMs: endTime - startTime },
+        ],
       };
+      
+      return { ...result, metadata: delta as any };
     } catch (error) {
       // CRITICAL: Re-throw GraphInterrupt - it's not an error, it's intentional HITL control flow
       // LangGraph needs to catch this to pause the graph and persist state
@@ -80,20 +70,15 @@ export abstract class BaseNode {
       const endTime = Date.now();
       console.error(`[${this.name}] Error:`, error);
       
+      const delta: MetadataDelta = {
+        nodeExecutions: [
+          { node: this.name, startTime, endTime, durationMs: endTime - startTime },
+        ],
+      };
+      
       return {
         error: `Error in ${this.name}: ${error instanceof Error ? error.message : String(error)}`,
-        metadata: {
-          ...state.metadata,
-          nodeExecutions: [
-            ...state.metadata.nodeExecutions,
-            {
-              node: this.name,
-              startTime,
-              endTime,
-              durationMs: endTime - startTime,
-            },
-          ],
-        },
+        metadata: delta as any,
       };
     }
   }
@@ -120,20 +105,5 @@ export abstract class CodeNode extends BaseNode {
  */
 export abstract class LLMNode extends BaseNode {
   readonly usesLLM = true;
-  
-  /**
-   * Track LLM call in metadata
-   */
-  protected trackLLMCall(
-    state: MemoState,
-    tokens: { input: number; output: number; cached?: number },
-    cost: number
-  ): Partial<MemoState['metadata']> {
-    return {
-      llmCalls: state.metadata.llmCalls + 1,
-      totalTokens: state.metadata.totalTokens + tokens.input + tokens.output,
-      totalCost: state.metadata.totalCost + cost,
-    };
-  }
 }
 

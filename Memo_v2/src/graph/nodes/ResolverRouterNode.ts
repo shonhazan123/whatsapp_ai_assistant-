@@ -19,7 +19,7 @@
 
 import type { PlanStep, ResolverResult } from '../../types/index.js';
 import { findResolver, RESOLVER_REGISTRY, selectResolver } from '../resolvers/index.js';
-import type { MemoState } from '../state/MemoState.js';
+import type { LLMStep, MemoState } from '../state/MemoState.js';
 import { CodeNode } from './BaseNode.js';
 
 // ============================================================================
@@ -44,8 +44,10 @@ interface RoutingResult {
 
 export class ResolverRouterNode extends CodeNode {
   readonly name = 'resolver_router';
+  private _collectedLlmSteps: LLMStep[] = [];
 
   protected async process(state: MemoState): Promise<Partial<MemoState>> {
+    this._collectedLlmSteps = [];
     const plan = state.plannerOutput?.plan;
     
     if (!plan || plan.length === 0) {
@@ -75,6 +77,7 @@ export class ResolverRouterNode extends CodeNode {
     
     return {
       resolverResults: allResults,
+      ...(this._collectedLlmSteps.length > 0 ? { llmSteps: this._collectedLlmSteps } : {}),
     };
   }
   
@@ -244,7 +247,9 @@ export class ResolverRouterNode extends CodeNode {
     
     console.log(`[ResolverRouter] Routing ${step.id} (${step.capability}) to ${resolver.name}`);
     
+    resolver.drainLlmSteps(); // Clear any stale steps from a prior failed call on this singleton
     const result = await resolver.resolve(step, state);
+    this._collectedLlmSteps.push(...resolver.drainLlmSteps());
     
     return {
       stepId: step.id,

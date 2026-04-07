@@ -7,6 +7,7 @@ export { BaseNode, CodeNode, LLMNode } from './BaseNode.js';
 
 // Code nodes (no LLM)
 export { ContextAssemblyNode, createContextAssemblyNode } from './ContextAssemblyNode.js';
+export { ConversationContextNode, createConversationContextNode } from './ConversationContextNode.js';
 export { createHITLGateNode, HITLGateNode } from './HITLGateNode.js';
 export { createReplyContextNode, ReplyContextNode } from './ReplyContextNode.js';
 

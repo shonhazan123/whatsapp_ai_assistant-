@@ -6,8 +6,6 @@ import { ImageAnalysisResult } from '../../types/imageAnalysis';
 import { prependTimeContext } from '../../utils/timeContext';
 import { ImageCache } from '../image/ImageCache';
 import { ImageProcessor } from '../image/ImageProcessor';
-import { PerformanceTracker } from '../performance/PerformanceTracker';
-import { setAgentNameForTracking } from '../performance/performanceUtils';
 import { OpenAIFunctionHelper, type IntentDecision } from './OpenAIFunctionHelper';
 import { PromptCacheService } from './PromptCacheService';
 
@@ -51,17 +49,14 @@ export type { IntentCategory, IntentDecision } from './OpenAIFunctionHelper';
 
 export class OpenAIService {
   private imageCache: ImageCache;
-  private performanceTracker: PerformanceTracker;
   private promptCacheService: PromptCacheService;
 
   constructor(private logger: any = logger) {
     this.imageCache = ImageCache.getInstance();
-    this.performanceTracker = PerformanceTracker.getInstance();
     this.promptCacheService = PromptCacheService.getInstance();
   }
 
   async createCompletion(request: CompletionRequest, requestId?: string): Promise<CompletionResponse> {
-    const startTime = Date.now();
     let completion: any;
     let error: Error | null = null;
 
@@ -141,140 +136,16 @@ export class OpenAIService {
       }
 
       completion = await openai.chat.completions.create(apiRequest);
-      // Track successful completion
-      if (requestId) {
-        const usage = (completion as any).usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
-        
-        // Log cache information from API response
-        const cachedTokens = usage.cached_tokens || usage.prompt_tokens_details?.cached_tokens || 0;
-        const cacheCreationTokens = usage.prompt_tokens_details?.cache_creation_tokens || 0;
-        
-        // Calculate token breakdown for debugging
-        const nonCachedInputTokens = usage.prompt_tokens - cachedTokens;
-        const systemPromptTokens = messagesWithCache[0]?.content ? Math.ceil((messagesWithCache[0].content?.length || 0) / 4) : 0;
-        const contextTokens = messagesWithCache.length > 1 ? Math.ceil(
-          messagesWithCache.slice(1, -1).reduce((sum, msg) => sum + (msg.content?.length || 0), 0) / 4
-        ) : 0;
-        const lastMessage = messagesWithCache[messagesWithCache.length - 1];
-        const userMessageTokens = lastMessage?.content ? 
-          Math.ceil((lastMessage.content.length || 0) / 4) : 0;
-        
-        if (cachedTokens > 0) {
-          this.logger.info(`✅ Cache HIT: ${cachedTokens.toLocaleString()} tokens served from cache (${((cachedTokens / usage.prompt_tokens) * 100).toFixed(1)}% of input)`);
-          this.logger.debug(`📊 Token Breakdown: System: ~${systemPromptTokens.toLocaleString()}, Context: ~${contextTokens.toLocaleString()}, User: ~${userMessageTokens.toLocaleString()}, Cached: ${cachedTokens.toLocaleString()}`);
-          // Warn if cache is much less than system prompt (context likely broke cache)
-          if (cachedTokens < systemPromptTokens * 0.5) {
-            this.logger.warn(`⚠️  Cache hit is only ${((cachedTokens / systemPromptTokens) * 100).toFixed(1)}% of system prompt - context messages likely broke cache prefix match`);
-          }
-        } else if (cacheCreationTokens > 0) {
-          this.logger.info(`📝 Cache WRITE: ${cacheCreationTokens.toLocaleString()} tokens written to cache (next request will use this cache)`);
-          this.logger.debug(`📊 Token Breakdown: System: ~${systemPromptTokens.toLocaleString()}, Context: ~${contextTokens.toLocaleString()}, User: ~${userMessageTokens.toLocaleString()}`);
-        } else {
-          // No cache hit or write - this shouldn't happen for cached prompts
-          this.logger.warn(`⚠️  No cache activity (neither hit nor write) - system prompt may not be marked for caching or cache was invalidated`);
-        }
-        
-        // Detailed usage logging
-        this.logger.debug('API Usage:', {
-          model: request.model || DEFAULT_MODEL,
-          prompt_tokens: usage.prompt_tokens,
-          completion_tokens: usage.completion_tokens,
-          total_tokens: usage.total_tokens,
-          cached_tokens: cachedTokens,
-          cache_creation_tokens: cacheCreationTokens,
-          non_cached_input: nonCachedInputTokens,
-          estimated_breakdown: {
-            system_prompt: systemPromptTokens,
-            context_messages: contextTokens,
-            user_message: userMessageTokens
-          }
-        });
-        
-        // Record cache usage for monitoring (with model for accurate pricing)
-        this.promptCacheService.recordCacheUsage(usage, model);
-        
-        const responseMessage = completion.choices[0]?.message;
-        const functionCall = responseMessage?.function_call;
-        const toolCalls = responseMessage?.tool_calls;
 
-        // Calculate actual paid tokens
-        const actualRequestTokens = usage.prompt_tokens - cachedTokens;
-        const actualTotalTokens = usage.total_tokens - cachedTokens;
-
-        const aiCallInfo = {
-          model: request.model || DEFAULT_MODEL,
-          requestTokens: usage.prompt_tokens || 0,
-          responseTokens: usage.completion_tokens || 0,
-          totalTokens: usage.total_tokens || 0,
-          cachedTokens: cachedTokens,
-          actualRequestTokens: actualRequestTokens,
-          actualTotalTokens: actualTotalTokens,
-        };
-
-        // Store last AI call info for function tracking
-        this.performanceTracker['requestContext'].setLastAICall(requestId, aiCallInfo);
-
-        await this.performanceTracker.logAICall(requestId, {
-          callType: 'completion',
-          ...aiCallInfo,
-          startTime,
-          endTime: Date.now(),
-          messages: request.messages.map(msg => ({
-            role: msg.role,
-            content: msg.content || ''
-          })),
-          responseContent: responseMessage?.content || undefined,
-          functionCall: functionCall ? {
-            name: functionCall.name,
-            arguments: functionCall.arguments
-          } : (toolCalls && toolCalls.length > 0 ? {
-            name: toolCalls[0].function.name,
-            arguments: toolCalls[0].function.arguments
-          } : undefined),
-          success: true,
-          error: null,
-          // Cache metrics (Phase 1)
-          cachedTokens: cachedTokens,
-          cacheHit: cachedTokens > 0,
-          cacheWriteTokens: cacheCreationTokens,
-          metadata: {
-            method: 'createCompletion',
-            hasFunctions: !!request.functions || !!request.tools,
-            functionCall: request.functionCall || 'auto',
-            useToolsFormat,
-            cachedTokens,
-            cacheCreationTokens,
-          },
-        });
+      // Record cache usage for monitoring
+      if (completion?.usage) {
+        this.promptCacheService.recordCacheUsage(completion.usage, model);
       }
 
       return completion as CompletionResponse;
     } catch (err) {
       error = err instanceof Error ? err : new Error('Unknown error');
       this.logger.error('OpenAI API error:', error);
-
-      // Track failed completion
-      if (requestId) {
-        await this.performanceTracker.logAICall(requestId, {
-          callType: 'completion',
-          model: request.model || DEFAULT_MODEL,
-          requestTokens: 0,
-          responseTokens: 0,
-          totalTokens: 0,
-          startTime,
-          endTime: Date.now(),
-          messages: request.messages.map(msg => ({
-            role: msg.role,
-            content: msg.content || ''
-          })),
-          success: false,
-          error: error.message,
-          metadata: {
-            method: 'createCompletion',
-            hasFunctions: !!request.functions || !!request.tools,
-          },
-        });
-      }
 
       throw new Error(`OpenAI API error: ${error.message}`);
     }
@@ -283,18 +154,14 @@ export class OpenAIService {
 
   async generateResponse(message: string, requestId?: string, agentName?: string): Promise<string> {
     try {
-      // Set agent name - use provided name or default to 'response-generator'
-      const trackingRequestId = requestId || setAgentNameForTracking(agentName || 'message-enhancer');
-
       const response = await this.createCompletion({
         messages: [
           { role: 'system', content: SystemPrompts.getMessageEnhancementPrompt() },
           { role: 'user', content: message }
         ],
-        // temperature: 0.7,
         maxTokens: 500,
         model: GPT_4O_MINI_MODEL
-      }, trackingRequestId);
+      }, requestId);
 
       const generatedMessage = response.choices[0]?.message?.content?.trim() || '';
       
@@ -314,8 +181,6 @@ export class OpenAIService {
 
   async detectIntent(message: string, context: any[] = []): Promise<IntentDecision> {
     try {
-      const trackingRequestId = setAgentNameForTracking('intent');
-
       // Build context-aware messages for intent detection
       const messages: Array<{role: 'system' | 'user' | 'assistant'; content: string}> = [
         {
@@ -342,10 +207,9 @@ export class OpenAIService {
 
       const completion = await this.createCompletion({
         messages,
-        // temperature: 0.1,
         maxTokens: 500,
-        model: GPT_4O_MINI_MODEL // Keep gpt-5 as is (not gpt-5.1, so not using DEFAULT_MODEL)
-      }, trackingRequestId);
+        model: GPT_4O_MINI_MODEL
+      });
 
       const rawContent = completion.choices[0]?.message?.content?.trim();
       if (!rawContent) {
@@ -454,10 +318,6 @@ export class OpenAIService {
       let completion;
       let retries = 2;
       let lastError: any;
-      const visionStartTime = Date.now();
-      
-      const trackingRequestId = requestId || setAgentNameForTracking('image-analyzer');
-      
       for (let attempt = 0; attempt <= retries; attempt++) {
         try {
           // Use Promise.race to implement timeout
@@ -500,66 +360,9 @@ export class OpenAIService {
             timeoutPromise
           ]) as any;
           
-          // Track successful vision call
-          if (trackingRequestId) {
-            const usage = (completion as any).usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
-            const responseContent = completion.choices[0]?.message?.content?.trim() || '';
-            
-            // Extract cache information (Phase 1)
-            const cachedTokens = usage.cached_tokens || usage.prompt_tokens_details?.cached_tokens || 0;
-            const cacheCreationTokens = usage.prompt_tokens_details?.cache_creation_tokens || 0;
-            
-            // Record cache usage (vision model: gpt-4o)
-            this.promptCacheService.recordCacheUsage(usage, 'gpt-4o');
-            
-            if (cachedTokens > 0) {
-              this.logger.info(`✅ Cache HIT (Vision): ${cachedTokens} tokens served from cache`);
-            } else if (cacheCreationTokens > 0) {
-              this.logger.info(`📝 Cache WRITE (Vision): ${cacheCreationTokens} tokens written to cache`);
-            }
-            
-            // Calculate actual paid tokens
-            const actualRequestTokens = usage.prompt_tokens - cachedTokens;
-            const actualTotalTokens = usage.total_tokens - cachedTokens;
-            
-            const aiCallInfo = {
-              model: 'gpt-4o',
-              requestTokens: usage.prompt_tokens || 0,
-              responseTokens: usage.completion_tokens || 0,
-              totalTokens: usage.total_tokens || 0,
-              cachedTokens: cachedTokens,
-              actualRequestTokens: actualRequestTokens,
-              actualTotalTokens: actualTotalTokens,
-            };
-            
-            // Store last AI call info
-            this.performanceTracker['requestContext'].setLastAICall(trackingRequestId, aiCallInfo);
-            
-            await this.performanceTracker.logAICall(trackingRequestId, {
-              callType: 'vision',
-              ...aiCallInfo,
-              startTime: visionStartTime,
-              endTime: Date.now(),
-              messages: [
-                { role: 'system', content: userPrompt },
-                { role: 'user', content: userCaption || '[Image]' }
-              ],
-              responseContent: responseContent.substring(0, 1000),
-              success: true,
-              error: null,
-              // Cache metrics (Phase 1)
-              cachedTokens: cachedTokens,
-              cacheHit: cachedTokens > 0,
-              cacheWriteTokens: cacheCreationTokens,
-              metadata: {
-                method: 'analyzeImage',
-                hasImage: true,
-                imageSize: imageBuffer.length,
-                retryAttempt: attempt,
-                cachedTokens,
-                cacheCreationTokens,
-              },
-            });
+          // Record cache usage
+          if (completion?.usage) {
+            this.promptCacheService.recordCacheUsage(completion.usage, 'gpt-4o');
           }
           
           break; // Success, exit retry loop
@@ -595,25 +398,6 @@ export class OpenAIService {
       }
       
       if (!completion) {
-        // Track failed vision call
-        if (trackingRequestId) {
-          await this.performanceTracker.logAICall(trackingRequestId, {
-            callType: 'vision',
-            model: 'gpt-4o',
-            requestTokens: 0,
-            responseTokens: 0,
-            totalTokens: 0,
-            startTime: visionStartTime,
-            endTime: Date.now(),
-            success: false,
-            error: lastError?.message || 'Failed to get completion from OpenAI',
-            metadata: {
-              method: 'analyzeImage',
-              hasImage: true,
-              imageSize: imageBuffer.length,
-            },
-          });
-        }
         throw lastError || new Error('Failed to get completion from OpenAI');
       }
 
@@ -700,10 +484,6 @@ export class OpenAIService {
     requestId?: string,
     agentName?: string
   ): Promise<number[]> {
-    const embeddingStartTime = Date.now();
-    
-    const trackingRequestId = requestId || setAgentNameForTracking('embedding');
-    
     try {
       if (!text || text.trim().length === 0) {
         throw new Error('Text cannot be empty');
@@ -727,65 +507,10 @@ export class OpenAIService {
         this.logger.warn(`Unexpected embedding dimension: ${embedding.length}, expected 1536`);
       }
 
-      // Track successful embedding call
-      if (trackingRequestId) {
-        // Embeddings API doesn't return usage in the same format, estimate tokens
-        // Rough estimate: ~1 token per 4 characters for embeddings
-        // Embeddings don't support caching, so actual = total
-        const estimatedTokens = Math.ceil(text.trim().length / 4);
-        
-        const aiCallInfo = {
-          model,
-          requestTokens: estimatedTokens,
-          responseTokens: 0, // Embeddings don't have response tokens
-          totalTokens: estimatedTokens,
-          cachedTokens: 0, // No caching support
-          actualRequestTokens: estimatedTokens, // actual = total (no cache)
-          actualTotalTokens: estimatedTokens,
-        };
-        
-        // Store last AI call info
-        this.performanceTracker['requestContext'].setLastAICall(trackingRequestId, aiCallInfo);
-        
-        await this.performanceTracker.logAICall(trackingRequestId, {
-          callType: 'embedding',
-          ...aiCallInfo,
-          startTime: embeddingStartTime,
-          endTime: Date.now(),
-          messages: [{ role: 'user', content: text.trim().substring(0, 1000) }],
-          success: true,
-          error: null,
-          metadata: {
-            method: 'createEmbedding',
-            textLength: text.length,
-            embeddingDimensions: embedding.length,
-          },
-        });
-      }
-
       this.logger.debug(`Embedding created successfully (dimensions: ${embedding.length})`);
       return embedding;
     } catch (error: any) {
       this.logger.error('Error creating embedding:', error);
-      
-      // Track failed embedding call
-      if (trackingRequestId) {
-        await this.performanceTracker.logAICall(trackingRequestId, {
-          callType: 'embedding',
-          model,
-          requestTokens: 0,
-          responseTokens: 0,
-          totalTokens: 0,
-          startTime: embeddingStartTime,
-          endTime: Date.now(),
-          success: false,
-          error: error.message || 'Unknown error',
-          metadata: {
-            method: 'createEmbedding',
-            textLength: text.length,
-          },
-        });
-      }
       
       // Handle rate limiting
       if (error.status === 429) {
