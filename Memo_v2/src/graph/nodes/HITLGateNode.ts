@@ -66,7 +66,7 @@ Generate a SHORT, conversational message asking the user to clarify their intent
 - second-brain: When asking if user wants to SAVE/REMEMBER something, use exactly: "לשמור בזכרון?" (Hebrew) / "save to memory?" (English). For search/recall: "לחפש בזכרון?" / "search memory?"
 
 ## Missing Field Translations
-- reminder_time_required: Ask at what time (and date if missing). Reminders need a specific date and time.
+- reminder_time_required: Ask at what time (and date if missing). Used for one-time or fixed-schedule reminders; repeating nudges every X minutes start immediately without this.
 - target_unclear: Ask WHICH specific items (by name or time window)
 - time_unclear: Ask WHEN
 - intent_unclear: Ask WHAT they want to do. Offer choices based only on the Routing Suggestions (score-based); do not add a default save-to-memory option.

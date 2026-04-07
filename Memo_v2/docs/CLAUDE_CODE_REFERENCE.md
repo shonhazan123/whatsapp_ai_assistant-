@@ -124,6 +124,7 @@ Registry: `src/graph/resolvers/ResolverSchema.ts` + `index.ts` — **database_ta
 
 | Doc | Use |
 |-----|-----|
+| `ARCHITECT_REVIEW_PACKAGE.md` | **Senior-architect / supervisor bundle**: what to attach, reading order, reasoning model, cost/latency pointers |
 | `STATE_SCHEMA.md` | Node-by-node read/write |
 | `PLANNER_AND_HITL_FLOW.md` | HITL rules, resume, TTL |
 | `SYSTEM_DIAGRAM.md` | Diagrams |

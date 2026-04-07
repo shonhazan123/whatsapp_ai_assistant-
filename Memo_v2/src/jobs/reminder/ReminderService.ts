@@ -49,69 +49,18 @@ export class ReminderService {
   }
 
   /**
-   * Send reminders for tasks that are due soon (both one-time and recurring)
+   * Send reminders for tasks that are due soon (both one-time and recurring).
+   * One-time and recurring are merged, grouped once per user/local hour, so the user gets a single WhatsApp message.
    */
   async sendUpcomingReminders(): Promise<void> {
     try {
-
-      // Get one-time reminders
       const oneTimeReminders = await this.getOneTimeReminders();
-
-      // Group one-time reminders by user and time window
-      const groupedOneTime = this.groupRemindersByTimeWindow(oneTimeReminders);
-
-      // Send grouped one-time reminders
-      for (const [key, tasks] of groupedOneTime) {
-        try {
-          // Phase 6: Filter reminders in DEBUG environment
-          if (ENVIRONMENT === 'DEBUG' && tasks[0].phone !== DEBUG_PHONE_NUMBER) {
-            continue;
-          }
-          
-          const rawData = tasks.length === 1
-            ? this.buildOneTimeReminderData(tasks[0])
-            : this.buildCombinedOneTimeReminderData(tasks);
-          
-          const message = await this.enhanceMessageWithAI(rawData, tasks[0].phone);
-          await sendWhatsAppMessage(tasks[0].phone, message);
-          
-          const taskTexts = tasks.map(t => t.text).join(', ');
-          this.loggerInstance.info(`✅ Sent ${tasks.length} one-time reminder(s) to ${tasks[0].phone}: ${taskTexts}`);
-          
-          // Store reminder metadata in conversation window for reply context
-          this.conversationWindow.addMessage(
-            tasks[0].phone,
-            'assistant',
-            message,
-            {
-              reminderContext: {
-                taskTexts: tasks.map(t => t.text),
-                taskIds: tasks.map(t => t.id),
-                reminderType: 'one-time',
-                sentAt: new Date().toISOString()
-              }
-            }
-          );
-          
-          // Clear next_reminder_at for all tasks in group
-          for (const task of tasks) {
-            await this.updateNextReminderAt(task.id, null);
-            this.loggerInstance.info(`Cleared next_reminder_at for task ${task.id} (one-time reminder sent)`);
-          }
-        } catch (error) {
-          this.loggerInstance.error(`Failed to send reminder group ${key}:`, error);
-        }
-      }
-
-      // Get recurring reminders
       const recurringReminders = await this.getRecurringReminders();
 
-      // Filter out tasks that should be skipped (ended recurrence, nudge limit reached)
       const validRecurringReminders: TaskWithUser[] = [];
       const tasksToDelete: string[] = [];
 
       for (const task of recurringReminders) {
-        // Parse reminder_recurrence if it's a string
         let recurrence: ReminderRecurrence | null = null;
         if (task.reminder_recurrence) {
           if (typeof task.reminder_recurrence === 'string') {
@@ -121,13 +70,11 @@ export class ReminderService {
           }
         }
 
-        // Check if recurrence has ended
         if (recurrence && this.hasRecurrenceEnded(recurrence)) {
           this.loggerInstance.info(`Recurrence ended for task ${task.id}, skipping reminder`);
           continue;
         }
 
-        // Check nudge limit for nudge-type reminders
         const nudgeCount = task.nudge_count || 0;
         if (recurrence?.type === 'nudge' && nudgeCount >= NUDGE_LIMIT) {
           this.loggerInstance.info(`Nudge limit (${NUDGE_LIMIT}) reached for task ${task.id}, auto-deleting: ${task.text}`);
@@ -138,100 +85,173 @@ export class ReminderService {
         validRecurringReminders.push(task);
       }
 
-      // Delete tasks that hit nudge limit
       for (const taskId of tasksToDelete) {
         await this.deleteTask(taskId);
       }
 
-      // Group recurring reminders by user and time window
-      const groupedRecurring = this.groupRemindersByTimeWindow(validRecurringReminders);
+      const seenIds = new Set<string>();
+      const merged: TaskWithUser[] = [];
+      for (const t of oneTimeReminders) {
+        if (seenIds.has(t.id)) {
+          this.loggerInstance.warn(`Duplicate task id ${t.id} in one-time reminder list, skipping`);
+          continue;
+        }
+        seenIds.add(t.id);
+        merged.push(t);
+      }
+      for (const t of validRecurringReminders) {
+        if (seenIds.has(t.id)) {
+          this.loggerInstance.warn(`Task ${t.id} listed as both one-time and recurring — skipping recurring row`);
+          continue;
+        }
+        seenIds.add(t.id);
+        merged.push(t);
+      }
 
-      // Send grouped recurring reminders and update next_reminder_at
-      for (const [key, tasks] of groupedRecurring) {
+      const grouped = this.groupRemindersByTimeWindow(merged);
+
+      for (const [key, tasks] of grouped) {
         try {
-          // Phase 6: Filter reminders in DEBUG environment
           if (ENVIRONMENT === 'DEBUG' && tasks[0].phone !== DEBUG_PHONE_NUMBER) {
             continue;
           }
-          
-          const rawData = tasks.length === 1
-            ? this.buildRecurringReminderData(tasks[0])
-            : this.buildCombinedRecurringReminderData(tasks);
-          
+
+          const rawData =
+            tasks.length === 1
+              ? this.buildSingleReminderRawData(tasks[0])
+              : this.buildDbReminderBatchPayload(tasks);
+
           const message = await this.enhanceMessageWithAI(rawData, tasks[0].phone);
           await sendWhatsAppMessage(tasks[0].phone, message);
-          
-          const taskTexts = tasks.map(t => t.text).join(', ');
-          this.loggerInstance.info(`✅ Sent ${tasks.length} recurring reminder(s) to ${tasks[0].phone}: ${taskTexts}`);
 
-          // Store reminder metadata in conversation window for reply context
-          let reminderType: 'one-time' | 'recurring' | 'nudge' = 'recurring';
+          const taskTexts = tasks.map((t) => t.text).join(', ');
+          this.loggerInstance.info(`✅ Sent ${tasks.length} reminder(s) to ${tasks[0].phone}: ${taskTexts}`);
+
+          this.conversationWindow.addMessage(tasks[0].phone, 'assistant', message, {
+            reminderContext: {
+              taskTexts: tasks.map((t) => t.text),
+              taskIds: tasks.map((t) => t.id),
+              reminderType: this.inferReminderContextType(tasks),
+              sentAt: new Date().toISOString(),
+            },
+          });
+
           for (const task of tasks) {
-            if (task.reminder_recurrence) {
-              const rec = typeof task.reminder_recurrence === 'string' 
-                ? JSON.parse(task.reminder_recurrence) 
-                : task.reminder_recurrence;
-              if (rec.type === 'nudge') {
-                reminderType = 'nudge';
-                break;
-              }
-            }
-          }
-          
-          this.conversationWindow.addMessage(
-            tasks[0].phone,
-            'assistant',
-            message,
-            {
-              reminderContext: {
-                taskTexts: tasks.map(t => t.text),
-                taskIds: tasks.map(t => t.id),
-                reminderType: reminderType,
-                sentAt: new Date().toISOString()
-              }
-            }
-          );
-
-          // Process each task in the group
-          for (const task of tasks) {
-            // Parse reminder_recurrence if it's a string
-            let recurrence: ReminderRecurrence | null = null;
-            if (task.reminder_recurrence) {
-              if (typeof task.reminder_recurrence === 'string') {
-                recurrence = JSON.parse(task.reminder_recurrence);
-              } else {
-                recurrence = task.reminder_recurrence as ReminderRecurrence;
-              }
-            }
-
-            // Increment nudge count for nudge-type reminders
-            if (recurrence?.type === 'nudge') {
-              const newNudgeCount = await this.taskService.incrementNudgeCount(task.id);
-              this.loggerInstance.info(`Incremented nudge count for task ${task.id}: ${newNudgeCount}/${NUDGE_LIMIT}`);
-              
-              // Check if we just hit the limit (15th nudge was sent)
-              if (newNudgeCount >= NUDGE_LIMIT) {
-                this.loggerInstance.info(`Nudge limit (${NUDGE_LIMIT}) reached after sending reminder, auto-deleting task ${task.id}: ${task.text}`);
-                await this.deleteTask(task.id);
-                continue; // Don't schedule next reminder
-              }
-            }
-
-            // Calculate and update next_reminder_at (only if task wasn't deleted)
-            if (recurrence) {
-              const nextReminderAt = this.calculateNextRecurrence(recurrence, new Date(), task);
-              await this.updateNextReminderAt(task.id, nextReminderAt.toISOString());
-              this.loggerInstance.info(`Updated next_reminder_at for task ${task.id}: ${nextReminderAt.toISOString()}`);
+            if (!task.reminder_recurrence) {
+              await this.updateNextReminderAt(task.id, null);
+              this.loggerInstance.info(`Cleared next_reminder_at for task ${task.id} (one-time reminder sent)`);
+            } else {
+              await this.applyRecurringAfterSend(task);
             }
           }
         } catch (error) {
-          this.loggerInstance.error(`Failed to send recurring reminder group ${key}:`, error);
+          this.loggerInstance.error(`Failed to send reminder group ${key}:`, error);
         }
       }
-
     } catch (error) {
       this.loggerInstance.error('Error in sendUpcomingReminders:', error);
       throw error;
+    }
+  }
+
+  private buildSingleReminderRawData(task: TaskWithUser): string {
+    return task.reminder_recurrence
+      ? this.buildRecurringReminderData(task)
+      : this.buildOneTimeReminderData(task);
+  }
+
+  /**
+   * Structured payload for the message enhancer: must start with DONNA_DB_REMINDER_BATCH
+   * so the formatter uses Type (C), not the morning-brief template.
+   */
+  private buildDbReminderBatchPayload(tasks: TaskWithUser[]): string {
+    const lines = [
+      'DONNA_DB_REMINDER_BATCH',
+      'Source: user task reminders (database). Not Google Calendar. Not morning digest.',
+    ];
+    for (let i = 0; i < tasks.length; i++) {
+      const task = tasks[i];
+      const instant = this.getReminderInstant(task);
+      const tz = task.timezone || 'Asia/Jerusalem';
+      const timeStr = instant
+        ? instant.toLocaleTimeString('en-US', { timeZone: tz, timeStyle: 'short' })
+        : '';
+      const kind = task.reminder_recurrence ? `recurring (${this.formatRecurrenceShort(task)})` : 'one-time';
+      let row = `${i + 1}. ${timeStr ? `${timeStr} | ` : ''}${task.text}`;
+      if (task.category) row += ` | cat: ${task.category}`;
+      row += ` | ${kind}`;
+      lines.push(row);
+    }
+    return lines.join('\n');
+  }
+
+  private formatRecurrenceShort(task: TaskWithUser): string {
+    if (!task.reminder_recurrence) return 'n/a';
+    let recurrence: ReminderRecurrence;
+    if (typeof task.reminder_recurrence === 'string') {
+      recurrence = JSON.parse(task.reminder_recurrence);
+    } else {
+      recurrence = task.reminder_recurrence as ReminderRecurrence;
+    }
+    const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    switch (recurrence.type) {
+      case 'nudge':
+        return `nudge ${recurrence.interval || '10 minutes'}`;
+      case 'daily':
+        return `daily ${recurrence.time || ''}`.trim();
+      case 'weekly':
+        if (recurrence.days?.length && recurrence.time) {
+          const days = recurrence.days.map((d) => dayNames[d]).join(',');
+          return `weekly ${days} ${recurrence.time}`;
+        }
+        return 'weekly';
+      case 'monthly':
+        return `monthly day ${recurrence.dayOfMonth} ${recurrence.time || ''}`.trim();
+      default:
+        return recurrence.type;
+    }
+  }
+
+  private inferReminderContextType(tasks: TaskWithUser[]): 'one-time' | 'recurring' | 'nudge' {
+    for (const task of tasks) {
+      if (!task.reminder_recurrence) continue;
+      const rec =
+        typeof task.reminder_recurrence === 'string'
+          ? JSON.parse(task.reminder_recurrence)
+          : task.reminder_recurrence;
+      if (rec.type === 'nudge') return 'nudge';
+    }
+    if (tasks.some((t) => t.reminder_recurrence)) return 'recurring';
+    return 'one-time';
+  }
+
+  private async applyRecurringAfterSend(task: TaskWithUser): Promise<void> {
+    let recurrence: ReminderRecurrence | null = null;
+    if (task.reminder_recurrence) {
+      if (typeof task.reminder_recurrence === 'string') {
+        recurrence = JSON.parse(task.reminder_recurrence);
+      } else {
+        recurrence = task.reminder_recurrence as ReminderRecurrence;
+      }
+    }
+
+    if (recurrence?.type === 'nudge') {
+      const newNudgeCount = await this.taskService.incrementNudgeCount(task.id);
+      this.loggerInstance.info(`Incremented nudge count for task ${task.id}: ${newNudgeCount}/${NUDGE_LIMIT}`);
+
+      if (newNudgeCount >= NUDGE_LIMIT) {
+        this.loggerInstance.info(
+          `Nudge limit (${NUDGE_LIMIT}) reached after sending reminder, auto-deleting task ${task.id}: ${task.text}`
+        );
+        await this.deleteTask(task.id);
+        return;
+      }
+    }
+
+    if (recurrence) {
+      const nextReminderAt = this.calculateNextRecurrence(recurrence, new Date(), task);
+      await this.updateNextReminderAt(task.id, nextReminderAt.toISOString());
+      this.loggerInstance.info(`Updated next_reminder_at for task ${task.id}: ${nextReminderAt.toISOString()}`);
     }
   }
 
@@ -717,16 +737,19 @@ export class ReminderService {
   }
 
   /**
-   * Group reminders by user phone and exact time (same timestamp)
-   * Returns a Map with key format: "phone|exactTime" and value as array of tasks
+   * Group reminders by user phone and **local calendar hour** (user timezone).
+   * Uses `next_reminder_at` when set (canonical fire time); otherwise `due_date`.
+   * This batches all reminders that fire in the same local hour into one WhatsApp message
+   * (fixes separate sends when timestamps differ by seconds/minutes or when recurring tasks have no due_date).
    */
   private groupRemindersByTimeWindow(tasks: TaskWithUser[]): Map<string, TaskWithUser[]> {
     const groups = new Map<string, TaskWithUser[]>();
+    const tzDefault = 'Asia/Jerusalem';
 
     for (const task of tasks) {
-      if (!task.due_date) {
-        // If no due_date, treat as separate group
-        const key = `${task.phone}|no-date-${task.id}`;
+      const instant = this.getReminderInstant(task);
+      if (!instant) {
+        const key = `${task.phone}|no-time-${task.id}`;
         if (!groups.has(key)) {
           groups.set(key, []);
         }
@@ -734,10 +757,10 @@ export class ReminderService {
         continue;
       }
 
-      const dueDate = new Date(task.due_date);
-      // Use exact timestamp (millisecond precision) for grouping
-      const exactTime = dueDate.getTime();
-      const key = `${task.phone}|${exactTime}`;
+      const tz = task.timezone || tzDefault;
+      const parts = getDatePartsInTimezone(tz, instant);
+      const dateKey = `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
+      const key = `${task.phone}|${dateKey}|H${parts.hour}`;
 
       if (!groups.has(key)) {
         groups.set(key, []);
@@ -745,91 +768,27 @@ export class ReminderService {
       groups.get(key)!.push(task);
     }
 
+    for (const list of groups.values()) {
+      list.sort((a, b) => {
+        const ta = this.getReminderInstant(a)?.getTime() ?? 0;
+        const tb = this.getReminderInstant(b)?.getTime() ?? 0;
+        if (ta !== tb) return ta - tb;
+        return a.id.localeCompare(b.id);
+      });
+    }
+
     return groups;
   }
 
-  /**
-   * Build combined data structure for multiple one-time reminders
-   */
-  private buildCombinedOneTimeReminderData(tasks: TaskWithUser[]): string {
-    if (tasks.length === 0) {
-      return '';
+  /** Instant when the reminder fires (prefer DB `next_reminder_at`). */
+  private getReminderInstant(task: TaskWithUser): Date | null {
+    if (task.next_reminder_at) {
+      return new Date(task.next_reminder_at);
     }
-
-    // Use the first task's due date (they should all be in the same time window)
-    const dueDate = tasks[0].due_date ? new Date(tasks[0].due_date).toLocaleString('en-US', {
-      timeZone: tasks[0].timezone || 'Asia/Jerusalem',
-      dateStyle: 'medium',
-      timeStyle: 'short'
-    }) : 'N/A';
-
-    // Combine all task texts
-    const taskTexts = tasks.map((task, index) => {
-      let text = `${index + 1}. ${task.text}`;
-      if (task.category) {
-        text += ` (${task.category})`;
-      }
-      return text;
-    }).join('\n');
-
-    let data = `Tasks:\n${taskTexts}\nDue: ${dueDate}`;
-
-    return data;
-  }
-
-  /**
-   * Build combined data structure for multiple recurring reminders
-   */
-  private buildCombinedRecurringReminderData(tasks: TaskWithUser[]): string {
-    if (tasks.length === 0) {
-      return '';
+    if (task.due_date) {
+      return new Date(task.due_date);
     }
-
-    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-    
-    // Combine all task texts with their recurrence info
-    const taskTexts = tasks.map((task, index) => {
-      let recurrenceInfo = 'Recurring reminder';
-      
-      if (task.reminder_recurrence) {
-        let recurrence: ReminderRecurrence;
-        if (typeof task.reminder_recurrence === 'string') {
-          recurrence = JSON.parse(task.reminder_recurrence);
-        } else {
-          recurrence = task.reminder_recurrence as ReminderRecurrence;
-        }
-        
-        switch (recurrence.type) {
-          case 'nudge':
-            recurrenceInfo = `Nudging every ${recurrence.interval || '10 minutes'}`;
-            break;
-          case 'daily':
-            recurrenceInfo = `Every day at ${recurrence.time}`;
-            break;
-          case 'weekly':
-            if (recurrence.days && recurrence.days.length > 0) {
-              const days = recurrence.days.map(d => dayNames[d]).join(', ');
-              recurrenceInfo = `Every ${days} at ${recurrence.time}`;
-            }
-            break;
-          case 'monthly':
-            recurrenceInfo = `Every month on day ${recurrence.dayOfMonth} at ${recurrence.time}`;
-            break;
-        }
-      }
-
-      let text = `${index + 1}. ${task.text}`;
-      if (task.category) {
-        text += ` (${task.category})`;
-      }
-      text += `\n   Recurrence: ${recurrenceInfo}`;
-      
-      return text;
-    }).join('\n\n');
-
-    let data = `Tasks:\n${taskTexts}`;
-
-    return data;
+    return null;
   }
 
   /**

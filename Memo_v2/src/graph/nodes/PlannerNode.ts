@@ -164,9 +164,12 @@ Use action hints from the RESOLVER CAPABILITIES section above. Examples:
 - general_resolver: "respond", "greet", "acknowledge", "ask_about_recent_actions", "ask_about_user", "ask_about_what_i_did", "describe_capabilities", "what_can_you_do", "help", "status", "website", "about_agent", "plan_info", "account_status", "morning_brief_time" (daily digest / morning brief **schedule** on WhatsApp — user must change on website; NOT a task reminder)
 
 **Reminder vs Task (database):**
-- **create reminder** = user wants to be notified at a specific date+time ("תזכיר לי מחר בשמונה", "remind me at 5pm"). Requires BOTH date AND time; if either is missing → missingFields: ["reminder_time_required"].
+- **create reminder** = user wants to be notified at a specific date+time ("תזכיר לי מחר בשמונה", "remind me at 5pm"), OR a **recurring / nudge** pattern ("כל 2 דקות", "every 10 minutes", "nudge me hourly").
+  * **One-time or daily/weekly/monthly reminder:** requires BOTH a specific date (or resolvable day) AND clock time (or a valid time-of-day descriptor like "מחר בבוקר"); if missing → missingFields: ["reminder_time_required"] when applicable below.
+  * **Nudge only (every X minutes/hours), no start anchor:** user gives only the repeat interval (e.g. "תזכירי לי כל 2 דקות", "remind me every 5 minutes") and does NOT say when to **start** (e.g. no "from 5pm", "starting tomorrow at 8", "מחר מחמש"). Treat start as **now**; database_task_resolver + TaskService support nudge without dueDate → **missingFields: []** (do NOT use "reminder_time_required").
+  * **Nudge + explicit start:** user says both interval and when it starts (date/time or "from tomorrow evening") → **missingFields: []**; resolver encodes dueDate and/or recurrence as needed.
 - **create task** = user lists things to do with NO time (e.g. "משימות שאני צריך לעשות", "להתקשר לבנק", "לקבוע עם אמא פגישה", "תוסיפי משימה X"). No time required; do NOT set missingFields for time.
-- If user said "תזכיר לי היום X" or "תזכיר לי מחר X" but did not give a time → action "create reminder" + missingFields: ["reminder_time_required"].
+- If user said "תזכיר לי היום X" or "תזכיר לי מחר X" but did not give a time → action "create reminder" + missingFields: ["reminder_time_required"] (unless they only asked for a nudge interval with no day anchor — then see nudge rule above).
 
 **Valid time-of-day (do NOT interrupt / do NOT set reminder_time_required):**
 When the user gives a **day + time-of-day descriptor** (without a specific hour), that is a **valid time claim**. Do NOT set missingFields: ["reminder_time_required"] and do NOT trigger HITL. The calendar and database resolvers will assign a concrete hour within that range.
@@ -176,9 +179,10 @@ When the user gives a **day + time-of-day descriptor** (without a specific hour)
 
 ### 5) HITL signals (missingFields)
 If critical info is unclear, keep confidence low and include:
-- "reminder_time_required" - **CRITICAL for DATABASE reminders ONLY** (capability=database). A database reminder must have BOTH a specific date AND a specific time. Use when:
+- "reminder_time_required" - **CRITICAL for DATABASE reminders ONLY** (capability=database). A **one-time** or **daily/weekly/monthly** database reminder must have BOTH a specific date (or resolvable day) AND a specific clock time (or valid time-of-day descriptor). Use when:
   * User said "תזכיר לי" / "remind me" and gave a day/date (e.g. היום, מחר, ברביעי) but did NOT specify a time AND did NOT use a time-of-day descriptor (morning/evening/afternoon/night or בוקר/ערב/צהריים/לילה) → set missingFields: ["reminder_time_required"].
-  * User said "תזכיר לי" / "remind me" with no date and no time at all → set missingFields: ["reminder_time_required"].
+  * User said "תזכיר לי" / "remind me" with no date and no time at all **and** they are NOT asking for a **nudge-only** reminder (every X minutes/hours with implicit start now) → set missingFields: ["reminder_time_required"].
+  * **Do NOT** set "reminder_time_required" for **nudge-only** requests: "כל X דקות/שעות", "every X minutes/hours", "nudge me every …", with **no** stated start time/date (implicit now). Same for English/Hebrew nudge phrasing (נדנד, תציק, keep reminding).
   * **Do NOT** set "reminder_time_required" when the user gave a time-of-day (e.g. "מחר בבוקר", "tomorrow morning", "היום בערב"). These are valid; resolvers will assign a default hour.
   * Do NOT use "create reminder" when the user has no time at all and is just listing things to do; use "create task" instead (see Reminder vs Task below).
   * **NEVER** set "reminder_time_required" for CALENDAR events. When user says "תזכורת ביומן" / "הודעה מראש" / "advance notice", the reminder offset is handled by the calendar resolver (reminderMinutesBefore). Do NOT set any missingFields for this.
@@ -290,6 +294,25 @@ User: "תזכיר לי מחר בבוקר לקנות חלב" or "remind me tomorr
     "capability": "database",
     "action": "create reminder",
     "constraints": { "rawMessage": "תזכיר לי מחר בבוקר לקנות חלב" },
+    "changes": {},
+    "dependsOn": []
+  }]
+}
+
+### B2c) Nudge / every X minutes only (implicit start now) → NO missingFields, NO HITL
+User wants repeated nudges with an interval only; no calendar date and no clock time stated, and no "starting at …" anchor.
+User: "תזכירי לי כל 2 דקות לראות מה איתך" or "remind me every 10 minutes to drink water"
+{
+  "intentType": "operation",
+  "confidence": 0.9,
+  "riskLevel": "low",
+  "needsApproval": false,
+  "missingFields": [],
+  "plan": [{
+    "id": "A",
+    "capability": "database",
+    "action": "create reminder",
+    "constraints": { "rawMessage": "תזכירי לי כל 2 דקות לראות מה איתך" },
     "changes": {},
     "dependsOn": []
   }]

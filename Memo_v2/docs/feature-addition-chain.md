@@ -77,6 +77,8 @@ Do:
 - Add the `execute()` switch/dispatch case
 - Implement the operation using V1 services (thin adapter pattern)
 
+**Task reminders / recurrence**: `TaskServiceAdapter` receives `userTimezone` from `ExecutorNode` / `DatabaseExecutor` and merges it into `reminderRecurrence` when the LLM omits `timezone` — keep that consistent if you add fields that depend on the user’s IANA zone.
+
 Adapters must return a shape compatible with:
 - `Memo_v2/docs/RESPONSE_DATA_PATTERNS.md`
 
