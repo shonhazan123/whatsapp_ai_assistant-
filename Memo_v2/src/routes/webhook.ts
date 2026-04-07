@@ -2,8 +2,8 @@ import dotenv from "dotenv";
 import express, { Request, Response } from "express";
 import { ENVIRONMENT } from "../config/environment";
 // Memo V2 (LangGraph-based); image and audio handled in Memo V2 only
-import { invokeMemoGraphSimple } from "../graph/index";
-import { processAudioMessage, processImageMessage } from "../handlers/mediaHandlers";
+import { invokeMemoGraph } from "../graph/index";
+import { invokeMemoGraphFromAudio, processImageMessage } from "../handlers/mediaHandlers";
 import { UserService } from "../legacy/services/database/UserService";
 import { DebugForwarderService } from "../services/debug/DebugForwarderService";
 import { PerformanceLogService } from "../services/performance/PerformanceLogService";
@@ -14,6 +14,7 @@ import {
   sendTypingIndicator,
   sendWhatsAppMessage,
 } from "../services/whatsapp";
+import { deliverMemoGraphInvokeResult } from "../services/whatsappGraphSend";
 import { runExclusive } from "../services/concurrency/UserRequestLock";
 import { WhatsAppMessage, WhatsAppWebhookPayload } from "../types/whatsapp";
 import { logger } from "../legacy/utils/logger";
@@ -240,13 +241,14 @@ export async function handleIncomingMessage(
 			try {
 				const lockResult = await runExclusive(userPhone, async () => {
 					const audioBuffer = await downloadWhatsAppMedia(message.audio!.id);
-					const response = await processAudioMessage(
+					const invokeResult = await invokeMemoGraphFromAudio(
 						userPhone,
 						audioBuffer,
 						message.id || "",
 					);
-					await sendWhatsAppMessage(userPhone, response);
-					return response;
+					// Same delivery rules as text: plain text default; optional HITL template if configured.
+					await deliverMemoGraphInvokeResult(userPhone, invokeResult);
+					return invokeResult.response;
 				});
 				if (lockResult.status === "rejected") {
 					await sendWhatsAppMessage(userPhone, BUSY_MESSAGE);
@@ -354,15 +356,15 @@ export async function handleIncomingMessage(
 			logger.info(`🤖 AI Processing: "${messageText}"`);
 
 			// Invoke graph directly (no RequestContext wrapper needed - graph uses MemoState)
-			const response = await invokeMemoGraphSimple(userPhone, messageText, {
+			const invokeResult = await invokeMemoGraph(userPhone, messageText, {
 				whatsappMessageId: message.id,
 				replyToMessageId: replyToMessageId,
 				triggerType: "user",
 			});
-			logger.info(`💡 AI Response: "${response}"`);
+			logger.info(`💡 AI Response: "${invokeResult.response}"`);
 
-			// Send agent response back to user
-			await sendWhatsAppMessage(userPhone, response);
+			// Plain text for normal + most HITL; template only for yes/no HITL when template env vars are set.
+			await deliverMemoGraphInvokeResult(userPhone, invokeResult);
 
 			const duration = Date.now() - startTime;
 			logger.info(`✅ Message handled successfully in ${duration}ms`);
@@ -393,7 +395,7 @@ export async function handleIncomingMessage(
 				}
 			}
 
-			return response;
+			return invokeResult.response;
 		});
 
 		if (lockResult.status === "rejected") {

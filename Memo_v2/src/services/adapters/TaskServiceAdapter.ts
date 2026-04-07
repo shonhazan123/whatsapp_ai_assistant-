@@ -32,6 +32,7 @@ export interface TaskOperationArgs {
   filters?: {
     completed?: boolean;
     category?: string;
+    /** Time buckets: use window "null" for tasks with no due_date (DB: due_date IS NULL) */
     window?: string;
     type?: string;  // recurring | unplanned | reminder
     reminderRecurrence?: string;
@@ -50,6 +51,7 @@ export interface TaskOperationArgs {
     reminderDetails?: any;
   }>;
   where?: {
+    /** Bulk filters: window "null" = tasks whose due_date is null (no separate flag). */
     window?: string;
     type?: string;  // recurring | unplanned | reminder
     reminderRecurrence?: string;
@@ -290,6 +292,9 @@ export class TaskServiceAdapter {
             return dueDate && dueDate < now;
           case 'upcoming':
             return dueDate && dueDate >= now;
+          /** String "null": tasks with no due_date (same as DB due_date IS NULL) */
+          case 'null':
+            return !task.due_date;
           default:
             return true;
         }
@@ -463,7 +468,7 @@ export class TaskServiceAdapter {
   
   /**
    * Delete all tasks matching a filter
-   * Uses where.window to filter: 'today', 'this_week', 'overdue', 'all'
+   * Uses where.window to filter: 'today', 'this_week', 'overdue', 'all', 'null' (no due_date)
    * Uses where.type to filter: 'recurring', 'unplanned', 'reminder'
    */
   private async deleteAllTasks(taskService: any, args: TaskOperationArgs): Promise<TaskOperationResult> {
@@ -634,7 +639,7 @@ export class TaskServiceAdapter {
   
   /**
    * Update all tasks matching a filter
-   * Uses where.window to filter: 'today', 'this_week', 'overdue', 'all'
+   * Uses where.window to filter: 'today', 'this_week', 'overdue', 'all', 'null' (no due_date)
    * Uses where.type to filter: 'recurring', 'unplanned', 'reminder'
    * Uses patch to specify what fields to update
    */

@@ -29,7 +29,8 @@ Your job is to answer ONLY from the provided context. In each request you receiv
 
 YOU MAY:
 - Answer "what's my name?", "did you create X?", "what are the recent things you created?"
-- Answer "what can you do?", "help", "who are you?", "what's my plan?", "what's the website?", "privacy policy?", status/account questions; when asked for a link (website, support, privacy, pricing, login), provide the URL from Agent Information or Help Links once, on its own line or after a short label
+- Answer "what can you do?", "help", "who are you?", "what's my plan?", "what's the website?", "privacy policy?", status/account questions; when asked for a link (website, support, privacy, pricing, **or login only when they ask how to log in**), provide the URL from Agent Information or Help Links once, on its own line or after a short label
+- **Morning brief / daily digest / Hebrew תדרוך (action morning_brief_time):** When the user asks to **change**, **set**, or **choose** the time for the **automated daily briefing** (morning brief, daily digest, **שעת תדרוך**, **סיכום בוקר**, etc.) — **not** a one-off task reminder — you **cannot** change it in this chat. They must use **Settings** on the website. In your reply you **must** give them **only** the **Settings URL** line from Agent Information (exact URL under **Settings URL**). **Never** use the **login** URL, **never** use Help Links "Get started", **never** write **/login**. One short explanation + that Settings URL on its own line is enough.
 - Acknowledge: thank you, okay, בסדר, תודה
 - Greet and guide the user. Match the user's language (Hebrew or English).
 
@@ -38,6 +39,7 @@ RULES:
 - **Single message only — no follow-ups:** You cannot send another message later. This reply is the ONLY one the user will get. Never imply that more will follow. FORBIDDEN in any language: "I'll explain", "I'm explaining now", "here's a brief…", "אסביר לך", "אסביר עכשיו", "אסכם לך", "אפרט", "אפרט עכשיו", "אפרט בהודעה", "בהודעה המלאה", "בקצרה", "בהמשך", "נצלול אחר כך", "more below", "I'm about to tell you", "let me tell you", "we can dive later", "I'll detail", "in the full message". Give the complete answer in this single message; if you don't have the information, say so clearly (e.g. "I don't have the exact next reminder time" / "אין לי את מועד התזכורת הבאה").
 - **When the user asks "what can you do?" / help / describe_capabilities:** Your response MUST contain, in this same message, a FULL list: for EACH capability that is enabled for this user (see User section), write a clear heading/label and the FULL short description from the Capabilities reference, in the user's language (use the HE line for Hebrew, EN for English). Do NOT write only a one-line summary of capability names followed by "אפרט" or "I'll detail" or any promise to give more — the full descriptions ARE the response. Format example: a brief greeting if you wish, then for each enabled capability write something like "• יומן (גוגל): [full description from reference]" then "• משימות ותזכורות: [full description]" then "• מוח שני: [full description]". Every enabled capability must appear with its full description in this single message.
 - The response is sent over WhatsApp as plain text: no markdown link syntax like [text](url). To share a link, write it once on its own line or after a short label, e.g. "האתר: https://donnai.io". Never write the URL twice.
+- **If action is morning_brief_time:** Your response text must contain the **Settings URL** from Agent Information and must **not** contain **donnai.io/login** or any "/login" path for this topic.
 - Use *asterisks* for bold only if needed. Keep links and text clean; short lines for readability on a phone.
 - Never expose internal details (file names, code paths, env vars). Do not answer general-knowledge questions outside this app.
 
@@ -58,6 +60,7 @@ function buildStaticContextBlock(): string {
     `- Name (EN): ${metaInfo.agentName}${mi.agentNameHebrew ? ` | Name (HE): ${mi.agentNameHebrew}` : ''}`,
     `- Description (EN): ${metaInfo.shortDescription}${mi.shortDescriptionHebrew ? `\n- Description (HE): ${mi.shortDescriptionHebrew}` : ''}`,
     `- Website URL: ${metaInfo.websiteUrl}`,
+    `- Settings URL (morning brief / daily digest / תדרוך time — use ONLY this, never /login): ${metaInfo.settingsUrl}`,
   ];
   if (metaInfo.supportUrl) lines.push(`- Support URL: ${metaInfo.supportUrl}`);
   if (metaInfo.privacyUrl) lines.push(`- Privacy URL: ${metaInfo.privacyUrl}`);
@@ -89,7 +92,7 @@ const CACHED_SYSTEM_PROMPT = SYSTEM_INSTRUCTIONS + '\n\n' + buildStaticContextBl
 /**
  * GeneralResolver — single resolver for all user and system informative questions.
  * Actions: respond, greet, acknowledge, ask_about_* (user/recent actions), clarify, unknown;
- * plus describe_capabilities, what_can_you_do, help, status, website, about_agent, plan_info, account_status.
+ * plus describe_capabilities, what_can_you_do, help, status, website, about_agent, plan_info, account_status, morning_brief_time.
  */
 export class GeneralResolver extends LLMResolver {
   readonly name = 'general_resolver';
@@ -113,6 +116,7 @@ export class GeneralResolver extends LLMResolver {
     'about_agent',
     'plan_info',
     'account_status',
+    'morning_brief_time',
   ];
 
   getSystemPrompt(): string {
@@ -192,6 +196,12 @@ export class GeneralResolver extends LLMResolver {
 
     lines.push('## User message');
     lines.push(`Action hint: ${step.action}`);
+    if (step.action === 'morning_brief_time') {
+      const settingsUrl = getMetaInfo().settingsUrl;
+      lines.push(
+        `**Mandatory for your reply:** Include this exact URL so the user can change morning brief / תדרוך time: ${settingsUrl} — Do NOT use Help Links or any URL containing /login.`
+      );
+    }
     if (Object.keys(step.constraints).length > 0) {
       lines.push(`Constraints: ${JSON.stringify(step.constraints)}`);
     }
@@ -204,10 +214,18 @@ export class GeneralResolver extends LLMResolver {
   async resolve(step: PlanStep, state: MemoState): Promise<ResolverOutput> {
     try {
       const llmResult = await this.callLLM(step, state);
+      let responseText = llmResult.response ?? '';
+      if (step.action === 'morning_brief_time' && responseText) {
+        const settingsUrl = getMetaInfo().settingsUrl;
+        responseText = responseText.replace(/https?:\/\/(?:www\.)?donnai\.io\/login\/?/gi, settingsUrl);
+        if (!responseText.includes(settingsUrl)) {
+          responseText = `${responseText.trim()}\n\n${settingsUrl}`;
+        }
+      }
 
       const args: Record<string, any> = {
         action: step.action,
-        response: llmResult.response,
+        response: responseText,
         language: llmResult.language || state.user.language,
       };
 

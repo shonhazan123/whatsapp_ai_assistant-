@@ -15,6 +15,8 @@ export interface UserRecord {
   google_email: string | null;
   onboarding_complete: boolean;
   onboarding_last_prompt_at: string | null;
+  /** Local time for morning digest in HH:MM:SS format, interpreted in user's timezone. */
+  morning_brief_time: string;
   created_at: string;
   updated_at: string;
   /** Billing subscription status. When not 'active', user is considered inactive and prompted to rejoin. */
@@ -52,7 +54,7 @@ export class UserService extends BaseService {
 
   async findById(userId: string): Promise<UserRecord | null> {
     const row = await this.executeSingleQuery<any>(
-      `SELECT id, whatsapp_number, plan_type, timezone, settings, google_email, onboarding_complete, onboarding_last_prompt_at, created_at, updated_at,
+      `SELECT id, whatsapp_number, plan_type, timezone, settings, google_email, onboarding_complete, onboarding_last_prompt_at, morning_brief_time, created_at, updated_at,
               subscription_status, subscription_period_end, cancel_at_period_end
        FROM users
        WHERE id = $1`,
@@ -64,7 +66,7 @@ export class UserService extends BaseService {
 
   async findByWhatsappNumber(whatsappNumber: string): Promise<UserRecord | null> {
     const row = await this.executeSingleQuery<any>(
-      `SELECT id, whatsapp_number, plan_type, timezone, settings, google_email, onboarding_complete, onboarding_last_prompt_at, created_at, updated_at,
+      `SELECT id, whatsapp_number, plan_type, timezone, settings, google_email, onboarding_complete, onboarding_last_prompt_at, morning_brief_time, created_at, updated_at,
               subscription_status, subscription_period_end, cancel_at_period_end
        FROM users
        WHERE whatsapp_number = $1`,
@@ -93,7 +95,7 @@ export class UserService extends BaseService {
       `UPDATE users
        SET plan_type = $2, updated_at = NOW()
        WHERE id = $1
-       RETURNING id, whatsapp_number, plan_type, timezone, settings, google_email, onboarding_complete, onboarding_last_prompt_at, created_at, updated_at,
+       RETURNING id, whatsapp_number, plan_type, timezone, settings, google_email, onboarding_complete, onboarding_last_prompt_at, morning_brief_time, created_at, updated_at,
                subscription_status, subscription_period_end, cancel_at_period_end`,
       [userId, planType]
     );
@@ -204,6 +206,19 @@ export class UserService extends BaseService {
     return new Date(value).toISOString();
   }
 
+  async updateMorningBriefTime(userId: string, time: string): Promise<UserRecord | null> {
+    const row = await this.executeSingleQuery<any>(
+      `UPDATE users
+       SET morning_brief_time = $2::TIME, updated_at = NOW()
+       WHERE id = $1
+       RETURNING id, whatsapp_number, plan_type, timezone, settings, google_email, onboarding_complete, onboarding_last_prompt_at, morning_brief_time, created_at, updated_at,
+               subscription_status, subscription_period_end, cancel_at_period_end`,
+      [userId, time]
+    );
+
+    return row ? this.mapUser(row) : null;
+  }
+
   private mapUser(row: any): UserRecord {
     return {
       id: row.id,
@@ -214,6 +229,7 @@ export class UserService extends BaseService {
       google_email: row.google_email ?? null,
       onboarding_complete: row.onboarding_complete ?? false,
       onboarding_last_prompt_at: row.onboarding_last_prompt_at ?? null,
+      morning_brief_time: row.morning_brief_time ?? '08:00:00',
       created_at: row.created_at,
       updated_at: row.updated_at,
       subscription_status: row.subscription_status ?? null,

@@ -11,6 +11,8 @@ export interface MetaInfo {
   shortDescription: string;
   shortDescriptionHebrew: string;
   websiteUrl: string;
+  /** Account settings (e.g. morning brief time). Prefer this over login for preference changes. */
+  settingsUrl: string;
   supportUrl?: string;
   privacyUrl?: string;
   helpLinks: { label: string; url: string }[];
@@ -24,6 +26,7 @@ export const META_INFO: MetaInfo = {
   shortDescriptionHebrew:
     'דונה הופכת את WhatsApp למוח השני שלך — כך שתוכלי לחשוב פחות ולעשות יותר. מזכירה אישית חכמה ליומן, משימות, זיכרון ועוד.',
   websiteUrl:  'https://donnai.io',
+  settingsUrl: 'https://donnai.io/settings',
   supportUrl: "donnai.help@gmail.com",
   privacyUrl: "https://donnai.io/privacy",
   helpLinks: [

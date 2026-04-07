@@ -40,15 +40,13 @@ export class SchedulerService {
     // It checks if it's the configured hour for each user's timezone
     cron.schedule('0 * * * *', async () => {
       try {
-        logger.debug('⏰ Running scheduled morning digest check...');
         await this.reminderService.sendMorningDigest(this.morningDigestHour);
       } catch (error) {
         logger.error('❌ Error in scheduled morning digest:', error);
-        // Continue running - don't let one failure stop the scheduler
       }
     });
 
-    logger.info(`✅ Scheduled daily digest checks every hour (will send at ${this.morningDigestHour}:00 in user's timezone)`);
+    logger.info(`✅ Scheduled daily digest checks every hour (per-user preferred time, fallback: ${this.morningDigestHour}:00)`);
 
     this.isRunning = true;
     logger.info('✅ Reminder scheduler started successfully');

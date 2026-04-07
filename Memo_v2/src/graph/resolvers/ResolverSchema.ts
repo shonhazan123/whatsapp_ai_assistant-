@@ -543,7 +543,7 @@ export const SECONDBRAIN_SCHEMA: ResolverSchema = {
 export const GENERAL_SCHEMA: ResolverSchema = {
   name: 'general_resolver',
   capability: 'general',
-  summary: 'Answer questions about the user (name, account, capabilities), about what the assistant did (last/recent actions), acknowledgments; and about the agent (capabilities, help, status, who are you, plan/pricing, website). One resolver for all user and system info. Not for general knowledge or open-ended advice.',
+  summary: 'Answer questions about the user (name, account, capabilities), about what the assistant did (last/recent actions), acknowledgments; and about the agent (capabilities, help, status, who are you, plan/pricing, website). Includes redirect for **morning brief / daily digest time** changes (user must use the website — not configurable in chat). One resolver for all user and system info. Not for general knowledge or open-ended advice.',
   actionHints: [
     'respond',
     'greet',
@@ -561,6 +561,7 @@ export const GENERAL_SCHEMA: ResolverSchema = {
     'about_agent',
     'plan_info',
     'account_status',
+    'morning_brief_time',
   ],
   triggerPatterns: {
     hebrew: [
@@ -592,6 +593,9 @@ export const GENERAL_SCHEMA: ResolverSchema = {
       'מחיר',
       'מחובר לגוגל',
       'מה התוכנית שלי',
+      'סיכום בוקר',
+      'איך משנים את שעת הסיכום היומי',
+      'איך משנים את שעת התדרוך',
     ],
     english: [
       'hello',
@@ -624,6 +628,10 @@ export const GENERAL_SCHEMA: ResolverSchema = {
       'plan price',
       'am i connected',
       'google connected',
+      'morning brief',
+      'daily digest',
+      'daily summary',
+      'change the time i get',
     ],
   },
   examples: [
@@ -648,6 +656,10 @@ export const GENERAL_SCHEMA: ResolverSchema = {
     { input: 'What plan am I on?', action: 'plan_info' },
     { input: 'Am I connected to Google Calendar?', action: 'account_status' },
     { input: 'מה התוכנית שלי?', action: 'plan_info' },
+    { input: 'Change my morning brief time to 9am', action: 'morning_brief_time' },
+    { input: 'אני רוצה לשנות מתי אני מקבל את הסיכום היומי בוואטסאפ', action: 'morning_brief_time' },
+    { input: 'Set my daily digest time', action: 'morning_brief_time' },
+    { input: 'איך אני משנה את השעת תדרוך?', action: 'morning_brief_time' },
   ],
   priority: 10, // Lowest priority - fallback
 };

@@ -99,6 +99,13 @@ If user asks about bot capabilities, help, or status → capability = **general*
 Patterns: "מה אתה יכול", "what can you do", "עזרה", "help"
 Action hints: describe_capabilities, what_can_you_do, help, status, website, about_agent, plan_info, account_status
 
+### Step 1b: Morning brief / daily digest schedule (→ general, NOT database)
+If the user wants to **change**, **set**, or **choose** the **time** for the **automated morning brief** / **daily digest** / **daily summary** (the scheduled WhatsApp message with today's tasks and calendar — **account setting**, not a task reminder) → capability = **general**, action hint = **morning_brief_time**.
+
+**Route here (examples):** "change my morning brief time", "set daily digest to 9", "when can I get the morning summary", "אני רוצה לשנות את שעת הסיכום היומי", "תשני לי את שעת הבוקר" **only when** they mean the **daily digest**, not "תזכיר לי בבוקר" (that is a **database** reminder).
+
+**Do NOT** route to database or calendar for this. Donna cannot change this setting in chat; the general resolver tells the user to open **website settings** (not login).
+
 ### Step 2: Check for SECOND-BRAIN (memory storage/recall)
 If user wants to SAVE a fact, contact, or key-value info, or RECALL saved information → capability = **second-brain**
 Patterns: "תזכור ש", "remember that", "מה אמרתי על", "what did I save", "save contact", "phone is", "password is", "bill is", "שמור את הטלפון"
@@ -154,7 +161,7 @@ Use action hints from the RESOLVER CAPABILITIES section above. Examples:
 - calendar_mutate_resolver: "create event", "update event", "delete event"
 - database_task_resolver: "create task", "create reminder", "list tasks", "complete task", "delete_all_tasks", "delete_multiple_tasks", "update_all_tasks", "update_multiple_tasks"
 - database_list_resolver: "create list", "add to list" (ONLY when "list/רשימה" is mentioned)
-- general_resolver: "respond", "greet", "acknowledge", "ask_about_recent_actions", "ask_about_user", "ask_about_what_i_did", "describe_capabilities", "what_can_you_do", "help", "status", "website", "about_agent", "plan_info", "account_status" (user/account + agent/help/plan; use Latest Actions section for recent-actions questions)
+- general_resolver: "respond", "greet", "acknowledge", "ask_about_recent_actions", "ask_about_user", "ask_about_what_i_did", "describe_capabilities", "what_can_you_do", "help", "status", "website", "about_agent", "plan_info", "account_status", "morning_brief_time" (daily digest / morning brief **schedule** on WhatsApp — user must change on website; NOT a task reminder)
 
 **Reminder vs Task (database):**
 - **create reminder** = user wants to be notified at a specific date+time ("תזכיר לי מחר בשמונה", "remind me at 5pm"). Requires BOTH date AND time; if either is missing → missingFields: ["reminder_time_required"].
@@ -588,7 +595,9 @@ User: "What's my name?" or "מה השם שלי?"
 }
 
 ## HARD RULES
-- Output ONLY JSON (no markdown, no comments).
+- Output ONLY JSON (no markdown, no comments, no trailing commas).
+- **Strict JSON values**: use JSON types only (strings, numbers, booleans, null, arrays, objects). **Numbers must be numeric literals** (e.g. 1440, 90). Never output JavaScript expressions in JSON (no multiplication like 24 * 60, no operators in numeric fields, no undefined/NaN). For "one day before" calendar reminders in minutes, output the literal integer (e.g. 1440 for 24 hours).
+- In **constraints.extractedInfo** and all nested objects, never embed expressions—only literals.
 - Always include constraints.rawMessage for every step.
 - Never invent IDs.
 - Match action hints to resolver actionHints from the schema above.`;
@@ -745,9 +754,9 @@ export class PlannerNode extends LLMNode {
 
       // Validate response structure
       if (!normalized.intentType || !Array.isArray(normalized.plan)) {
-        console.warn('[PlannerNode] Invalid LLM response structure, using fallback');
+        console.warn('[PlannerNode] Invalid LLM response structure, using planner failure output');
         console.warn('[PlannerNode] Response:', JSON.stringify(response).substring(0, 500));
-        return this.createFallbackOutput(state.input.enhancedMessage || state.input.message, state);
+        return this.createPlannerFailureOutput(state.input.enhancedMessage || state.input.message);
       }
 
       // Validate and clamp confidence
@@ -788,7 +797,7 @@ export class PlannerNode extends LLMNode {
       return normalized as PlannerOutput;
     } catch (error: any) {
       console.error('[PlannerNode] LLM call failed:', error.message);
-      return this.createFallbackOutput(state.input.enhancedMessage || state.input.message, state);
+      return this.createPlannerFailureOutput(state.input.enhancedMessage || state.input.message);
     }
   }
 
@@ -970,138 +979,33 @@ export class PlannerNode extends LLMNode {
   }
 
   /**
-   * Create fallback output when LLM fails
+   * When the planner LLM returns invalid JSON or an invalid structure, do not guess capability/action.
+   * Emit intent_unclear so HITL asks the user to rephrase; resume → replan.
    */
-  private createFallbackOutput(message: string, state: MemoState): PlannerOutput {
-    // Meta intent (agent/help/plan) — route to general capability
-    if (this.matchesMetaIntent(message)) {
-      return {
-        intentType: 'meta',
-        confidence: 0.95,
-        riskLevel: 'low',
-        needsApproval: false,
-        missingFields: [],
-        plan: [{
-          id: 'A',
-          capability: 'general' as Capability,
-          action: this.inferMetaAction(message),
-          constraints: { rawMessage: message },
-          changes: {},
-          dependsOn: [],
-        }],
-      };
-    }
-
-    // Greeting
-    if (this.matchesGreeting(message)) {
-      return {
-        intentType: 'conversation',
-        confidence: 0.9,
-        riskLevel: 'low',
-        needsApproval: false,
-        missingFields: [],
-        plan: [{
-          id: 'A',
-          capability: 'general' as Capability,
-          action: 'greeting response',
-          constraints: { rawMessage: message },
-          changes: {},
-          dependsOn: [],
-        }],
-      };
-    }
-
-    // Determine capability from keywords
-    const capability = this.inferCapability(message, state);
-    const riskLevel = this.inferRiskFromMessage(message);
-
+  private createPlannerFailureOutput(message: string): PlannerOutput {
     return {
-      intentType: 'operation',
-      confidence: 0.7, // Fallback has medium confidence
-      riskLevel,
-      needsApproval: riskLevel === 'high',
-      missingFields: [],
+      intentType: 'conversation',
+      confidence: 0.45,
+      riskLevel: 'low',
+      needsApproval: false,
+      missingFields: ['intent_unclear'],
       plan: [{
         id: 'A',
-        capability,
-        action: 'process request',
+        capability: 'general' as Capability,
+        action: 'respond',
         constraints: { rawMessage: message },
         changes: {},
         dependsOn: [],
+        contextSummary: 'Planner could not parse the model plan output; user should clarify or rephrase the request.',
       }],
     };
   }
 
-  /**
-   * Infer capability from message keywords using schema-based pattern matching
-   */
-  private inferCapability(message: string, state: MemoState): Capability {
-    // Use schema-based pattern matching first
-    const suggestions = getRoutingSuggestions(message);
-
-    if (suggestions.length > 0) {
-      const best = suggestions[0];
-
-      // Check if the capability is available
-      if (best.capability === 'calendar' && !state.user.capabilities.calendar) {
-        // Calendar not connected, fall back to database for time-based items
-        return 'database';
-      }
-      if (best.capability === 'gmail' && !state.user.capabilities.gmail) {
-        // Gmail not connected, fall back to general
-        return 'general';
-      }
-
-      console.log(`[PlannerNode] Pattern-based capability inference: ${best.capability} (score: ${best.score})`);
-      return best.capability;
-    }
-
-    // Legacy fallback patterns (in case schema matching doesn't find anything)
-
-    // Calendar patterns
-    if (/פגישה|אירוע|יומן|לוז|meeting|event|calendar|schedule|appointment/i.test(message)) {
-      return state.user.capabilities.calendar ? 'calendar' : 'database';
-    }
-
-    // Email patterns
-    if (/מייל|אימייל|email|mail|inbox/i.test(message)) {
-      return state.user.capabilities.gmail ? 'gmail' : 'general';
-    }
-
-    // Memory patterns (remember facts, contacts, key-value info)
-    if (/תזכור ש|זכור ש|שמור.*ש|שמור את הטלפון|שמור איש קשר|הסיסמא של|חשבון חשמל|remember that|save.*that|save contact|save phone|password is|bill is/i.test(message)) {
-      return 'second-brain';
-    }
-
-    // Reminder/task patterns
-    if (/תזכיר|תזכורת|להזכיר|משימה|רשימה|remind|reminder|task|todo|list/i.test(message)) {
-      return 'database';
-    }
-
-    // Default to general
-    return 'general';
-  }
-
-  /**
-   * Infer risk level from message keywords
-   */
-  private inferRiskFromMessage(message: string): 'low' | 'medium' | 'high' {
-    if (/מחק|בטל|הסר|delete|remove|cancel|שלח.*מייל|send.*mail/i.test(message)) {
-      return 'high';
-    }
-    if (/שנה|עדכן|הזז|update|change|move|modify/i.test(message)) {
-      return 'medium';
-    }
-    return 'low';
-  }
-
-  // Pattern matchers
-  private matchesMetaIntent(message: string): boolean {
-    return /what can you do|מה אתה יכול|help|עזרה|capabilities|יכולות|who are you|מי אתה|what are you|what is the website|מה האתר|מה הכתובת|my plan|what plan|תוכנית|מחיר|plan price|am i connected|google connected|מחובר לגוגל|status|סטטוס/i.test(message);
-  }
-
   private inferMetaAction(message: string): string {
     const m = message.toLowerCase();
+    if (/morning\s*brief|daily\s*digest|daily\s*summary|סיכום\s*יומי|סיכום\s*בוקר|שעת\s*הסיכום|הודעת\s*הבוקר|digest\s*time|brief\s*time|תדרוך|שעת\s*תדרוך/i.test(m)) {
+      return 'morning_brief_time';
+    }
     if (/website|אתר|כתובת|url|link/i.test(m)) return 'website';
     if (/who are you|מי אתה|what are you|מה אתה(?! יכול)/i.test(m)) return 'about_agent';
     if (/my plan|what plan|plan price|what does.*include|תוכנית|מחיר/i.test(m)) return 'plan_info';
@@ -1109,10 +1013,6 @@ export class PlannerNode extends LLMNode {
     if (/status|סטטוס/i.test(m)) return 'status';
     if (/help|עזרה/i.test(m)) return 'help';
     return 'describe_capabilities';
-  }
-
-  private matchesGreeting(message: string): boolean {
-    return /^(שלום|היי|הי|בוקר טוב|ערב טוב|hello|hi|hey|good morning|good evening|תודה|thanks)[\s!?]*$/i.test(message.trim());
   }
 }
 

@@ -9,7 +9,7 @@ import { ReminderRecurrence, Task, TaskService } from '../../legacy/services/dat
 import { UserService } from '../../legacy/services/database/UserService';
 import { PerformanceTracker } from '../../legacy/services/performance/PerformanceTracker';
 import { ConversationWindow } from '../../services/memory/ConversationWindow';
-import { sendWhatsAppMessage } from '../../services/whatsapp';
+import { sendWhatsAppMessage, sendWhatsAppTemplateMessage } from '../../services/whatsapp';
 import { getDatePartsInTimezone, buildDateTimeISOInZone } from '../../utils/userTimezone.js';
 
 interface User {
@@ -18,6 +18,10 @@ interface User {
   timezone: string;
   /** From users.settings.user_name; used only for morning digest greeting. */
   userName?: string;
+  /** Hour component of the user's preferred morning brief time (0-23). Defaults to 8. */
+  morningBriefHour: number;
+  /** Minute component of the user's preferred morning brief time (0-59). Defaults to 0. */
+  morningBriefMinute: number;
 }
 
 interface TaskWithUser extends Task {
@@ -243,7 +247,7 @@ export class ReminderService {
       }
       
       const userResult = await query(
-        `SELECT id, whatsapp_number AS phone, COALESCE(timezone, 'Asia/Jerusalem') AS timezone, settings
+        `SELECT id, whatsapp_number AS phone, COALESCE(timezone, 'Asia/Jerusalem') AS timezone, settings, morning_brief_time
          FROM users
          WHERE whatsapp_number = $1`,
         [userPhone]
@@ -257,10 +261,13 @@ export class ReminderService {
       const settings = typeof row.settings === 'object' && row.settings !== null ? row.settings : {};
       const rawName = settings.user_name;
       const userName = typeof rawName === 'string' && rawName.trim() ? rawName.trim() : undefined;
+      const { hour: briefHour, minute: briefMinute } = this.parseBriefTime(row.morning_brief_time);
       const user: User = {
         id: row.id,
         phone: row.phone,
         timezone: row.timezone,
+        morningBriefHour: briefHour,
+        morningBriefMinute: briefMinute,
         ...(userName !== undefined && { userName }),
       };
       
@@ -268,17 +275,19 @@ export class ReminderService {
       const unplannedTasks = await this.getUnplannedTasks(user.id);
       const calendarEvents = await this.getTodaysCalendarEvents(user.id, user.timezone);
       
-      let message: string;
+      let digestBody: string;
       if (plannedTasks.length > 0 || unplannedTasks.length > 0 || calendarEvents.length > 0) {
         const rawData = this.buildDailyDigestData(plannedTasks, unplannedTasks, calendarEvents, user);
-        message = await this.enhanceMessageWithAI(rawData, user.phone);
-        await sendWhatsAppMessage(user.phone, message);
+        digestBody = await this.enhanceMessageWithAI(rawData, user.phone);
       } else {
-        // No tasks or events - send empty digest message
         const rawData = this.buildEmptyDigestData(user);
-        message = await this.enhanceMessageWithAI(rawData, user.phone);
-        await sendWhatsAppMessage(user.phone, message);
+        digestBody = await this.enhanceMessageWithAI(rawData, user.phone);
       }
+      // Debug path: same WhatsApp send as production, but do not add ConversationWindow briefContext
+      // (previous behavior: only sendWhatsAppMessage + memory from that path).
+      await this.sendMorningDigestToWhatsApp(user, digestBody, {
+        recordConversationWindow: false,
+      });
     } catch (error) {
       this.loggerInstance.error(`Failed to send morning digest to ${userPhone}:`, error);
       throw error;
@@ -286,22 +295,13 @@ export class ReminderService {
   }
 
   /**
-   * Send daily digest for today's tasks at specified hour
-   * Excludes recurring reminders (they have no due_date)
+   * Send daily digest for today's tasks using each user's preferred brief time.
+   * The fallbackHour is only used if a user somehow has no morning_brief_time in DB (shouldn't happen with the NOT NULL default).
    */
-  async sendMorningDigest(morningDigestHour: number = 8): Promise<void> {
-    const startTime = Date.now();
-    const sentToUsers: string[] = [];
-    const skippedUsers: string[] = [];
-    const failedUsers: string[] = [];
-    
+  async sendMorningDigest(fallbackHour: number = 8): Promise<void> {
     try {
-      this.loggerInstance.info(`📋 Sending morning digest (checking for hour ${morningDigestHour})...`);
-
       const users = await this.getAllUsers();
-      this.loggerInstance.info(`📊 Found ${users.length} users to check for morning digest`);
 
-      // Process users in parallel batches (max 5 concurrent) to reduce delays
       const batchSize = 5;
       const userBatches: User[][] = [];
       for (let i = 0; i < users.length; i += batchSize) {
@@ -309,56 +309,33 @@ export class ReminderService {
       }
 
       for (const batch of userBatches) {
-        // Process batch in parallel
         await Promise.all(batch.map(async (user) => {
           try {
-            // Phase 6: Filter morning digest in DEBUG environment
             if (ENVIRONMENT === 'DEBUG' && user.phone !== DEBUG_PHONE_NUMBER) {
-              skippedUsers.push(user.phone);
               return;
             }
             
-            // Validate timezone before processing
             if (!this.isValidTimezone(user.timezone)) {
               this.loggerInstance.warn(`⚠️  Invalid timezone "${user.timezone}" for user ${user.phone}, using default Asia/Jerusalem`);
               user.timezone = 'Asia/Jerusalem';
             }
             
-            // Check if it's the specified hour in user's timezone (FIXED: use direct hour/minute)
             const userTime = this.getCurrentTimeInTimezone(user.timezone);
-            const hour = userTime.hour;
-            const minute = userTime.minute;
+            const localTotalMin = userTime.hour * 60 + userTime.minute;
+            const targetTotalMin = user.morningBriefHour * 60 + user.morningBriefMinute;
 
-            // Expanded time window: 0-15 minutes (was 0-10) to account for processing delays
-            if (hour === morningDigestHour && minute < 15) {
-              this.loggerInstance.info(`📧 Sending morning digest to ${user.phone} (${user.timezone}, local time: ${hour}:${String(minute).padStart(2, '0')})`);
+            if (localTotalMin >= targetTotalMin && localTotalMin < targetTotalMin + 15) {
+              this.loggerInstance.info(`📧 Sending morning digest to ${user.phone} (${user.timezone}, target: ${String(user.morningBriefHour).padStart(2, '0')}:${String(user.morningBriefMinute).padStart(2, '0')})`);
               
-              const success = await this.sendMorningDigestToUser(user, morningDigestHour);
-              if (success) {
-                sentToUsers.push(user.phone);
-              } else {
-                failedUsers.push(user.phone);
+              const success = await this.sendMorningDigestToUser(user, user.morningBriefHour);
+              if (!success) {
+                this.loggerInstance.error(`❌ Failed to send morning digest to ${user.phone}`);
               }
-            } else {
-              this.loggerInstance.debug(`⏭️  Skipping ${user.phone} - not in digest window (local time: ${hour}:${String(minute).padStart(2, '0')}, target: ${morningDigestHour}:00-${morningDigestHour}:14)`);
-              skippedUsers.push(user.phone);
             }
           } catch (error) {
             this.loggerInstance.error(`❌ Error processing morning digest for ${user.phone}:`, error);
-            failedUsers.push(user.phone);
           }
         }));
-      }
-
-      const duration = Date.now() - startTime;
-      this.loggerInstance.info(`✅ Morning digest completed in ${duration}ms`);
-      this.loggerInstance.info(`📊 Summary: ${sentToUsers.length} sent, ${skippedUsers.length} skipped (not in window), ${failedUsers.length} failed`);
-      
-      if (sentToUsers.length > 0) {
-        this.loggerInstance.info(`✅ Successfully sent to: ${sentToUsers.join(', ')}`);
-      }
-      if (failedUsers.length > 0) {
-        this.loggerInstance.warn(`⚠️  Failed to send to: ${failedUsers.join(', ')}`);
       }
     } catch (error) {
       this.loggerInstance.error('❌ Error in sendMorningDigest:', error);
@@ -439,20 +416,23 @@ export class ReminderService {
   }
 
   /**
-   * Get all users with their timezone and settings (for morning digest: userName from settings).
+   * Get all users with their timezone, settings, and morning brief time preference.
    */
   private async getAllUsers(): Promise<User[]> {
     const result = await query(
-      `SELECT id, whatsapp_number AS phone, COALESCE(timezone, 'Asia/Jerusalem') AS timezone, settings FROM users`
+      `SELECT id, whatsapp_number AS phone, COALESCE(timezone, 'Asia/Jerusalem') AS timezone, settings, morning_brief_time FROM users`
     );
-    return result.rows.map((row: { id: string; phone: string; timezone: string; settings?: Record<string, unknown> }) => {
+    return result.rows.map((row: { id: string; phone: string; timezone: string; settings?: Record<string, unknown>; morning_brief_time?: string }) => {
       const settings = typeof row.settings === 'object' && row.settings !== null ? row.settings : {};
       const rawName = settings.user_name;
       const userName = typeof rawName === 'string' && rawName.trim() ? rawName.trim() : undefined;
+      const { hour: briefHour, minute: briefMinute } = this.parseBriefTime(row.morning_brief_time);
       return {
         id: row.id,
         phone: row.phone,
         timezone: row.timezone,
+        morningBriefHour: briefHour,
+        morningBriefMinute: briefMinute,
         ...(userName !== undefined && { userName }),
       };
     });
@@ -1032,6 +1012,75 @@ export class ReminderService {
   }
 
   /**
+   * Full message text for memory / conversation window (matches non-template send).
+   * Template in Meta should use: בוקר טוב{{1}}! ☀️ with {{1}} = name slot (space + name or empty).
+   */
+  private buildMorningDigestDisplay(user: User, digestBody: string): string {
+    const greeting = user.userName
+      ? `בוקר טוב ${user.userName} ☀️\n\n`
+      : 'בוקר טוב ☀️\n\n';
+    return greeting + digestBody;
+  }
+
+  /**
+   * Sends morning digest: **plain text by default** (`sendWhatsAppMessage`).
+   * Uses `sendWhatsAppTemplateMessage` only when `WHATSAPP_TEMPLATE_HE_MORNING` is set (proactive / outside-session policy).
+   * Graph agent replies are not sent from here.
+   *
+   * @param recordConversationWindow — When true (scheduled digest), append to ConversationWindow with briefContext.
+   *   When false (sendMorningDigestForUser debug), match legacy behavior: send only, no brief row in ConversationWindow.
+   */
+  private async sendMorningDigestToWhatsApp(
+    user: User,
+    digestBody: string,
+    options?: { recordConversationWindow?: boolean },
+  ): Promise<void> {
+    const recordConversationWindow = options?.recordConversationWindow !== false;
+    const templateName = process.env.WHATSAPP_TEMPLATE_HE_MORNING?.trim();
+    const lang = process.env.WHATSAPP_TEMPLATE_LANG_HE || 'he';
+    const display = this.buildMorningDigestDisplay(user, digestBody);
+    if (templateName) {
+      const nameSlot = user.userName ? ` ${user.userName}` : '';
+      await sendWhatsAppTemplateMessage(
+        user.phone,
+        templateName,
+        lang,
+        [nameSlot, digestBody],
+        { memoryText: display },
+      );
+    } else {
+      await sendWhatsAppMessage(user.phone, display);
+    }
+    if (recordConversationWindow) {
+      this.conversationWindow.addMessage(
+        user.phone,
+        'assistant',
+        display,
+        {
+          briefContext: {
+            type: 'morning_digest',
+            sentAt: new Date().toISOString(),
+          },
+        },
+      );
+    }
+  }
+
+  /**
+   * Parse a Postgres TIME value (e.g. "08:00:00" or "07:30:00") into hour and minute.
+   * Falls back to 8:00 if the value is null/undefined or unparseable.
+   */
+  private parseBriefTime(timeValue: string | null | undefined): { hour: number; minute: number } {
+    if (!timeValue) return { hour: 8, minute: 0 };
+    const parts = timeValue.split(':');
+    const hour = parseInt(parts[0], 10);
+    const minute = parts.length > 1 ? parseInt(parts[1], 10) : 0;
+    if (isNaN(hour) || hour < 0 || hour > 23) return { hour: 8, minute: 0 };
+    if (isNaN(minute) || minute < 0 || minute > 59) return { hour, minute: 0 };
+    return { hour, minute };
+  }
+
+  /**
    * Validate timezone string
    * Returns true if timezone is valid, false otherwise
    */
@@ -1056,33 +1105,15 @@ export class ReminderService {
         const unplannedTasks = await this.getUnplannedTasks(user.id);
         const calendarEvents = await this.getTodaysCalendarEvents(user.id, user.timezone);
         
-        let message: string;
+        let digestBody: string;
         if (plannedTasks.length > 0 || unplannedTasks.length > 0 || calendarEvents.length > 0) {
           const rawData = this.buildDailyDigestData(plannedTasks, unplannedTasks, calendarEvents, user);
-          message = await this.enhanceMessageWithAI(rawData, user.phone);
+          digestBody = await this.enhanceMessageWithAI(rawData, user.phone);
         } else {
-          // No tasks or events - send empty digest message
           const rawData = this.buildEmptyDigestData(user);
-          message = await this.enhanceMessageWithAI(rawData, user.phone);
+          digestBody = await this.enhanceMessageWithAI(rawData, user.phone);
         }
-        // Always start morning digest with "בוקר טוב [user_name]!" (or "בוקר טוב!" if no name)
-        const greeting = user.userName
-          ? `בוקר טוב ${user.userName} ☀️\n\n`
-          : 'בוקר טוב ☀️\n\n';
-        message = greeting + message;
-        await sendWhatsAppMessage(user.phone, message);
-        // Add morning brief to conversation window for context
-        this.conversationWindow.addMessage(
-          user.phone,
-          'assistant',
-          message,
-          {
-            briefContext: {
-              type: 'morning_digest',
-              sentAt: new Date().toISOString()
-            }
-          }
-        );
+        await this.sendMorningDigestToWhatsApp(user, digestBody);
         this.loggerInstance.info(`✅ Morning digest sent successfully to ${user.phone} (attempt ${attempt + 1})`);
         return true;
       } catch (error) {

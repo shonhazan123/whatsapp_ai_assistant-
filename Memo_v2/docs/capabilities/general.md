@@ -2,7 +2,7 @@
 
 ## Purpose + boundaries
 
-- **Purpose**: Single informative capability. Answer questions about the **user** (name, account, capabilities), about **what the assistant did** (last/recent actions), **acknowledgments** (thank you, okay), **and** about the **agent** (identity, capabilities, help, status, plan/pricing, website). One resolver, one context, one prompt. Not for general knowledge or open-ended advice.
+- **Purpose**: Single informative capability. Answer questions about the **user** (name, account, capabilities), about **what the assistant did** (last/recent actions), **acknowledgments** (thank you, okay), **and** about the **agent** (identity, capabilities, help, status, plan/pricing, website). When the user asks to **change the morning brief / daily digest time** (scheduled WhatsApp summary), redirect them to **website settings** (`settingsUrl` in `meta-info.ts`, e.g. `https://donnai.io/settings`) — that setting is not editable in chat. One resolver, one context, one prompt. Not for general knowledge or open-ended advice.
 - **Boundaries**:
   - Answer only from provided context (user profile, latest actions, recent conversation, agent info, plan tiers). Refuse politely when the question is outside program/user state.
   - No external side effects. Must not expose internal implementation details. Never guess — if data is missing, say so.
@@ -13,7 +13,7 @@
 
 | Source | What it provides |
 |--------|------------------|
-| `Memo_v2/src/config/meta-info.ts` | Agent name, description, website URL, help links |
+| `Memo_v2/src/config/meta-info.ts` | Agent name, description, website URL, **settings URL** (morning brief prefs), help links |
 | `Memo_v2/src/config/plan-tiers.ts` | Subscription tier pricing and included features |
 | `Memo_v2/src/config/capabilities-for-users.ts` | **User-facing capability descriptions** — included in GeneralResolver **system prompt** (static, cacheable) as "Capabilities reference"; user message only indicates which capabilities are enabled for this user |
 | `MemoState.user` | Name, plan tier, googleConnected, capabilities, language, timezone |
@@ -33,7 +33,7 @@ Source: `Memo_v2/src/graph/resolvers/ResolverSchema.ts`
 
 ### Actions
 
-Resolver supports all of: `respond`, `greet`, `acknowledge`, `ask_about_recent_actions`, `ask_about_user`, `ask_about_what_i_did`, `clarify`, `unknown`, `greeting response`, `process request`, `describe_capabilities`, `what_can_you_do`, `help`, `status`, `website`, `about_agent`, `plan_info`, `account_status`.
+Resolver supports all of: `respond`, `greet`, `acknowledge`, `ask_about_recent_actions`, `ask_about_user`, `ask_about_what_i_did`, `clarify`, `unknown`, `greeting response`, `process request`, `describe_capabilities`, `what_can_you_do`, `help`, `status`, `website`, `about_agent`, `plan_info`, `account_status`, `morning_brief_time` (tell user to change morning brief time on the website; not configurable in WhatsApp).
 
 ### Context
 

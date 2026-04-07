@@ -3,7 +3,7 @@
  * All memory is stored in Memo V2 (no V1 dependency).
  */
 
-import { invokeMemoGraph } from "../graph/index.js";
+import { invokeMemoGraph, type InvokeResult } from "../graph/index.js";
 import { analyzeImage } from "../services/image/ImageAnalysisService.js";
 import { getMemoryService } from "../services/memory/index.js";
 import { transcribeAudio } from "../services/transcription.js";
@@ -61,18 +61,34 @@ export async function processImageMessage(
 }
 
 /**
- * Process an audio message: transcribe, invoke graph, return graph response.
+ * Transcribe audio and run the Memo graph. Used by Memo_v2 webhook for template-aware delivery.
+ */
+export async function invokeMemoGraphFromAudio(
+	userPhone: string,
+	audioBuffer: Buffer,
+	whatsappMessageId: string,
+): Promise<InvokeResult> {
+	const transcribedText = await transcribeAudio(audioBuffer);
+	console.log("transcribedText", transcribedText);
+	return invokeMemoGraph(userPhone, transcribedText, {
+		whatsappMessageId,
+		triggerType: "user",
+	});
+}
+
+/**
+ * Process an audio message: transcribe, invoke graph, return the response string only.
+ * Kept for backward compatibility (e.g. V1 webhook passes the string to `sendWhatsAppMessage`).
  */
 export async function processAudioMessage(
 	userPhone: string,
 	audioBuffer: Buffer,
 	whatsappMessageId: string,
 ): Promise<string> {
-	const transcribedText = await transcribeAudio(audioBuffer);
-	console.log("transcribedText", transcribedText);
-	const result = await invokeMemoGraph(userPhone, transcribedText, {
+	const result = await invokeMemoGraphFromAudio(
+		userPhone,
+		audioBuffer,
 		whatsappMessageId,
-		triggerType: "user",
-	});
+	);
 	return result.response;
 }
