@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS users (
     google_email TEXT,
     onboarding_complete BOOLEAN NOT NULL DEFAULT FALSE,
     onboarding_last_prompt_at TIMESTAMP WITH TIME ZONE,
+    morning_brief_time TIME NOT NULL DEFAULT '08:00',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );

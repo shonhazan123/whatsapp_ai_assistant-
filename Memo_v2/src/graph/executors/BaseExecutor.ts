@@ -6,7 +6,7 @@
  */
 
 import type { AuthContext, ExecutionResult } from '../../types/index.js';
-import type { MemoState } from '../state/MemoState.js';
+import type { MetadataDelta, MemoState } from '../state/MemoState.js';
 
 // ============================================================================
 // TYPES
@@ -70,24 +70,14 @@ export abstract class BaseExecutor {
         executionResults.set(stepId, result);
       }
       
-      // Update metadata
-      const metadata = {
-        ...state.metadata,
+      const endTime = Date.now();
+      const delta: MetadataDelta = {
         nodeExecutions: [
-          ...state.metadata.nodeExecutions,
-          {
-            node: this.name,
-            startTime,
-            endTime: Date.now(),
-            durationMs: Date.now() - startTime,
-          },
+          { node: this.name, startTime, endTime, durationMs: endTime - startTime },
         ],
       };
       
-      return {
-        executionResults,
-        metadata,
-      };
+      return { executionResults, metadata: delta as any };
     };
   }
 }

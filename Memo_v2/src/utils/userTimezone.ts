@@ -48,21 +48,72 @@ export function getDatePartsInTimezone(
   };
 }
 
+function matchesWallTime(
+  p: ReturnType<typeof getDatePartsInTimezone>,
+  y: number,
+  mo: number,
+  d: number,
+  h: number,
+  mi: number,
+  s: number
+): boolean {
+  return (
+    p.year === y &&
+    p.month === mo &&
+    p.day === d &&
+    p.hour === h &&
+    p.minute === mi &&
+    p.second === s
+  );
+}
+
 /**
- * Format offset in minutes as "+02:00" or "-05:30".
+ * Map a calendar date + wall clock in an IANA zone to the UTC instant, as ISO 8601 with Z.
+ * Uses iterative correction on naive UTC ms, then minute/second fallback for DST edge cases.
  */
-function formatOffsetMinutes(offsetMin: number): string {
-  const sign = offsetMin >= 0 ? '+' : '-';
-  const abs = Math.abs(offsetMin);
-  const h = Math.floor(abs / 60);
-  const m = abs % 60;
-  return `${sign}${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+function wallTimeToUtcInstantMs(
+  y: number,
+  mo: number,
+  d: number,
+  h: number,
+  mi: number,
+  s: number,
+  tz: string
+): number {
+  const targetNaiveUtc = Date.UTC(y, mo - 1, d, h, mi, s);
+  let t = targetNaiveUtc;
+
+  for (let i = 0; i < 80; i++) {
+    const p = getDatePartsInTimezone(tz, new Date(t));
+    if (matchesWallTime(p, y, mo, d, h, mi, s)) {
+      return t;
+    }
+    const gotNaiveUtc = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
+    t += targetNaiveUtc - gotNaiveUtc;
+  }
+
+  // Rare: non-convergence (e.g. nonexistent local time). Linear search ±48h by minute, then seconds.
+  const windowMin = 48 * 60;
+  for (let deltaMin = -windowMin; deltaMin <= windowMin; deltaMin++) {
+    const guess = targetNaiveUtc + deltaMin * 60_000;
+    const p = getDatePartsInTimezone(tz, new Date(guess));
+    if (p.year !== y || p.month !== mo || p.day !== d || p.hour !== h || p.minute !== mi) continue;
+    for (let ds = -60; ds <= 60; ds++) {
+      const t2 = guess + ds * 1000;
+      const p2 = getDatePartsInTimezone(tz, new Date(t2));
+      if (matchesWallTime(p2, y, mo, d, h, mi, s)) return t2;
+    }
+  }
+
+  throw new Error(
+    `No UTC instant maps to local ${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')} ${String(h).padStart(2, '0')}:${String(mi).padStart(2, '0')}:${String(s).padStart(2, '0')} in ${tz} (nonexistent wall time?)`
+  );
 }
 
 /**
  * Build an ISO string for a given local date and time in a timezone.
  * Example: buildDateTimeISOInZone("2025-03-03", "17:00", "Asia/Jerusalem")
- *   -> "2025-03-03T17:00:00+02:00"
+ *   -> UTC ISO instant, e.g. "2025-03-03T15:00:00.000Z" (same instant, unambiguous for Postgres timestamptz)
  */
 export function buildDateTimeISOInZone(
   dateStr: string,
@@ -76,22 +127,8 @@ export function buildDateTimeISOInZone(
   const minute = timeParts[1] ? parseInt(timeParts[1], 10) : 0;
   const second = timeParts[2] ? parseInt(timeParts[2], 10) : 0;
 
-  const trialUtc = Date.UTC(y, m - 1, d, hour, minute, second);
-  const trialDate = new Date(trialUtc);
-  const localParts = getDatePartsInTimezone(tz, trialDate);
-  const desiredMin = hour * 60 + minute;
-  const actualMin = localParts.hour * 60 + localParts.minute;
-  const offsetMin = desiredMin - actualMin;
-  const realUtc = trialUtc - offsetMin * 60 * 1000;
-  const realDate = new Date(realUtc);
-  const localAtReal = getDatePartsInTimezone(tz, realDate);
-  const utcMin = realDate.getUTCHours() * 60 + realDate.getUTCMinutes();
-  const localMinAtReal = localAtReal.hour * 60 + localAtReal.minute;
-  const zoneOffsetMin = localMinAtReal - utcMin;
-  const offsetStr = formatOffsetMinutes(zoneOffsetMin);
-
-  const timePart = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:${String(second).padStart(2, '0')}`;
-  return `${dateStr}T${timePart}${offsetStr}`;
+  const utcMs = wallTimeToUtcInstantMs(y, m, d, hour, minute, second, tz);
+  return new Date(utcMs).toISOString();
 }
 
 /** ISO datetime string has explicit offset or Z (not server-ambiguous). */
@@ -101,7 +138,7 @@ function hasOffset(iso: string): boolean {
 
 /**
  * If the string is a datetime without offset, treat it as local in the given
- * timezone and return an ISO string with offset. Otherwise return as-is.
+ * timezone and return a UTC ISO string (Z). Otherwise return as-is.
  */
 export function normalizeToISOWithOffset(value: string, timezone: string): string {
   if (!value || typeof value !== 'string') return value;

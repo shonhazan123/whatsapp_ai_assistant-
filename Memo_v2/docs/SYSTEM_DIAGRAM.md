@@ -19,7 +19,8 @@ flowchart TD
     webhook --> invoke[invokeMemoGraph]
 
     invoke --> contextAssembly[ContextAssemblyNode]
-    contextAssembly --> replyContext[ReplyContextNode]
+    contextAssembly --> conversationContext[ConversationContextNode]
+    conversationContext --> replyContext[ReplyContextNode]
     replyContext --> planner[PlannerNode_LLM]
     planner --> capabilityCheck[CapabilityCheckNode]
 

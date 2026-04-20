@@ -1,5 +1,5 @@
 /**
- * Audio transcription using Whisper (copied from V1; no PerformanceTracker in Memo V2)
+ * Audio transcription using Whisper
  * Uses prompt to guide date formatting so calendar/reminder intents parse correctly.
  */
 

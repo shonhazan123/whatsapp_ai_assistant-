@@ -81,14 +81,18 @@ If multiple candidates match:
 
 - `ExecutorNode` checks whether args represent a list operation and dispatches to:
   - `ListServiceAdapter(userPhone)` **or**
-  - `TaskServiceAdapter(userPhone)`
+  - `TaskServiceAdapter(userPhone, userTimezone)` where `userTimezone` is `state.user.timezone` (same IANA zone as calendar / user profile).
 
 Source: `Memo_v2/src/graph/nodes/ExecutorNode.ts` (`isListOperation`)
 
 ### Adapters
 
-- Tasks: `Memo_v2/src/services/adapters/TaskServiceAdapter.ts`
+- Tasks: `Memo_v2/src/services/adapters/TaskServiceAdapter.ts` — constructor `(userPhone, userTimezone?)`; when `reminderRecurrence` is present and omits `timezone`, the adapter sets `timezone` to the user’s IANA zone before calling V1 `TaskService` (parity with calendar + correct `next_reminder_at` / job scheduling).
 - Lists: `Memo_v2/src/services/adapters/ListServiceAdapter.ts`
+
+### Time representation (tasks / reminders)
+
+- Wall times in the user’s zone are converted to **unambiguous UTC ISO strings** (`...Z`) via `Memo_v2/src/utils/userTimezone.ts` (`buildDateTimeISOInZone`, `normalizeToISOWithOffset`) in V1 `TaskService` / calendar paths. Postgres `timestamptz` receives valid instants.
 
 ## Response formatting/writer behavior
 

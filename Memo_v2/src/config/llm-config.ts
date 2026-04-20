@@ -199,6 +199,8 @@ export const LLM_CAPABILITIES: Record<string, LLMModelConfig> = {
 
 export interface NodeModelAssignment {
   planner: string;
+  /** Rolling conversation summary (cheap model; end of graph, synchronous). */
+  conversationSummarizer: string;
   resolvers: {
     calendar: string;
     database: string;
@@ -226,7 +228,10 @@ export interface NodeModelAssignment {
 export const DEFAULT_NODE_MODELS: NodeModelAssignment = {
   // Planner: needs good reasoning
   planner: process.env.LLM_PLANNER_MODEL || 'gpt-4o-mini',
-  
+
+  conversationSummarizer:
+    process.env.LLM_CONVERSATION_SUMMARY_MODEL || process.env.LLM_CONVERSATION_SUMMARIZER_MODEL || 'gpt-4o-mini',
+
   // Resolvers: need function calling
   resolvers: {
     calendar: process.env.LLM_RESOLVER_CALENDAR_MODEL || 'gpt-4o-mini',
@@ -264,18 +269,25 @@ export function getModelConfig(model: string): LLMModelConfig {
   return LLM_CAPABILITIES[model] || LLM_CAPABILITIES['gpt-4o-mini'];
 }
 
+type NonResolverNodeKey =
+  | 'planner'
+  | 'conversationSummarizer'
+  | 'responseWriter'
+  | 'imageAnalysis'
+  | 'errorExplainer';
+
 export function getNodeModel(
-  nodeType: 'planner' | 'responseWriter' | 'imageAnalysis' | 'errorExplainer' | keyof NodeModelAssignment['resolvers'],
+  nodeType: NonResolverNodeKey | keyof NodeModelAssignment['resolvers'],
   isResolver: boolean = false
 ): LLMModelConfig {
   let modelName: string;
-  
+
   if (isResolver) {
     modelName = DEFAULT_NODE_MODELS.resolvers[nodeType as keyof NodeModelAssignment['resolvers']];
   } else {
-    modelName = DEFAULT_NODE_MODELS[nodeType as keyof Omit<NodeModelAssignment, 'resolvers' | 'responseWriters'>];
+    modelName = DEFAULT_NODE_MODELS[nodeType as NonResolverNodeKey];
   }
-  
+
   return getModelConfig(modelName);
 }
 

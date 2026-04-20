@@ -33,6 +33,7 @@ export class ExecutorNode extends CodeNode {
     const executorArgs = state.executorArgs;
     const plan = state.plannerOutput?.plan || [];
     const userPhone = state.user.phone;
+    const userTimezone = state.user.timezone;
     const authContext = state.authContext;
     const traceId = state.traceId;
     const existingLedger = state.executedOperations || {};
@@ -85,7 +86,8 @@ export class ExecutorNode extends CodeNode {
         step.capability,
         args,
         userPhone,
-        authContext
+        authContext,
+        userTimezone
       ).then(execResult => {
         executionResults.set(stepId, execResult);
 
@@ -129,7 +131,8 @@ export class ExecutorNode extends CodeNode {
     capability: string,
     args: Record<string, any>,
     userPhone: string,
-    authContext?: AuthContext
+    authContext: AuthContext | undefined,
+    userTimezone: string
   ): Promise<ExecutionResult> {
     const startTime = Date.now();
     
@@ -165,7 +168,7 @@ export class ExecutorNode extends CodeNode {
             const listAdapter = new ListServiceAdapter(userPhone);
             result = await listAdapter.execute(args as any);
           } else {
-            const taskAdapter = new TaskServiceAdapter(userPhone);
+            const taskAdapter = new TaskServiceAdapter(userPhone, userTimezone);
             result = await taskAdapter.execute(args as any);
           }
           break;

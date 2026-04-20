@@ -13,6 +13,8 @@ export interface ReminderRecurrence {
   days?: number[];
   time?: string;
   until?: string;
+  /** IANA zone; persisted on task so ReminderService matches user profile (same as calendar). */
+  timezone?: string;
 }
 
 export interface TaskOperationArgs {
@@ -76,9 +78,21 @@ export interface TaskOperationResult {
 
 export class TaskServiceAdapter {
   private userPhone: string;
-  
-  constructor(userPhone: string) {
+  /** User IANA timezone (from graph state / DB); used when reminderRecurrence omits timezone. */
+  private userTimezone: string;
+
+  constructor(userPhone: string, userTimezone?: string) {
     this.userPhone = userPhone;
+    this.userTimezone = (userTimezone && userTimezone.trim()) || 'Asia/Jerusalem';
+  }
+
+  /** Ensure recurrence JSON stores user zone when the LLM did not set it. */
+  private mergeRecurrenceTimezone(
+    rr: ReminderRecurrence | undefined | null
+  ): ReminderRecurrence | undefined | null {
+    if (rr == null) return rr;
+    if (rr.timezone && String(rr.timezone).trim()) return rr;
+    return { ...rr, timezone: this.userTimezone };
   }
   
   /**
@@ -151,7 +165,7 @@ export class TaskServiceAdapter {
         category: args.category,
         dueDate: args.dueDate,
         reminder: args.reminder,
-        reminderRecurrence: args.reminderRecurrence,
+        reminderRecurrence: this.mergeRecurrenceTimezone(args.reminderRecurrence) ?? undefined,
       },
     });
     
@@ -168,9 +182,15 @@ export class TaskServiceAdapter {
     const errors = [];
     
     for (const task of tasks) {
+      const data = {
+        ...task,
+        ...(task.reminderRecurrence != null
+          ? { reminderRecurrence: this.mergeRecurrenceTimezone(task.reminderRecurrence) ?? task.reminderRecurrence }
+          : {}),
+      };
       const result = await taskService.create({
         userPhone: this.userPhone,
-        data: task,
+        data,
       });
       
       if (result.success) {
@@ -364,23 +384,36 @@ export class TaskServiceAdapter {
       return { success: false, error: 'Task ID is required for update' };
     }
     
+    const details = args.reminderDetails
+      ? {
+          ...args.reminderDetails,
+          ...(args.reminderDetails.reminderRecurrence != null
+            ? {
+                reminderRecurrence:
+                  this.mergeRecurrenceTimezone(args.reminderDetails.reminderRecurrence) ??
+                  args.reminderDetails.reminderRecurrence,
+              }
+            : {}),
+        }
+      : {};
+
     const result = await taskService.update({
       userPhone: this.userPhone,
       id: taskId,
       data: {
         text: args.text,
         category: args.category,
-        ...(args.reminderDetails || {}),
+        ...details,
       },
     });
-    
+
     return {
       success: result.success,
       data: result.data,
       error: result.error,
     };
   }
-  
+
   private async deleteTask(taskService: any, args: TaskOperationArgs): Promise<TaskOperationResult> {
     // First find the task if we don't have an ID
     let taskId = args.taskId;
@@ -596,12 +629,21 @@ export class TaskServiceAdapter {
       }
       
       // Validate reminderDetails has actual fields to update
-      const updateData = update.reminderDetails || {};
-      if (Object.keys(updateData).length === 0) {
+      const rawDetails = update.reminderDetails || {};
+      if (Object.keys(rawDetails).length === 0) {
         errors.push({ text: update.text, error: 'No fields to update specified' });
         continue;
       }
-      
+
+      const updateData =
+        rawDetails.reminderRecurrence != null
+          ? {
+              ...rawDetails,
+              reminderRecurrence:
+                this.mergeRecurrenceTimezone(rawDetails.reminderRecurrence) ?? rawDetails.reminderRecurrence,
+            }
+          : rawDetails;
+
       const updateResult = await taskService.update({
         userPhone: this.userPhone,
         id: update.taskId,
@@ -644,8 +686,16 @@ export class TaskServiceAdapter {
    * Uses patch to specify what fields to update
    */
   private async updateAllTasks(taskService: any, args: TaskOperationArgs): Promise<TaskOperationResult> {
-    const patch = args.patch || {};
-    
+    const rawPatch = args.patch || {};
+    const patch =
+      rawPatch.reminderRecurrence != null
+        ? {
+            ...rawPatch,
+            reminderRecurrence:
+              this.mergeRecurrenceTimezone(rawPatch.reminderRecurrence) ?? rawPatch.reminderRecurrence,
+          }
+        : { ...rawPatch };
+
     if (Object.keys(patch).length === 0) {
       return { success: false, error: 'No update fields specified in patch' };
     }

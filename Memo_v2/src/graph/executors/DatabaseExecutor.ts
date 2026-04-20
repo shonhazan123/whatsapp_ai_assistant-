@@ -51,7 +51,7 @@ export class DatabaseExecutor extends BaseExecutor {
         const adapter = new ListServiceAdapter(context.userPhone);
         result = await adapter.execute(args as ListOperationArgs);
       } else {
-        const adapter = new TaskServiceAdapter(context.userPhone);
+        const adapter = new TaskServiceAdapter(context.userPhone, context.timezone);
         result = await adapter.execute(args as TaskOperationArgs);
       }
 

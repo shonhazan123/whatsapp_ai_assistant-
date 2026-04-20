@@ -3,8 +3,8 @@
  * 
  * Builds a clean, minimal state from:
  * - User profile (timezone, language, plan tier)
- * - Short-term memory (recent messages)
- * - Long-term memory (facts, preferences)
+ * - Conversation memory for the planner is loaded in `conversation_context` (after this node).
+ * - Guests: no conversation or latest-action memory (see `isGuestAuth`).
  * - Runtime now (timestamp, timezone)
  * 
  * ❌ No reasoning
@@ -19,6 +19,7 @@ import { getUserService } from '../../services/v1-services.js';
 import type { AuthContext, LatestAction, TimeContext, TriggerInput, UserContext } from '../../types/index.js';
 import { detectUserResponseLanguage } from '../../utils/languageDetection.js';
 import { getDatePartsInTimezone } from '../../utils/userTimezone.js';
+import { isGuestAuth } from '../../utils/guestUser.js';
 import type { MemoState } from '../state/MemoState.js';
 import { createInitialState } from '../state/MemoState.js';
 import { CodeNode } from './BaseNode.js';
@@ -43,18 +44,18 @@ export class ContextAssemblyNode extends CodeNode {
     const language = detectUserResponseLanguage(this.input.message, { defaultWhenEmpty: 'he' });
     const user = this.deriveUserContext(authContext, language);
 
-    // 3. CRITICAL: Add current user message to memory FIRST (before reading)
-    // This matches V1 behavior where user message is added before processing
-    this.addUserMessageToMemory(this.input);
+    // 3. Registered users only: add user message to ConversationWindow (reply-to / disambiguation).
+    //    Planner-facing rolling context is loaded in `conversation_context`; guests skip all memory.
+    if (!isGuestAuth(authContext)) {
+      this.addUserMessageToMemory(this.input);
+    }
 
-    // 4. Get recent messages (now includes the current user message)
-    const recentMessages = this.getRecentMessages(this.input.userPhone);
+    // 4–5. Planner summary + recent tail: filled by `conversation_context` node (ConversationContextStore).
+    const recentMessages: MemoState['recentMessages'] = [];
+    const longTermSummary = undefined;
 
-    // 5. Get long-term memory summary (optional)
-    const longTermSummary = await this.getLongTermMemorySummary(this.input.userPhone);
-
-    // 6. Get latest actions (last 3, for referential follow-ups)
-    const latestActions = this.getLatestActions(this.input.userPhone);
+    // 6. Latest actions — GeneralResolver only (not planner); guests skip.
+    const latestActions = isGuestAuth(authContext) ? [] : this.getLatestActions(this.input.userPhone);
 
     // 7. Build time context (always in user timezone – never server)
     const now = this.buildTimeContext(user.timezone);
@@ -240,29 +241,6 @@ export class ContextAssemblyNode extends CodeNode {
       console.error('[ContextAssemblyNode] Error adding user message to memory:', error);
       // Don't fail if this fails, but log the error
     }
-  }
-
-  /**
-   * Get recent messages from memory in MemoState format
-   */
-  private getRecentMessages(phone: string): MemoState['recentMessages'] {
-    try {
-      const memoryService = getMemoryService();
-
-      // MemoryService returns messages in MemoState format (ISO timestamps)
-      const messages = memoryService.getRecentMessages(phone, 10);
-
-      return messages;
-    } catch (error) {
-      console.error('[ContextAssemblyNode] Error getting recent messages:', error);
-      return [];
-    }
-  }
-
-  private async getLongTermMemorySummary(phone: string): Promise<string | undefined> {
-    // For now, return undefined (can be enhanced later with SecondBrainService)
-    // This would query the second_brain_memory table for user summaries
-    return undefined;
   }
 
   private getLatestActions(phone: string): LatestAction[] {

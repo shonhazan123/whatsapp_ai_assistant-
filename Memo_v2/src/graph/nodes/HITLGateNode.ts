@@ -15,9 +15,10 @@
 
 import { Command, interrupt } from '@langchain/langgraph';
 import { randomUUID } from 'crypto';
-import { callLLM, callLLMJSON } from '../../services/llm/LLMService.js';
+import { traceLlmReasoningLog, traceLlmReasoningLogJSON } from '../../services/trace/traceLlmReasoningLog.js';
 import { getMemoryService } from '../../services/memory/index.js';
 import type { InterruptPayload, InterruptType } from '../../types/index.js';
+import type { LLMStep } from '../state/MemoState.js';
 import type {
   HITLExpectedInput,
   HITLInterpreterDecision,
@@ -66,7 +67,7 @@ Generate a SHORT, conversational message asking the user to clarify their intent
 - second-brain: When asking if user wants to SAVE/REMEMBER something, use exactly: "לשמור בזכרון?" (Hebrew) / "save to memory?" (English). For search/recall: "לחפש בזכרון?" / "search memory?"
 
 ## Missing Field Translations
-- reminder_time_required: Ask at what time (and date if missing). Reminders need a specific date and time.
+- reminder_time_required: Ask at what time (and date if missing). Used for one-time or fixed-schedule reminders; repeating nudges every X minutes start immediately without this.
 - target_unclear: Ask WHICH specific items (by name or time window)
 - time_unclear: Ask WHEN
 - intent_unclear: Ask WHAT they want to do. Offer choices based only on the Routing Suggestions (score-based); do not add a default save-to-memory option.
@@ -200,8 +201,13 @@ const ALLOWED_MODIFICATION_FIELDS = new Set([
 
 export class HITLGateNode {
   readonly name = 'hitl_gate';
+  private _pendingLlmSteps: LLMStep[] = [];
+
+  private _processStartTime = 0;
 
   async process(state: MemoState): Promise<Partial<MemoState> | Command> {
+    this._processStartTime = Date.now();
+    this._pendingLlmSteps = [];
     const traceId = state.traceId;
     const threadId = state.threadId;
 
@@ -237,7 +243,7 @@ export class HITLGateNode {
       event: 'HITL_GATE_PASS',
       traceId, threadId,
     }));
-    return {};
+    return this._llmStepsUpdate();
   }
 
   // ========================================================================
@@ -310,7 +316,7 @@ export class HITLGateNode {
     const userResponse = interrupt(payload);
 
     // === BELOW RUNS AFTER USER REPLIES (graph resumed) ===
-    return this.handleResumeInline(state, pending, String(userResponse));
+    return this._injectSteps(await this.handleResumeInline(state, pending, String(userResponse)));
   }
 
   // ========================================================================
@@ -409,7 +415,7 @@ export class HITLGateNode {
     const userResponse = interrupt(payload);
 
     // === BELOW RUNS AFTER USER REPLIES (graph resumed) ===
-    return this.handleResumeInline(state, pending, String(userResponse));
+    return this._injectSteps(await this.handleResumeInline(state, pending, String(userResponse)));
   }
 
   // ========================================================================
@@ -674,15 +680,19 @@ Determine what the user meant. Return JSON:
 Return only the JSON.`;
 
     try {
-      const result = await callLLMJSON<{ selection: number | 'all' | null }>({
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: rawReply },
-        ],
-        model: 'gpt-4o-mini',
-        temperature: 0.1,
-        maxTokens: 50,
-      });
+      const { response: result, llmStep } = await traceLlmReasoningLogJSON<{ selection: number | 'all' | null }>(
+        'hitl:disambiguate',
+        {
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: rawReply },
+          ],
+          model: 'gpt-4o-mini',
+          temperature: 0.1,
+          maxTokens: 50,
+        },
+      );
+      this._pendingLlmSteps.push(llmStep);
 
       if (result.selection === 'all') return 'all';
       if (typeof result.selection === 'number' && result.selection >= 1) return result.selection;
@@ -731,15 +741,19 @@ ${pending.expectedInput}
 Classify this reply. Return JSON only.`;
 
     try {
-      const result = await callLLMJSON<HITLInterpreterOutput>({
-        messages: [
-          { role: 'system', content: INTERPRETER_SYSTEM_PROMPT },
-          { role: 'user', content: userPrompt },
-        ],
-        model: 'gpt-4o-mini',
-        temperature: 0.1,
-        maxTokens: 200,
-      });
+      const { response: result, llmStep } = await traceLlmReasoningLogJSON<HITLInterpreterOutput>(
+        'hitl:interpret',
+        {
+          messages: [
+            { role: 'system', content: INTERPRETER_SYSTEM_PROMPT },
+            { role: 'user', content: userPrompt },
+          ],
+          model: 'gpt-4o-mini',
+          temperature: 0.1,
+          maxTokens: 200,
+        },
+      );
+      this._pendingLlmSteps.push(llmStep);
 
       if (!this.isValidDecision(result.decision)) {
         console.warn(`[HITLGateNode] Interpreter returned unknown decision "${result.decision}", falling back to re_ask`);
@@ -963,12 +977,13 @@ Classify this reply. Return JSON only.`;
       { role: 'assistant', content: pending.question, timestamp: new Date().toISOString() },
       { role: 'user', content: rawReply, timestamp: new Date().toISOString() },
     ];
+    const mergedRecent = [...state.recentMessages, ...hitlExchange].slice(-20);
 
     return new Command({
       update: {
         pendingHITL: null,
         input: newInput,
-        recentMessages: hitlExchange,
+        recentMessages: mergedRecent,
         plannerOutput: undefined,
       } as Partial<MemoState>,
       goto: 'planner',
@@ -1323,16 +1338,19 @@ Details: ${check.details || 'Significant action requires confirmation'}
 Generate a short, warm confirmation message:`;
 
     try {
-      const response = await callLLM({
-        messages: [
-          { role: 'system', content: CONFIRMATION_SYSTEM_PROMPT },
-          { role: 'user', content: userPrompt },
-        ],
-        model: 'gpt-4o-mini',
-        temperature: 0.7,
-        maxTokens: 150,
-
-      });
+      const { response, llmStep } = await traceLlmReasoningLog(
+        'hitl:confirm',
+        {
+          messages: [
+            { role: 'system', content: CONFIRMATION_SYSTEM_PROMPT },
+            { role: 'user', content: userPrompt },
+          ],
+          model: 'gpt-4o-mini',
+          temperature: 0.7,
+          maxTokens: 150,
+        },
+      );
+      this._pendingLlmSteps.push(llmStep);
 
       const message = response.content?.trim();
       if (message) return message;
@@ -1407,15 +1425,19 @@ ${check.missingFields?.length ? `Missing fields: ${check.missingFields.join(', '
 Generate a friendly, conversational clarification message in ${language === 'he' ? 'Hebrew' : 'English'}:`;
 
     try {
-      const response = await callLLM({
-        messages: [
-          { role: 'system', content: CLARIFICATION_SYSTEM_PROMPT },
-          { role: 'user', content: userPrompt },
-        ],
-        model: 'gpt-4o-mini',
-        temperature: 0.7,
-        maxTokens: 200,
-      });
+      const { response, llmStep } = await traceLlmReasoningLog(
+        'hitl:clarify',
+        {
+          messages: [
+            { role: 'system', content: CLARIFICATION_SYSTEM_PROMPT },
+            { role: 'user', content: userPrompt },
+          ],
+          model: 'gpt-4o-mini',
+          temperature: 0.7,
+          maxTokens: 200,
+        },
+      );
+      this._pendingLlmSteps.push(llmStep);
 
       const clarificationMessage = response.content?.trim();
       if (clarificationMessage) {
@@ -1503,6 +1525,37 @@ Generate a friendly, conversational clarification message in ${language === 'he'
     };
     const lang = language === 'other' ? 'en' : language;
     return descriptions[field]?.[lang] || field;
+  }
+
+  private _buildNodeTiming(): { nodeExecutions: Array<{ node: string; startTime: number; endTime: number; durationMs: number }> } {
+    const endTime = Date.now();
+    return { nodeExecutions: [{ node: this.name, startTime: this._processStartTime, endTime, durationMs: endTime - this._processStartTime }] };
+  }
+
+  /** Return partial state with accumulated llmSteps + node timing. */
+  private _llmStepsUpdate(): Partial<MemoState> {
+    const update: Partial<MemoState> = { metadata: this._buildNodeTiming() as any };
+    if (this._pendingLlmSteps.length > 0) {
+      update.llmSteps = this._pendingLlmSteps;
+    }
+    return update;
+  }
+
+  /** Inject accumulated llmSteps + node timing into a Command's update payload. */
+  private _injectSteps(cmd: Command): Command {
+    const raw = cmd as any;
+    if (raw.update === undefined && raw.goto === undefined) {
+      console.warn('[HITLGateNode] Command structure unexpected — llmSteps may be lost. Check LangGraph version compatibility.');
+    }
+    const update = raw.update || {};
+    const injected: Partial<MemoState> = {
+      ...update,
+      metadata: this._buildNodeTiming() as any,
+    };
+    if (this._pendingLlmSteps.length > 0) {
+      injected.llmSteps = this._pendingLlmSteps;
+    }
+    return new Command({ ...raw, update: injected });
   }
 
   asNodeFunction(): (state: MemoState) => Promise<Partial<MemoState> | Command> {

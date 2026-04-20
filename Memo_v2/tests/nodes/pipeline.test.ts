@@ -4,7 +4,11 @@
  * Tests for JoinNode, ResponseFormatterNode, ResponseWriterNode, MemoryUpdateNode
  */
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('../../src/services/memory/conversationContextSummarizer.js', () => ({
+  summarizeRollingConversation: vi.fn(async () => 'Mock rolling summary.\nLast action: test'),
+}));
 import { JoinNode } from '../../src/graph/nodes/JoinNode.js';
 import {
   MemoryUpdateNode,
@@ -23,11 +27,46 @@ import {
 } from '../../src/graph/nodes/ResponseWriterNode.js';
 import type { MemoState } from '../../src/graph/state/MemoState.js';
 import { createInitialState } from '../../src/graph/state/MemoState.js';
-import type { ConversationMessage, ResolverResult } from '../../src/types/index.js';
+import type { AuthContext, ConversationMessage, ResolverResult } from '../../src/types/index.js';
+import { getConversationContextStore } from '../../src/services/memory/ConversationContextStore.js';
 
 // ============================================================================
 // TEST HELPERS
 // ============================================================================
+
+const TEST_AUTH_USER_ID = 'test-user-pipeline-memory';
+
+function minimalAuthContext(userId: string = TEST_AUTH_USER_ID): AuthContext {
+  const now = new Date().toISOString();
+  return {
+    userRecord: {
+      id: userId,
+      whatsapp_number: '+1234567890',
+      plan_type: 'free',
+      timezone: 'Asia/Jerusalem',
+      settings: {},
+      google_email: null,
+      onboarding_complete: true,
+      onboarding_last_prompt_at: null,
+      morning_brief_time: '08:00:00',
+      created_at: now,
+      updated_at: now,
+      subscription_status: null,
+      subscription_period_end: null,
+      cancel_at_period_end: false,
+    },
+    planTier: 'free',
+    googleTokens: null,
+    googleConnected: false,
+    capabilities: {
+      calendar: false,
+      gmail: false,
+      database: true,
+      secondBrain: true,
+    },
+    hydratedAt: Date.now(),
+  };
+}
 
 function createTestState(overrides: Partial<MemoState> = {}): MemoState {
   return createInitialState({
@@ -48,6 +87,7 @@ function createTestState(overrides: Partial<MemoState> = {}): MemoState {
       message: 'Test message',
       triggerType: 'user',
     },
+    authContext: minimalAuthContext(),
     ...overrides,
   });
 }
@@ -351,6 +391,7 @@ describe('MemoryUpdateNode', () => {
   
   beforeEach(() => {
     node = new MemoryUpdateNode();
+    getConversationContextStore().clearUser(TEST_AUTH_USER_ID);
   });
   
   it('should add messages to recentMessages', async () => {
@@ -358,6 +399,7 @@ describe('MemoryUpdateNode', () => {
       input: {
         message: 'Create a task',
         triggerType: 'user',
+        userPhone: '+1234567890',
       },
       finalResponse: 'Task created!',
     });
@@ -369,26 +411,26 @@ describe('MemoryUpdateNode', () => {
     expect(result.recentMessages?.[1].role).toBe('assistant');
   });
   
-  it('should enforce memory limits', async () => {
-    const existingMessages: ConversationMessage[] = [];
-    for (let i = 0; i < 15; i++) {
-      existingMessages.push({
+  it('should keep planner tail within ConversationContextStore caps after append', async () => {
+    const store = getConversationContextStore();
+    const seed: ConversationMessage[] = [];
+    for (let i = 0; i < 12; i++) {
+      seed.push({
         role: i % 2 === 0 ? 'user' : 'assistant',
-        content: `Message ${i}`,
-        timestamp: Date.now() - (15 - i) * 1000,
+        content: `x`.repeat(80),
+        timestamp: new Date(Date.now() - (12 - i) * 1000).toISOString(),
       });
     }
-    
+    store.setInternal(TEST_AUTH_USER_ID, { recentMessages: seed });
+
     const state = createTestState({
-      recentMessages: existingMessages,
-      input: { message: 'New message', triggerType: 'user' },
+      input: { message: 'New message', triggerType: 'user', userPhone: '+1234567890' },
       finalResponse: 'Response',
     });
-    
+
     const result = await node['process'](state);
-    
-    // Should be limited to 10 messages
-    expect(result.recentMessages?.length).toBeLessThanOrEqual(10);
+
+    expect(result.recentMessages?.length).toBeLessThanOrEqual(3);
   });
 });
 

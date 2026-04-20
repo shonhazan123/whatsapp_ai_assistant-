@@ -21,6 +21,7 @@
     "express": "^5.2.1",
     "fuse.js": "^7.0.0",
     "googleapis": "^128.0.0",
+    "gpt-tokenizer": "^3.4.0",
     "langsmith": "^0.2.15",
     "languagedetect": "^2.0.0",
     "node-cron": "^4.2.1",

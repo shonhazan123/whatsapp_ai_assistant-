@@ -1,3 +1,4 @@
+import { getTokenService } from '../token/TokenService.js';
 import { logger } from '../../utils/logger.js';
 
 /**
@@ -99,9 +100,6 @@ export class ConversationWindow {
   /** Maximum system messages to keep in context (to prevent system message bloat) */
   public readonly MAX_SYSTEM_MESSAGES = 3;
   
-  /** Characters per token estimation (lower = more conservative, higher = less conservative) */
-  public readonly CHARS_PER_TOKEN = 3.5;
-  
   /** Conversation cleanup age in milliseconds (default: 12 hours) */
   public readonly CONVERSATION_MAX_AGE_MS = 12 * 60 * 60 * 1000;
   
@@ -123,12 +121,10 @@ export class ConversationWindow {
   }
 
   /**
-   * Estimate token count for a message content
-   * Uses approximation: ~3.5 characters per token (accounts for Hebrew/English mix)
+   * Count BPE tokens for a message content using gpt-tokenizer.
    */
-  private estimateTokens(content: string): number {
-    if (!content || content.length === 0) return 0;
-    return Math.ceil(content.length / this.CHARS_PER_TOKEN);
+  private countTokens(content: string): number {
+    return getTokenService().countTokens(content);
   }
 
   /**
@@ -139,8 +135,7 @@ export class ConversationWindow {
       if (msg.estimatedTokens !== undefined) {
         return total + msg.estimatedTokens;
       }
-      // Calculate if not cached
-      const tokens = this.estimateTokens(msg.content);
+      const tokens = this.countTokens(msg.content);
       msg.estimatedTokens = tokens;
       return total + tokens;
     }, 0);
@@ -209,7 +204,7 @@ export class ConversationWindow {
         break;
       }
       
-      const messageTokens = message.estimatedTokens || this.estimateTokens(message.content);
+      const messageTokens = message.estimatedTokens || this.countTokens(message.content);
       remainingTokens -= messageTokens;
       indicesToRemove.add(index);
     }
@@ -298,7 +293,7 @@ export class ConversationWindow {
       const messages = this.memory.get(userPhone)!;
       
       // Calculate tokens for new message
-      const newMessageTokens = this.estimateTokens(content);
+      const newMessageTokens = this.countTokens(content);
       
       // Enforce message count limit (user + assistant only, system excluded from count)
       if (role === 'user' || role === 'assistant') {

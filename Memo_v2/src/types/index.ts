@@ -101,6 +101,18 @@ export interface ConversationMessage {
 	};
 }
 
+/**
+ * Rolling planner-facing conversation memory: summary of older turns + live tail of completed messages.
+ * Persisted in-process today; replace with Redis (load/save/TTL) — see ConversationContextStore.
+ */
+export interface ConversationContext {
+	summary?: string;
+	/**
+	 * Completed user/assistant messages since last summarization (grows up to cap, then summarize trims to 3).
+	 */
+	recentMessages: ConversationMessage[];
+}
+
 export interface DisambiguationContext {
 	type: "calendar" | "database" | "gmail" | "second-brain" | "error";
 

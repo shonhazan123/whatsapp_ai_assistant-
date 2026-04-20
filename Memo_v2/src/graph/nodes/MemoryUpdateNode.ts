@@ -1,71 +1,63 @@
 /**
  * MemoryUpdateNode
  *
- * Updates conversation memory at the end of each interaction.
+ * End of graph: ConversationWindow (reply/disambiguation) + ConversationContextStore (planner rolling context).
  *
- * Based on V1: ConversationWindow (in-memory) + conversation_memory (Supabase)
+ * TODO — Redis persistence: When ConversationContextStore moves to Redis, perform the same read-modify-write
+ * (append turn, conditional summarization) against Redis keys here, synchronously before returning.
  *
- * Responsibilities:
- * - Add user message to recentMessages
- * - Add assistant response to recentMessages
- * - Enforce memory limits (max messages, max tokens)
- * - Optionally update long-term memory summary
+ * Guests: no memory writes (see `isGuestAuth`).
  */
 
+import {
+	getConversationContextStore,
+	CONVERSATION_KEEP_RAW_MESSAGES,
+	CONVERSATION_RAW_MESSAGE_CAP,
+	CONVERSATION_RAW_TOKEN_CAP,
+	estimateRecentMessagesTokens,
+} from "../../services/memory/ConversationContextStore.js";
+import { summarizeRollingConversation } from "../../services/memory/conversationContextSummarizer.js";
 import { getMemoryService } from "../../services/memory/index.js";
 import type { ConversationMessage, LatestAction } from "../../types/index.js";
-import type { MemoState } from "../state/MemoState.js";
+import { isGuestAuth } from "../../utils/guestUser.js";
+import type { LLMStep, MemoState } from "../state/MemoState.js";
 import { CodeNode } from "./BaseNode.js";
 
 // ============================================================================
-// MEMORY LIMITS
+// MEMORY UTILITIES (graph / tests)
 // ============================================================================
 
-const MAX_RECENT_MESSAGES = 10;
-const MAX_TOKENS_ESTIMATE = 500; // Rough estimate, not exact
-const CHARS_PER_TOKEN = 4; // Rough approximation
-
-// ============================================================================
-// MEMORY UTILITIES
-// ============================================================================
+const CHARS_PER_TOKEN = 4;
 
 /**
  * Estimate token count from string length
  */
-function estimateTokens(text: string): number {
+export function estimateTokens(text: string): number {
 	return Math.ceil(text.length / CHARS_PER_TOKEN);
 }
 
 /**
  * Calculate total tokens in messages
  */
-function calculateTotalTokens(messages: ConversationMessage[]): number {
-	return messages.reduce(
-		(total, msg) => total + estimateTokens(msg.content),
-		0,
-	);
+export function calculateTotalTokens(messages: ConversationMessage[]): number {
+	return messages.reduce((total, msg) => total + estimateTokens(msg.content), 0);
 }
 
 /**
- * Enforce memory limits on messages array
+ * Enforce memory limits on messages array (legacy helper for tests / callers)
  */
-function enforceMemoryLimits(
+export function enforceMemoryLimits(
 	messages: ConversationMessage[],
 	maxMessages: number,
 	maxTokens: number,
 ): ConversationMessage[] {
 	let result = [...messages];
-
-	// Limit by message count first
 	if (result.length > maxMessages) {
 		result = result.slice(-maxMessages);
 	}
-
-	// Then limit by tokens
 	while (calculateTotalTokens(result) > maxTokens && result.length > 1) {
 		result = result.slice(1);
 	}
-
 	return result;
 }
 
@@ -81,6 +73,7 @@ export class MemoryUpdateNode extends CodeNode {
 		const enhancedMessage = state.input.enhancedMessage;
 		const assistantResponse = state.finalResponse;
 		const now = Date.now();
+		const guest = isGuestAuth(state.authContext);
 
 		console.log("[MemoryUpdate] Updating conversation memory");
 		console.log(
@@ -90,121 +83,134 @@ export class MemoryUpdateNode extends CodeNode {
 			`[MemoryUpdate] Assistant response: ${assistantResponse ? `"${assistantResponse.substring(0, 50)}..."` : "MISSING"}`,
 		);
 		console.log(
-			`[MemoryUpdate] Current recentMessages count: ${state.recentMessages.length}`,
+			`[MemoryUpdate] Current recentMessages count: ${state.recentMessages.length}, guest=${guest}`,
 		);
 
-		// Build new messages to add
-		const newMessages: ConversationMessage[] = [];
-
-		// Add user message
-		if (userMessage) {
-			const userMsg: ConversationMessage = {
-				role: "user",
-				content: enhancedMessage || userMessage,
-				timestamp: new Date(now - 1000).toISOString(), // ISO string format (matches ContextAssemblyNode)
-				whatsappMessageId: state.input.whatsappMessageId,
-				replyToMessageId: state.input.replyToMessageId,
-				metadata: {
-					disambiguationContext: state.disambiguation,
-					imageContext: state.input.imageContext,
-				},
+		if (guest) {
+			return {
+				recentMessages: [],
+				longTermSummary: undefined,
+				conversationContext: { recentMessages: [] },
 			};
-			newMessages.push(userMsg);
-			console.log(`[MemoryUpdate] Added user message to newMessages`);
-		} else {
-			console.warn(
-				"[MemoryUpdate] No user message found in state.input.message",
-			);
 		}
 
-		// Add assistant response
-		if (assistantResponse) {
-			const assistantMsg: ConversationMessage = {
-				role: "assistant",
-				content: assistantResponse,
-				timestamp: new Date(now).toISOString(), // ISO string format (matches ContextAssemblyNode)
-			};
-			newMessages.push(assistantMsg);
-			console.log(`[MemoryUpdate] Added assistant message to newMessages`);
-		} else {
-			console.warn(
-				"[MemoryUpdate] No assistant response found in state.finalResponse",
-			);
-		}
+		const userMsg: ConversationMessage | null = userMessage
+			? {
+					role: "user",
+					content: enhancedMessage || userMessage,
+					timestamp: new Date(now - 1000).toISOString(),
+					whatsappMessageId: state.input.whatsappMessageId,
+					replyToMessageId: state.input.replyToMessageId,
+					metadata: {
+						disambiguationContext: state.disambiguation,
+						imageContext: state.input.imageContext,
+					},
+				}
+			: null;
 
-		// Merge with existing messages
-		const allMessages = [...state.recentMessages, ...newMessages];
+		const assistantMsg: ConversationMessage | null = assistantResponse
+			? {
+					role: "assistant",
+					content: assistantResponse,
+					timestamp: new Date(now).toISOString(),
+				}
+			: null;
 
-		// Enforce limits
-		const trimmedMessages = enforceMemoryLimits(
-			allMessages,
-			MAX_RECENT_MESSAGES,
-			MAX_TOKENS_ESTIMATE,
-		);
-
-		console.log(
-			`[MemoryUpdate] ${allMessages.length} messages → ${trimmedMessages.length} after limits`,
-		);
-
-		// Persist messages to ConversationWindow via MemoryService
-		// NOTE: User message is already added by ContextAssemblyNode, we validate as fallback
-		// Assistant message is NOT added here: the webhook calls Memo_v2 sendWhatsAppMessage,
-		// which adds the assistant message with the returned WhatsApp message ID (for reply context).
 		this.persistMessagesToMemory(state, userMessage, enhancedMessage);
-
-		// Persist latestActions for ALL successful executions in this run
 		this.persistLatestActions(state);
 
-		// Update long-term summary if needed
-		// This would typically involve an LLM call to summarize older messages
-		// For now, we just pass through the existing summary
-		const shouldUpdateSummary = this.shouldUpdateLongTermSummary(state);
-		let longTermSummary = state.longTermSummary;
+		const userId = state.authContext!.userRecord.id;
+		const store = getConversationContextStore();
+		const requestId = (state.input as { requestId?: string }).requestId ?? state.traceId;
 
-		if (shouldUpdateSummary) {
-			console.log(
-				"[MemoryUpdate] Long-term summary update triggered (not implemented)",
-			);
-			// TODO: Implement summary update with LLM
-			// longTermSummary = await this.generateSummary(trimmedMessages);
+		let summarizerSteps: LLMStep[] = [];
+		if (userMsg && assistantMsg) {
+			store.appendCompletedTurn(userId, userMsg, assistantMsg);
+			summarizerSteps = await this.rollUpConversationContextIfNeeded(userId, requestId);
 		}
 
-		// Update execution metadata
-		const metadata = {
-			...state.metadata,
-			nodeExecutions: [
-				...state.metadata.nodeExecutions,
-				{
-					node: this.name,
-					startTime: now,
-					endTime: Date.now(),
-					durationMs: Date.now() - now,
-				},
-			],
-		};
+		const ctx = store.getForPlanner(userId);
 
 		return {
-			recentMessages: trimmedMessages,
-			longTermSummary,
-			metadata,
+			recentMessages: ctx.recentMessages,
+			conversationContext: ctx,
+			longTermSummary: ctx.summary,
+			...(summarizerSteps.length > 0 ? { llmSteps: summarizerSteps } : {}),
 		};
 	}
 
 	/**
-	 * Persist messages to ConversationWindow via MemoryService
-	 * - Validates user message exists (fallback if ContextAssemblyNode didn't add it)
-	 * - Assistant message is added by the webhook when it calls Memo_v2 sendWhatsAppMessage (with message ID).
+	 * Synchronous summarization when raw buffer exceeds caps (no background jobs).
+	 *
+	 * TODO — Redis persistence: use WATCH/MULTI or Lua script so append + summarize stays atomic per user.
 	 */
+	private async rollUpConversationContextIfNeeded(
+		userId: string,
+		requestId?: string,
+	): Promise<LLMStep[]> {
+		const store = getConversationContextStore();
+		const steps: LLMStep[] = [];
+
+		while (true) {
+			const internal = store.getInternal(userId);
+			const msgs = internal.recentMessages;
+			const tokens = estimateRecentMessagesTokens(msgs);
+
+			if (msgs.length <= CONVERSATION_RAW_MESSAGE_CAP && tokens <= CONVERSATION_RAW_TOKEN_CAP) {
+				break;
+			}
+
+			if (msgs.length <= CONVERSATION_KEEP_RAW_MESSAGES) {
+				try {
+					const { text: newSummary, llmStep } = await summarizeRollingConversation({
+						priorSummary: internal.summary,
+						messagesToFold: msgs,
+						requestId,
+					});
+					store.applySummarizationResult(userId, newSummary, []);
+					if (llmStep) steps.push(llmStep);
+				} catch (e) {
+					console.error("[MemoryUpdate] Summarization failed (small buffer):", e);
+					store.applySummarizationResult(userId, internal.summary || "", msgs);
+				}
+				break;
+			}
+
+			const keep = msgs.slice(-CONVERSATION_KEEP_RAW_MESSAGES);
+			const toFold = msgs.slice(0, msgs.length - keep.length);
+			if (toFold.length === 0) {
+				break;
+			}
+
+			try {
+				const { text: newSummary, llmStep } = await summarizeRollingConversation({
+					priorSummary: internal.summary,
+					messagesToFold: toFold,
+					requestId,
+				});
+				store.applySummarizationResult(userId, newSummary, keep);
+				if (llmStep) steps.push(llmStep);
+			} catch (e) {
+				console.error("[MemoryUpdate] Summarization failed:", e);
+				store.applySummarizationResult(userId, internal.summary || "", keep);
+				break;
+			}
+		}
+
+		return steps;
+	}
+
 	private persistMessagesToMemory(
 		state: MemoState,
 		userMessage: string,
 		enhancedMessage: string | undefined,
 	): void {
+		if (isGuestAuth(state.authContext)) return;
+
 		try {
 			const memoryService = getMemoryService();
 			const userPhone = state.user.phone || state.input.userPhone;
 
-			// Validate user message exists (fallback if ContextAssemblyNode missed it)
 			if (userMessage) {
 				const hasUserMsg = memoryService.hasUserMessage(
 					userPhone,
@@ -233,15 +239,12 @@ export class MemoryUpdateNode extends CodeNode {
 				"[MemoryUpdate] Error persisting messages to memory:",
 				error,
 			);
-			// Don't fail the node if this fails
 		}
 	}
 
-	/**
-	 * Extract and persist LatestActions for ALL successful executions in this run.
-	 * Iterates every PlanStep; for each success, builds a compact LatestAction record.
-	 */
 	private persistLatestActions(state: MemoState): void {
+		if (isGuestAuth(state.authContext)) return;
+
 		try {
 			const plan = state.plannerOutput?.plan;
 			const results = state.executionResults;
@@ -282,31 +285,31 @@ export class MemoryUpdateNode extends CodeNode {
 	}
 
 	private extractSummary(capability: string, data: any, constraints: Record<string, any>): string {
-		if (!data) return constraints?.rawMessage?.substring(0, 80) || 'unknown';
+		if (!data) return constraints?.rawMessage?.substring(0, 80) || "unknown";
 
 		switch (capability) {
-			case 'calendar':
-				return data.summary || data.title || constraints?.rawMessage?.substring(0, 80) || 'calendar action';
-			case 'database': {
-				const base = data.text || data.list_name || constraints?.rawMessage?.substring(0, 80) || 'task action';
+			case "calendar":
+				return data.summary || data.title || constraints?.rawMessage?.substring(0, 80) || "calendar action";
+			case "database": {
+				const base = data.text || data.list_name || constraints?.rawMessage?.substring(0, 80) || "task action";
 				const recurrence = data.reminder_recurrence || data.reminderRecurrence;
-				if (recurrence && typeof recurrence === 'object') {
+				if (recurrence && typeof recurrence === "object") {
 					const type = recurrence.type;
 					const interval = recurrence.interval;
-					if (type === 'weekly' && recurrence.days?.length) {
+					if (type === "weekly" && recurrence.days?.length) {
 						return `${base} (recurring: weekly on ${recurrence.days.length} day(s))`;
 					}
-					if (type === 'weekly' && interval) return `${base} (every ${interval} week(s))`;
-					if (type) return `${base} (recurring: ${type}${interval ? ` ${interval}` : ''})`;
+					if (type === "weekly" && interval) return `${base} (every ${interval} week(s))`;
+					if (type) return `${base} (recurring: ${type}${interval ? ` ${interval}` : ""})`;
 				}
 				return base;
 			}
-			case 'gmail':
-				return data.subject || constraints?.rawMessage?.substring(0, 80) || 'email action';
-			case 'second-brain':
-				return (data.content || data.summary || '').substring(0, 80) || 'memory action';
+			case "gmail":
+				return data.subject || constraints?.rawMessage?.substring(0, 80) || "email action";
+			case "second-brain":
+				return (data.content || data.summary || "").substring(0, 80) || "memory action";
 			default:
-				return constraints?.rawMessage?.substring(0, 80) || 'action';
+				return constraints?.rawMessage?.substring(0, 80) || "action";
 		}
 	}
 
@@ -314,10 +317,9 @@ export class MemoryUpdateNode extends CodeNode {
 		if (!data) return undefined;
 
 		switch (capability) {
-			case 'calendar':
+			case "calendar":
 				return data.start || undefined;
-			case 'database':
-				// Prefer next reminder time so "when is the next reminder?" can be answered from Latest Actions
+			case "database":
 				return data.next_reminder_at ?? data.nextReminderAt ?? data.due_date ?? data.dueDate ?? undefined;
 			default:
 				return undefined;
@@ -328,56 +330,24 @@ export class MemoryUpdateNode extends CodeNode {
 		if (!data) return undefined;
 
 		switch (capability) {
-			case 'calendar':
+			case "calendar":
 				if (data.id) return { eventId: data.id };
 				break;
-			case 'database':
+			case "database":
 				if (data.id) return { taskId: data.id };
 				break;
-			case 'gmail':
+			case "gmail":
 				if (data.id) return { threadId: data.id };
 				break;
-			case 'second-brain':
+			case "second-brain":
 				if (data.id) return { memoryId: data.id };
 				break;
 		}
 		return undefined;
 	}
-
-	/**
-	 * Determine if long-term summary should be updated
-	 */
-	private shouldUpdateLongTermSummary(state: MemoState): boolean {
-		// Update summary periodically or when significant events occur
-
-		// Check if we've had many messages since last summary
-		const messageCount = state.recentMessages.length;
-		if (messageCount >= MAX_RECENT_MESSAGES - 2) {
-			return true;
-		}
-
-		// Check if significant operations occurred
-		const significantOps = ["create", "update", "delete", "complete"];
-		const hasSignificantOp = state.plannerOutput?.plan.some((step) =>
-			significantOps.some((op) => step.action.includes(op)),
-		);
-
-		if (hasSignificantOp && messageCount > 5) {
-			return true;
-		}
-
-		return false;
-	}
 }
-
-// ============================================================================
-// FACTORY FUNCTION
-// ============================================================================
 
 export function createMemoryUpdateNode() {
 	const node = new MemoryUpdateNode();
 	return node.asNodeFunction();
 }
-
-// Export utilities for use in MemoState reducers
-export { calculateTotalTokens, enforceMemoryLimits, estimateTokens };

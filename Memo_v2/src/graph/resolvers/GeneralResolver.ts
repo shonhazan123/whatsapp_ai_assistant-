@@ -152,7 +152,7 @@ export class GeneralResolver extends LLMResolver {
       lines.push('');
     }
 
-    lines.push('## Latest Actions (most-recent first)');
+    lines.push('## Latest Actions (most-recent first; planner does not see this — only for your Q&A about what Donna did)');
     if (state.latestActions && state.latestActions.length > 0) {
       console.log(`[general_resolver] latestActions count: ${state.latestActions.length} (use these to answer "when is next reminder", "what did you create", etc.)`);
       for (const action of state.latestActions) {
@@ -162,8 +162,16 @@ export class GeneralResolver extends LLMResolver {
     } else {
       console.log(`[general_resolver] latestActions: (none) - cannot answer questions about recent operations`);
       lines.push('(none)');
+      lines.push('No recorded assistant operations in this session yet.');
     }
     lines.push('');
+
+    const rollingSummary = state.conversationContext?.summary ?? state.longTermSummary;
+    if (rollingSummary) {
+      lines.push('## Conversation summary (for broader chat context)');
+      lines.push(rollingSummary);
+      lines.push('');
+    }
 
     const u = state.user;
     const caps = u.capabilities;
@@ -182,7 +190,7 @@ export class GeneralResolver extends LLMResolver {
     lines.push(`- Enabled capabilities: ${enabled.join(', ') || 'none'}`);
     lines.push('');
 
-    lines.push('## Recent conversation');
+    lines.push('## Recent conversation (completed turns tail; may be short — use summary above when needed)');
     if (state.recentMessages && state.recentMessages.length > 0) {
       const recent = state.recentMessages.slice(-10);
       for (const msg of recent) {

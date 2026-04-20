@@ -53,7 +53,7 @@ Planner writes `state.plannerOutput`:
 - `confidence`: \(0..1\)
 - `riskLevel`: `"low" | "medium" | "high"`
 - `needsApproval`: boolean
-- `missingFields`: string[] — when non-empty, triggers `reason:'missing_fields'` HITL. Known values (see PlannerNode system prompt): `reminder_time_required` (reminder needs specific date+time; use when user said "תזכיר לי" with day but no time, or no date/time), `target_unclear`, `time_unclear`, `which_one`, `intent_unclear`.
+- `missingFields`: string[] — when non-empty, triggers `reason:'missing_fields'` HITL. Known values (see PlannerNode system prompt): `reminder_time_required` (one-time or fixed-schedule DB reminder needs date + clock time or time-of-day descriptor; **not** used for **nudge-only** “every X minutes/hours” with implicit start **now**), `target_unclear`, `time_unclear`, `which_one`, `intent_unclear`.
 - `plan`: `PlanStep[]`
 
 Planner also writes `state.routingSuggestions` (pattern hints) used for HITL clarification wording.

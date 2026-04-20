@@ -1,6 +1,5 @@
 import { query } from '../../config/database';
 import { DEFAULT_MERGE_THRESHOLD, DEFAULT_MIN_SIMILARITY } from '../../config/secondBrain';
-import { RequestContext } from '../../core/context/RequestContext';
 import { MemoryMetadata, MemoryRecord, SearchResult } from '../../types/memory';
 import { logger } from '../../utils/logger';
 import { OpenAIService } from '../ai/OpenAIService';
@@ -75,12 +74,6 @@ export class SecondBrainService extends BaseService {
    */
   async embedText(text: string, requestId?: string): Promise<number[]> {
     try {
-      // Get requestId from context if not provided
-      if (!requestId) {
-        const requestContext = RequestContext.get();
-        requestId = requestContext?.performanceRequestId;
-      }
-      
       this.logger.info('Creating embedding for text');
       const embedding = await this.openaiService.createEmbedding(text, 'text-embedding-3-small', requestId, 'second-brain');
       return embedding;
@@ -383,9 +376,7 @@ export class SecondBrainService extends BaseService {
         finalEmbedding = embedding;
       } else {
         this.logger.info('Generating embedding for new memory');
-        const requestContext = RequestContext.get();
-        const requestId = requestContext?.performanceRequestId;
-        finalEmbedding = await this.embedText(text, requestId);
+        finalEmbedding = await this.embedText(text);
       }
 
       // Detect language if not provided
@@ -475,9 +466,7 @@ export class SecondBrainService extends BaseService {
 
       // Generate embedding for query
       this.logger.info(`[searchMemory] Generating embedding for query: "${queryText.substring(0, 100)}${queryText.length > 100 ? '...' : ''}"`);
-      const requestContext = RequestContext.get();
-      const requestId = requestContext?.performanceRequestId;
-      const queryEmbedding = await this.embedText(queryText, requestId);
+      const queryEmbedding = await this.embedText(queryText);
       const queryVectorString = this.arrayToVectorString(queryEmbedding);
       this.logger.debug(`[searchMemory] Query embedding generated (${queryEmbedding.length} dimensions)`);
 
@@ -645,9 +634,7 @@ export class SecondBrainService extends BaseService {
         finalEmbedding = newEmbedding;
       } else {
         this.logger.info('Generating embedding for updated memory');
-        const requestContext = RequestContext.get();
-        const requestId = requestContext?.performanceRequestId;
-        finalEmbedding = await this.embedText(newText, requestId);
+        finalEmbedding = await this.embedText(newText);
       }
 
       // Update language in metadata if changed

@@ -54,6 +54,15 @@ export interface LLMRequest {
   toolChoice?: 'auto' | 'none' | { type: 'function'; function: { name: string } };
 }
 
+export interface LLMUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  prompt_tokens_details?: {
+    cached_tokens?: number;
+  };
+}
+
 export interface LLMResponse {
   content: string | null;
   functionCall?: {
@@ -67,6 +76,7 @@ export interface LLMResponse {
       arguments: string;
     };
   }>;
+  usage?: LLMUsage;
 }
 
 /**
@@ -118,6 +128,7 @@ export async function callLLM(
     }
 
     const message = choice.message;
+    const usage: LLMUsage | undefined = (response as any).usage;
 
     // Handle function calls (old format)
     if (message.function_call) {
@@ -127,6 +138,7 @@ export async function callLLM(
           name: message.function_call.name,
           arguments: message.function_call.arguments,
         },
+        usage,
       };
     }
 
@@ -141,12 +153,14 @@ export async function callLLM(
             arguments: tc.function.arguments,
           },
         })),
+        usage,
       };
     }
 
     // Regular text response
     return {
       content: message.content || null,
+      usage,
     };
   } catch (error: any) {
     console.error('[LLMService] Error calling LLM:', error);
@@ -251,5 +265,40 @@ export async function callLLMJSON<T>(
       throw new Error(`Invalid JSON response from LLM: ${extractError instanceof Error ? extractError.message : String(extractError)}`);
     }
   }
+}
+
+export interface LLMJSONResult<T> {
+  parsed: T;
+  usage?: LLMUsage;
+}
+
+/**
+ * Call LLM, parse JSON, and return both parsed result and raw usage data.
+ * Used by traceLlmReasoningLog to capture token metrics.
+ */
+export async function callLLMJSONWithUsage<T>(
+  request: LLMRequest,
+  requestId?: string
+): Promise<LLMJSONResult<T>> {
+  const response = await callLLM(request, requestId);
+
+  if (!response.content) {
+    throw new Error('No content in LLM JSON response');
+  }
+
+  let parsed: T;
+  try {
+    parsed = JSON.parse(response.content) as T;
+  } catch {
+    console.warn('[LLMService] Direct JSON parse failed, attempting extraction');
+    try {
+      parsed = tryFixJson(response.content) as T;
+    } catch (extractError) {
+      console.error('[LLMService] Failed to parse JSON response:', response.content);
+      throw new Error(`Invalid JSON response from LLM: ${extractError instanceof Error ? extractError.message : String(extractError)}`);
+    }
+  }
+
+  return { parsed, usage: response.usage };
 }
 

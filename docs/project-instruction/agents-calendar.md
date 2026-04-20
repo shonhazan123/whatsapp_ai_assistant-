@@ -1,5 +1,7 @@
 ## Calendar Agent (`calendarOperations`)
 
+> **Memo_v2 runtime**: `calendar` steps go to **`CalendarFindResolver`** / **`CalendarMutateResolver`** (`Memo_v2/src/graph/resolvers/CalendarResolvers.ts`), then entity resolution if needed, then **`CalendarServiceAdapter`**. The behavioral rules below still apply.
+
 ### High-Level Role
 
 The calendar agent is the **single gateway to Google Calendar**. It receives natural-language requests, turns them into structured `calendarOperations` calls, and delegates to `CalendarService` to talk to Google.
@@ -20,7 +22,8 @@ It is responsible for **calendar events only** (single and recurring), including
   - Optional end date using `until`, otherwise uses a default finite series (e.g., `COUNT`).
 - **Read & list events**
   - `get` a specific event by `eventId` or by `summary` + time window (using `QueryResolver`).
-  - `getEvents` in a time range (for “this week”, “tomorrow”, custom windows).
+  - `getEvents` in a time range (for “this week”, “tomorrow”, custom windows). Default window when user gives no time context: **today + 30 days**.
+  - When searching for a specific event (find event), the adapter returns **all** events in the window plus `searchCriteria` and `timeWindow`. The response writer performs semantic matching and answers informatively.
   - `getRecurringInstances` for all occurrences within a recurring series.
 - **Update events**
   - Modify `summary`, `start`, `end`, `description`, `location`, `attendees`, reminders.
@@ -60,6 +63,7 @@ Whenever you see **time on the calendar** (events, meetings), it’s the calenda
 3. **Tool selection**: LLM selects `calendarOperations` and emits JSON arguments.
 4. **Function layer**: `CalendarFunction.execute(args, userId)`:
    - Validates required fields (e.g., summary, start, end, days).
+   - **All times are in the user’s timezone** (from `state.user.timezone`). Start/end without offset are normalized via `normalizeToISOWithOffset`; default windows and recurring event start/end use `Memo_v2/src/utils/userTimezone.ts` (never server local time).
    - Normalizes timezone (`timezone` → `timeZone`), all-day detection, reminders.
    - Delegates to `CalendarService` method (e.g., `createEvent`, `createRecurringEvent`, `deleteEvent`, etc.).
 5. **Service layer**: `CalendarService` builds Google Calendar API calls using OAuth tokens from `UserService`.
@@ -85,6 +89,51 @@ Whenever you see **time on the calendar** (events, meetings), it’s the calenda
 
 ### Parameters, Defaults & Internal Logic
 
+#### Planner context summary
+
+Each `PlanStep` may include a `contextSummary` string — a plain-language sentence written by the planner that resolves ambiguities (references like "it"/"זה", relative time "after pilates", "next week"). The resolver LLM receives this summary at the top of its input to improve date and operation accuracy. See `Memo_v2/src/graph/resolvers/BaseResolver.ts`.
+
+#### Date and weekday resolution (CRITICAL — calendar and database resolvers)
+
+All resolvers receive **"[Current time: Weekday, YYYY-MM-DD HH:mm, Timezone: ...]"** in the user message. Use it to resolve weekday names and relative dates.
+
+- **Weekday name → exact date**
+  - When the user says a weekday (e.g. ביום רביעי, יום רביעי הזה, on Wednesday, this Wednesday), the **next** occurrence of that weekday from today is the target date.
+  - Example: today Monday 2026-03-16 → "ביום רביעי" = Wednesday = **2026-03-18** (not 2026-03-17 / tomorrow).
+  - Hebrew: ראשון=Sun, שני=Mon, שלישי=Tue, רביעי=Wed, חמישי=Thu, שישי=Fri, שבת=Sat. Israeli week: Sunday=0 … Saturday=6.
+
+- **"This [weekday]" vs "Next [weekday]"**
+  - "This Wednesday" / "ביום רביעי" / "ביום רביעי הזה" = next Wednesday from today.
+  - "Next Monday" / "יום שני הבא" = the Monday of **next week** (the Monday after this one). If today is Monday, "next Monday" = 7 days from today.
+  - "This Monday" = Monday of the current week; if already passed, use the coming Monday.
+
+- **"X weeks from now" + weekday**
+  - "Sunday two weeks from now" = the **second** upcoming Sunday from today. Example: today Wednesday 2026-03-18 → first Sunday = 2026-03-22 (+4d), second Sunday = 2026-03-29 (+11d).
+  - "[Weekday] N weeks from now" = the Nth upcoming occurrence of that weekday (add 7 days per week).
+
+- **"Next week" / "next weekend"**
+  - "Next week" / "השבוע הבא" = the calendar week **after** the current one (Israel: Sunday–Saturday).
+  - "יום חמישי הבא" / "next Thursday" = the Thursday of **next** week, not the upcoming Thursday within this week.
+  - When postponing ("דחי לשבוע הבא"), the adapter preserves the original event's duration (see below).
+
+#### Duration preservation on update
+
+When updating a single event and only `updateFields.start` is provided (no `end`), the adapter computes the new end from the original event's duration using `calculateUpdatedTimes(originalEvent, updateFields)`. This ensures multi-day events remain multi-day when postponed. See `Memo_v2/src/services/adapters/CalendarServiceAdapter.ts`.
+
+#### Time-of-day descriptors (morning / afternoon / evening / night)
+
+When the user gives a **day + time-of-day** without a specific hour (e.g. "tomorrow morning", "מחר בערב", "Thursday afternoon"), the planner does **not** trigger HITL. The calendar resolver must assign a **concrete hour** within that period:
+
+| Descriptor (EN) | Hebrew       | Hour range  | Default hour (use for start/end) |
+|-----------------|-------------|-------------|-----------------------------------|
+| morning         | בוקר        | 08:00–11:00 | 09:00                             |
+| afternoon       | צהריים      | 12:00–17:00 | 14:00                             |
+| evening         | ערב         | 17:00–21:00 | 18:00                             |
+| night           | לילה        | 20:00–23:00 | 21:00                             |
+
+- **Examples:** "add meeting tomorrow morning" → `start` tomorrow 09:00, `end` 10:00. "Event Wednesday evening" → Wednesday 18:00–19:00.
+- Use the default hour for that descriptor when the user does not specify an exact time. For window operations (e.g. "delete tomorrow morning's events"), use the range (e.g. timeMin 08:00, timeMax 11:59).
+
 #### Time & Timezone
 
 - **Single events**
@@ -93,7 +142,11 @@ Whenever you see **time on the calendar** (events, meetings), it’s the calenda
   - If no explicit `timeZone`, default is `process.env.DEFAULT_TIMEZONE` or `'Asia/Jerusalem'`.
 
 - **All-day detection**
-  - If `start` and `end` are `YYYY-MM-DD` with no `T`, they are treated as dates and `allDay: true` is inferred.
+  - `allDay: true` is only used when:
+    - The user **explicitly** requests "all day" / "יום שלם" / "כל היום", OR
+    - The event **spans more than one calendar day** (trips, vacations, camps).
+  - **Single-day events with only a date (no time)** default to a **timed event** at 10:00–11:00 in the user timezone. They are NOT treated as all-day.
+  - When `allDay` is true, the adapter and `CalendarService` normalize start/end to **YYYY-MM-DD** (date-only) before sending to Google. If the end date is missing or the same as start, it is set to the next calendar day (exclusive end per Google API).
   - `CalendarService` sends `date` (not `dateTime`) to Google Calendar for all-day events.
 
 #### Recurring events
@@ -238,6 +291,20 @@ Whenever you see **time on the calendar** (events, meetings), it’s the calenda
   - Reply: "✅ מחקתי את הפגישה עם שון!"
 
 - **Ambiguous case**: If fuzzy match returns "פגישה עם שון" (0.82) and "שוני יום הולדת" (0.78), score gap < 0.15 → HITL disambiguation asks user to choose.
+
+#### 8. Find event — informative response (find event with full event context)
+
+- **User**: "יש לי ביקור אצל הרופא החודש?"
+- **Flow**:
+  - Planner → action: `find event`, capability: `calendar`.
+  - CalendarFindResolver → `operation: "getEvents"`:
+    - `summary: "רופא"`, `timeMin`: March 1, `timeMax`: March 31.
+  - CalendarServiceAdapter.getEvents() fetches **all** events in range, does NOT filter by summary.
+    Returns `{ events: [...all 7...], searchCriteria: { summary: "רופא" }, timeWindow: { timeMin, timeMax } }`.
+  - ResponseFormatterNode sets `isFindEvent: true`, passes `searchCriteria` and `timeWindow` in context.
+  - CalendarResponseWriter receives all events + user message + search criteria; performs **semantic matching**.
+  - **Match found**: "כן, יש לך ביקור אצל הרופא ב-15 במרץ ב-10:00, מרפאת כללית."
+  - **No match**: "חיפשתי ביומן שלך במרץ ולא מצאתי אירוע שמתאים ל'רופא'. יש לך 7 אירועים אחרים בתקופה הזו."
 
 ---
 

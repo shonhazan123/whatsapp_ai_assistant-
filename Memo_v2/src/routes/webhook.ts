@@ -6,8 +6,6 @@ import { invokeMemoGraph } from "../graph/index";
 import { invokeMemoGraphFromAudio, processImageMessage } from "../handlers/mediaHandlers";
 import { UserService } from "../legacy/services/database/UserService";
 import { DebugForwarderService } from "../services/debug/DebugForwarderService";
-import { PerformanceLogService } from "../services/performance/PerformanceLogService";
-import { PerformanceTracker } from "../legacy/services/performance/PerformanceTracker";
 import { MessageIdCache } from "../services/webhook/MessageIdCache";
 import {
   downloadWhatsAppMedia,
@@ -26,8 +24,6 @@ const BUSY_MESSAGE =
 export const whatsappWebhook = express.Router();
 
 const userService = new UserService();
-const performanceTracker = PerformanceTracker.getInstance();
-const performanceLogService = PerformanceLogService.getInstance();
 const messageIdCache = MessageIdCache.getInstance();
 
 // Initialize DebugForwarderService only in PRODUCTION
@@ -88,6 +84,7 @@ if (ENVIRONMENT === "PRODUCTION") {
 					}
 				}
 			}
+			
 		} catch (error) {
 			logger.error("Error processing webhook:", error);
 			// Don't send status here - already sent 200 above
@@ -107,10 +104,9 @@ export async function handleIncomingMessage(
 	logger.info("📨 NEW MESSAGE RECEIVED");
 	logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-	let performanceRequestId: string | undefined;
-
 	try {
-		const rawNumber = message.from;
+		const rawNumber = 
+		message.from;
 		const userPhone = normalizeWhatsAppNumber(rawNumber);
 
 		// Phase 5: Conditional forwarding in PRODUCTION
@@ -218,8 +214,6 @@ export async function handleIncomingMessage(
 		}
 
 		await sendTypingIndicator(userPhone, message.id);
-		// Start performance tracking
-		performanceRequestId = performanceTracker.startRequest(userPhone);
 
 		logger.info(`👤 From: ${userPhone}`);
 		logger.info(`📋 Message ID: ${message.id}`);
@@ -250,27 +244,21 @@ export async function handleIncomingMessage(
 					await deliverMemoGraphInvokeResult(userPhone, invokeResult);
 					return invokeResult.response;
 				});
-				if (lockResult.status === "rejected") {
-					await sendWhatsAppMessage(userPhone, BUSY_MESSAGE);
-					if (performanceRequestId) {
-						performanceTracker.endRequest(performanceRequestId);
-					}
-					return;
-				}
-				logger.info(`📤 Sent audio response to ${userPhone}`);
-			} catch (error: any) {
-				logger.error("Error processing audio:", error);
-				await sendWhatsAppMessage(
-					userPhone,
-					error?.message?.includes("timeout")
-						? "The audio took too long to process. Please try again."
-						: "Sorry, I couldn't process your audio. Please try again or send a text message.",
-				);
+			if (lockResult.status === "rejected") {
+				await sendWhatsAppMessage(userPhone, BUSY_MESSAGE);
+				return;
 			}
-			if (performanceRequestId) {
-				performanceTracker.endRequest(performanceRequestId);
-			}
-			return;
+			logger.info(`📤 Sent audio response to ${userPhone}`);
+		} catch (error: any) {
+			logger.error("Error processing audio:", error);
+			await sendWhatsAppMessage(
+				userPhone,
+				error?.message?.includes("timeout")
+					? "The audio took too long to process. Please try again."
+					: "Sorry, I couldn't process your audio. Please try again or send a text message.",
+			);
+		}
+		return;
 		} else if (message.type === "image" && message.image) {
 			logger.info("🖼️  Processing image message");
 			const imageCaption = message.image.caption || "";
@@ -321,24 +309,15 @@ export async function handleIncomingMessage(
 						throw error;
 					}
 				});
-				if (lockResult.status === "rejected") {
-					await sendWhatsAppMessage(userPhone, BUSY_MESSAGE);
-					if (performanceRequestId) {
-						performanceTracker.endRequest(performanceRequestId);
-					}
-					return;
-				}
-			} catch (_) {
-				// Download or process error already handled inside runExclusive
-				if (performanceRequestId) {
-					performanceTracker.endRequest(performanceRequestId);
-				}
+			if (lockResult.status === "rejected") {
+				await sendWhatsAppMessage(userPhone, BUSY_MESSAGE);
 				return;
 			}
-			if (performanceRequestId) {
-				performanceTracker.endRequest(performanceRequestId);
-			}
+		} catch (_) {
+			// Download or process error already handled inside runExclusive
 			return;
+		}
+		return;
 		} else {
 			// Unsupported message type
 			logger.warn(`⚠️  Unsupported message type: ${message.type}`);
@@ -369,72 +348,19 @@ export async function handleIncomingMessage(
 			const duration = Date.now() - startTime;
 			logger.info(`✅ Message handled successfully in ${duration}ms`);
 
-			// End performance tracking FIRST (needs requestCalls for cost calculation)
-			if (performanceRequestId) {
-				await performanceTracker.endRequest(performanceRequestId);
-			}
-
-			// Step 6: Upload performance logs to database (after response is sent and summary printed)
-			if (performanceRequestId) {
-				try {
-					const calls = performanceTracker.getRequestCalls(performanceRequestId);
-					const functions =
-						performanceTracker.getRequestFunctions(performanceRequestId);
-
-					if (calls.length > 0 || functions.length > 0) {
-						await performanceLogService.uploadSessionLogs(calls, functions);
-						// Clear in-memory data after successful upload
-						performanceTracker.clearRequestData(performanceRequestId);
-					}
-				} catch (uploadError) {
-					logger.error(
-						"Error uploading performance logs to database:",
-						uploadError,
-					);
-					// Don't fail the request if upload fails
-				}
-			}
-
 			return invokeResult.response;
 		});
 
-		if (lockResult.status === "rejected") {
-			await sendWhatsAppMessage(userPhone, BUSY_MESSAGE);
-			if (performanceRequestId) {
-				await performanceTracker.endRequest(performanceRequestId);
-			}
-			logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-			return;
-		}
+	if (lockResult.status === "rejected") {
+		await sendWhatsAppMessage(userPhone, BUSY_MESSAGE);
+		logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+		return;
+	}
 
 		logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 	} catch (error) {
 		const duration = Date.now() - startTime;
 		logger.error(`❌ Error handling message after ${duration}ms:`, error);
-
-		// End performance tracking FIRST (needs requestCalls for cost calculation)
-		if (performanceRequestId) {
-			await performanceTracker.endRequest(performanceRequestId);
-		}
-
-		// Upload performance logs even on error (if any were collected)
-		if (performanceRequestId) {
-			try {
-				const calls = performanceTracker.getRequestCalls(performanceRequestId);
-				const functions =
-					performanceTracker.getRequestFunctions(performanceRequestId);
-
-				if (calls.length > 0 || functions.length > 0) {
-					await performanceLogService.uploadSessionLogs(calls, functions);
-					performanceTracker.clearRequestData(performanceRequestId);
-				}
-			} catch (uploadError) {
-				logger.error(
-					"Error uploading performance logs to database (error case):",
-					uploadError,
-				);
-			}
-		}
 
 		try {
 			await sendWhatsAppMessage(

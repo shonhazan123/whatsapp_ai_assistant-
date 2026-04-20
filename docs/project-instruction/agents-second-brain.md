@@ -1,5 +1,7 @@
 ## Second-Brain Capability (Semantic Memory Vault)
 
+> **Memo_v2 runtime**: `second-brain` steps go to **`SecondBrainResolver`** (`Memo_v2/src/graph/resolvers/SecondBrainResolver.ts`), then **`SecondBrainServiceAdapter`**. The behavioral rules below still apply.
+
 ### High-Level Role
 
 The second-brain capability is a **standalone semantic long-term memory vault**. It stores, retrieves, and manages three types of personal knowledge: **notes**, **contacts**, and **key-value facts**.
@@ -62,7 +64,7 @@ It is **fully isolated** from working memory, fact memory, agent reasoning memor
    - Calls `SecondBrainVaultService` methods
    - Insert, override (delete+insert), search, delete, list
 5. **ResponseFormatterNode** + **ResponseWriterNode**:
-   - Formats results with `SecondBrainResponseContext`
+   - Formats results with `SecondBrainResponseContext`. For **search/recall**, the response writer receives the user's question and retrieved memories and **answers the user's question** in natural language from that data (e.g. "Eden gave 500 at the wedding") instead of returning the raw memory list. For list/store, behavior is unchanged (concise list or short confirmation).
 
 ---
 

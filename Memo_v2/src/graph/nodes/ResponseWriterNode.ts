@@ -10,10 +10,10 @@
  */
 
 import { getNodeModel } from '../../config/llm-config.js';
-import { callLLM } from '../../services/llm/LLMService.js';
+import { traceLlmReasoningLog } from '../../services/trace/traceLlmReasoningLog.js';
 import { writeResponse } from '../../services/responseWriters/index.js';
 import type { FailedOperationContext, FormattedResponse } from '../../types/index.js';
-import type { MemoState } from '../state/MemoState.js';
+import type { LLMStep, MemoState } from '../state/MemoState.js';
 import { CodeNode } from './BaseNode.js';
 
 // ============================================================================
@@ -60,8 +60,11 @@ Output ONLY the explanation message in the appropriate language, nothing else.`;
 
 export class ResponseWriterNode extends CodeNode {
   readonly name = 'response_writer';
+  private _pendingLlmSteps: LLMStep[] = [];
 
   protected async process(state: MemoState): Promise<Partial<MemoState>> {
+    this._pendingLlmSteps = [];
+
     if (state.finalResponse) {
       console.log('[ResponseWriter] finalResponse already set, using it directly');
       return { finalResponse: state.finalResponse };
@@ -76,7 +79,6 @@ export class ResponseWriterNode extends CodeNode {
       ? `${primaryStep.capability}:${primaryStep.action}`
       : undefined;
 
-    // Handle errors with no formatted data
     if (state.error && !formattedResponse?.failedOperations?.length) {
       console.log('[ResponseWriter] Writing error response (no context available)');
       return {
@@ -101,15 +103,14 @@ export class ResponseWriterNode extends CodeNode {
     const hasSuccesses = formattedResponse.formattedData &&
       (Array.isArray(formattedResponse.formattedData) ? formattedResponse.formattedData.length > 0 : true);
 
-    // Complete failure (only failures, no successes)
     if (hasFailures && !hasSuccesses) {
       console.log(`[ResponseWriter] All operations failed (${formattedResponse.failedOperations!.length} failures)`);
       return {
         finalResponse: await this.generateErrorExplanation(formattedResponse.failedOperations!, language, requestId),
+        ...this._stepsUpdate(),
       };
     }
 
-    // Partial failure (some success + some failure)
     if (hasFailures && hasSuccesses) {
       console.log('[ResponseWriter] Partial failure detected, generating combined response');
       const successResponse = await this.callCapabilityWriter(formattedResponse, state.user.userName, requestId, userMessage, plannerSummary);
@@ -117,10 +118,10 @@ export class ResponseWriterNode extends CodeNode {
       const separator = language === 'he' ? '\n\nלצערי, ' : '\n\nHowever, ';
       return {
         finalResponse: successResponse + separator + failureExplanation.toLowerCase(),
+        ...this._stepsUpdate(),
       };
     }
 
-    // General responses pass through (already LLM-generated)
     if (formattedResponse.agent === 'general') {
       console.log('[ResponseWriter] Using general response directly (already LLM-generated)');
       const generalData = Array.isArray(formattedResponse.formattedData)
@@ -140,9 +141,12 @@ export class ResponseWriterNode extends CodeNode {
       };
     }
 
-    // Dispatch to per-capability writer
     const successResponse = await this.callCapabilityWriter(formattedResponse, state.user.userName, requestId, userMessage, plannerSummary);
-    return { finalResponse: successResponse };
+    return { finalResponse: successResponse, ...this._stepsUpdate() };
+  }
+
+  private _stepsUpdate(): Partial<MemoState> {
+    return this._pendingLlmSteps.length > 0 ? { llmSteps: this._pendingLlmSteps } : {};
   }
 
   private async callCapabilityWriter(
@@ -153,7 +157,9 @@ export class ResponseWriterNode extends CodeNode {
     plannerSummary?: string,
   ): Promise<string> {
     try {
-      return await writeResponse({ formattedResponse, userName, requestId, userMessage, plannerSummary });
+      const result = await writeResponse({ formattedResponse, userName, requestId, userMessage, plannerSummary });
+      this._pendingLlmSteps.push(...result.llmSteps);
+      return result.text;
     } catch (error: any) {
       console.error('[ResponseWriter] Capability writer failed:', error);
       return '❌ משהו השתבש. נסה שוב בבקשה.';
@@ -175,21 +181,23 @@ export class ResponseWriterNode extends CodeNode {
         errorMessage: op.errorMessage,
       }));
 
-      const userMessage = `Failed operations to explain (respond in ${language === 'he' ? 'Hebrew' : 'English'}):\n\n${JSON.stringify(failureDetails, null, 2)}`;
+      const userMsg = `Failed operations to explain (respond in ${language === 'he' ? 'Hebrew' : 'English'}):\n\n${JSON.stringify(failureDetails, null, 2)}`;
 
       console.log('[ResponseWriter] Calling LLM for error explanation');
-      const response = await callLLM(
+      const { response, llmStep } = await traceLlmReasoningLog(
+        'response_writer:error_explain',
         {
           messages: [
             { role: 'system', content: ERROR_EXPLAINER_SYSTEM_PROMPT },
-            { role: 'user', content: userMessage },
+            { role: 'user', content: userMsg },
           ],
           model: modelConfig.model,
           temperature: 0.5,
           maxTokens: 200,
         },
-        requestId
+        requestId,
       );
+      this._pendingLlmSteps.push(llmStep);
 
       if (response.content) return response.content;
       throw new Error('No content in error explanation response');

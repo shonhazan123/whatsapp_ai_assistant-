@@ -1,5 +1,7 @@
 ## Database Agent (`taskOperations`, `listOperations`, `contactOperations`)
 
+> **Memo_v2 runtime**: `database` steps go to **`DatabaseTaskResolver`** / **`DatabaseListResolver`** (`Memo_v2/src/graph/resolvers/DatabaseResolvers.ts`), then **`DatabaseEntityResolver`** when IDs are required, then **`TaskServiceAdapter`** / **`ListServiceAdapter`**. The behavioral rules below still apply.
+
 ### High-Level Role
 
 The database agent owns **structured, non-calendar data**:
@@ -9,6 +11,8 @@ The database agent owns **structured, non-calendar data**:
 - Lists and checklist items.
 
 It talks to `TaskService`, `ListService`, `UserDataService`, and `OnboardingService` through `DatabaseFunctions`.
+
+**Not database**: Changing the **morning brief / daily digest send time** (scheduled WhatsApp summary) is **account settings** on the website — the planner routes that to **`general`**, not `database`.
 
 **CRITICAL**: NO confirmations needed for ANY deletions (tasks, lists, items) - delete immediately.
 
@@ -55,20 +59,52 @@ It talks to `TaskService`, `ListService`, `UserDataService`, and `OnboardingServ
 
 ### Operations & Execution Flow
 
-#### Execution Path
+#### Execution Path (Memo_v2)
 
-1. Intent classifier or orchestrator chooses `database` as the agent.
-2. `DatabaseAgent` calls `executeWithAI` with:
-   - `systemPrompt = SystemPrompts.getDatabaseAgentPrompt()`.
-   - `functions = [taskOperations, listOperations]` from `DatabaseFunctions`.
-3. LLM chooses one of these tools and fills arguments.
-4. `DatabaseFunctions.execute`:
-   - Validates required parameters.
-   - Applies helper logic (e.g., `reminderRecurrence` normalization).
-   - **Deletes immediately without confirmation**.
-   - Calls the appropriate DB service.
-5. The service performs SQL operations via `BaseService` and returns `IResponse`.
-6. Database agent performs a second LLM pass (where appropriate) to produce user-facing text (Heb/En).
+1. **PlannerNode** emits a `PlanStep` with `capability: 'database'` and an action hint (e.g. `list_tasks`, `create_list`).
+2. **ResolverRouterNode** selects **`DatabaseTaskResolver`** or **`DatabaseListResolver`** via `ResolverSchema` / `selectResolver()`.
+3. The resolver LLM returns semantic args → **`resolverResults`**.
+4. **EntityResolutionNode** resolves text to IDs when needed → **`executorArgs`** (or disambiguation HITL).
+5. **ExecutorNode** calls **`TaskServiceAdapter(userPhone, userTimezone)`** / **`ListServiceAdapter(userPhone)`** (same underlying services as V1). `userTimezone` is the user profile IANA zone (`state.user.timezone`); the task adapter injects it into `reminderRecurrence.timezone` when the resolver omitted it, so recurring/nudge math and `ReminderService` match calendar behavior.
+6. **ResponseFormatterNode** / **ResponseWriterNode** produce the user-facing message.
+
+---
+
+### Timezone and timestamps (tasks / reminders)
+
+- **User time** comes from the profile / graph (`ContextAssemblyNode` → `user.timezone`), not the server host clock.
+- **Calendar** normalizes datetimes with the same `userTimezone` helpers (`normalizeToISOWithOffset`, day bounds).
+- **Tasks**: `TaskService` / `ReminderService` use `reminder_recurrence.timezone` (defaulting to `Asia/Jerusalem` only if absent). The adapter fills `timezone` from the user profile when missing so non–Jerusalem users get correct `next_reminder_at`.
+- **Storage**: local wall times are resolved to **UTC ISO (`Z`)** in `Memo_v2/src/utils/userTimezone.ts` for Postgres-safe `timestamptz` values.
+
+### Nudge / “every X minutes” (planner HITL)
+
+- If the user asks only for **repeated nudges** (every X minutes/hours) with **no** stated start (“from 5pm”, “starting tomorrow”), the planner should **not** set `reminder_time_required`; the resolver uses `reminderRecurrence.type: 'nudge'` and may omit `dueDate` (first fire = now + interval in user TZ).
+
+---
+
+### Date and weekday resolution (CRITICAL — same rules as calendar resolver)
+
+The database resolver receives **"[Current time: Weekday, YYYY-MM-DD HH:mm, Timezone: ...]"** in the user message. Use it to set `dueDate` correctly.
+
+- **Weekday name → exact date**: When the user says a weekday (e.g. ביום רביעי, on Wednesday), the **next** occurrence of that weekday from today is the target date. Example: today Monday 2026-03-16 → "ביום רביעי" = **2026-03-18** (not tomorrow 2026-03-17).
+- **"This [weekday]" vs "Next [weekday]"**: "Next Monday" / "יום שני הבא" = Monday of **next week**. "This Wednesday" / "ביום רביעי הזה" = next Wednesday from today.
+- **"X weeks from now" + weekday**: "Sunday two weeks from now" = the second upcoming Sunday from today. Count forward by 7 days per week.
+
+See `agents-calendar.md` for the full date/weekday resolution rules (calendar and database resolvers share the same logic).
+
+#### Time-of-day descriptors (morning / afternoon / evening / night)
+
+When the user gives a **day + time-of-day** for a reminder without a specific hour (e.g. "remind me tomorrow morning", "תזכיר לי מחר בערב"), the planner does **not** trigger HITL. The database resolver must set `dueDate` to a **concrete time** within that period:
+
+| Descriptor (EN) | Hebrew  | Hour range  | Default hour for dueDate |
+|-----------------|---------|-------------|---------------------------|
+| morning         | בוקר   | 08:00–11:00 | 09:00                     |
+| afternoon       | צהריים | 12:00–17:00 | 14:00                     |
+| evening         | ערב    | 17:00–21:00 | 18:00                     |
+| night           | לילה   | 20:00–23:00 | 21:00                     |
+
+- **Examples:** "remind me tomorrow morning to call" → `dueDate` = tomorrow 09:00. "תזכיר לי ביום רביעי בערב" → Wednesday 18:00.
 
 ---
 
@@ -121,6 +157,10 @@ It talks to `TaskService`, `ListService`, `UserDataService`, and `OnboardingServ
   - Optional: `until` ISO date; `timezone`.
   - `ReminderService` and `SchedulerService` interpret these to compute next runs.
 
+- **Proactive WhatsApp reminders (`ReminderService.sendUpcomingReminders`)**
+  - One-time and recurring due rows are **merged**, then grouped by **user + local calendar hour** (from `next_reminder_at` / `due_date`). The user gets **one message per group**, not separate sends per reminder type.
+  - Multi-item payloads start with **`DONNA_DB_REMINDER_BATCH`** so `SystemPrompts.getMessageEnhancementPrompt()` formats them as **task reminders** (Type C), not the morning-brief / calendar layout.
+
 - **Bulk operations**
 
   - **`deleteAll`**: Delete all tasks matching a filter
@@ -140,8 +180,8 @@ It talks to `TaskService`, `ListService`, `UserDataService`, and `OnboardingServ
     - Response: "✅ עודכנו X משימות"
 
   - **`updateAll`**: Update all tasks matching a filter
-    - `where.window`: Filter same as deleteAll
-    - `patch`: Object with fields to update (`dueDate`, `category`, `completed`, etc.)
+    - `where.window`: Same time-bucket model as deleteAll (`today`, `this_week`, `overdue`, `upcoming`, `all`, and **`"null"`** — string — for tasks with **no `due_date`** / `due_date IS NULL`).
+    - `patch`: Object with fields to update (`dueDate`, `reminder`, `category`, `completed`, etc.). For “remind me about unplanned tasks at 5:30 PM”, use `where: { window: "null" }` + `patch`, not `create` with bucket text.
     - Example: Move all overdue tasks to tomorrow
     - Response: "✅ עודכנו X משימות"
 

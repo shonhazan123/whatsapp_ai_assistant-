@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git.exe log:*)",
+      "Bash(grep -E \"\\\\.ts$\")",
+      "Bash(grep -n \"callLLM\\\\|callLLMJSON\" /c/Users/shonh/OneDrive/Desktop/Projects/whatsapp_ai_assistant-/Memo_v2/src/services/responseWriters/*.ts)",
+      "Bash(grep:*)"
+    ]
+  }
+}
