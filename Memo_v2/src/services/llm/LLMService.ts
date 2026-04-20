@@ -58,8 +58,12 @@ export interface LLMUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  /** Some API responses expose cache hits here instead of details */
+  cached_tokens?: number;
+  prompt_tokens_cached?: number;
   prompt_tokens_details?: {
     cached_tokens?: number;
+    cache_creation_tokens?: number;
   };
 }
 
@@ -129,6 +133,9 @@ export async function callLLM(
 
     const message = choice.message;
     const usage: LLMUsage | undefined = (response as any).usage;
+    if (usage && process.env.DEBUG_LLM_USAGE === 'true') {
+      console.log('[LLMService] Raw usage:', JSON.stringify(usage));
+    }
 
     // Handle function calls (old format)
     if (message.function_call) {

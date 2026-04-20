@@ -202,20 +202,36 @@ Every LLM call in the graph is traced via `traceLlmReasoningLog` / `traceLlmReas
 
 - `node`: caller-provided name (e.g. `"planner"`, `"resolver:calendar"`, `"hitl:clarify"`, `"response_writer:database"`, `"conversation_summarizer"`)
 - `model`, token counts (`inputTokens`, `cachedInputTokens`, `outputTokens`, `totalTokens`), `latencyMs`, `cost`
-- `input`: full messages array sent to the LLM
-- `output`: full raw LLM response content
+- `input`: messages persisted for debugging — **system role messages are omitted** (case-insensitive match on `role`) so large static prompts are not stored in `pipeline_traces`.
+- `output`: assistant text when present; for **function/tool calls** (resolvers, etc.) a JSON string with `type: "function_call"` or `type: "tool_calls"` and the `name` / `arguments` payload (see `traceOutputFromLlmResponse` in `traceLlmReasoningLog.ts`)
+- `countInAggregates`: optional; when `false`, the step is **not** counted toward `total_llm_calls` / token / cost aggregates in `computeAggregates` (used for synthetic debug rows only).
+
+**Reply-context trace window (no extra DB columns):** `ReplyContextNode` appends one synthetic `LLMStep` with `node: "reply_context"`, `model: "debug"`, `countInAggregates: false`, and a **human-readable text block** in `input[0].content`. The block is formatted with titled sections so the DB/debug page shows one clean context window:
+- `## Last User Message`
+- `## Enhanced User Message` (when present)
+- `## Conversation Summary` (when present)
+- `## Recent Messages Meta`
+- `## Recent Messages Array`
+- `## Last Executions`
+
+This row is for debugging only, uses the same `pipeline_traces.llm_steps` JSON column as real LLM calls, and omits secrets (no OAuth tokens, no `authContext`).
 
 `llmSteps` accumulates across the graph via a **reducer** (`[...existing, ...incoming]`). Every node that makes LLM calls returns `llmSteps: [step]` in its state update:
 
 | Node | Trace names |
 |---|---|
+| ReplyContextNode | `reply_context` (synthetic human-readable context window — not an LLM) |
 | PlannerNode | `planner` |
 | ResolverRouterNode (drains from LLMResolver) | `resolver:<capability>` |
 | HITLGateNode | `hitl:clarify`, `hitl:confirm`, `hitl:interpret`, `hitl:disambiguate` |
 | ResponseWriterNode | `response_writer:<capability>`, `response_writer:error_explain` |
 | MemoryUpdateNode (via summarizer) | `conversation_summarizer` |
 
-After graph completion (both normal and interrupt paths), `invokeMemoGraph` calls `PipelineTraceService.flush(state)` fire-and-forget, which persists the trace to the `pipeline_traces` table. Completion is logged as structured JSON (`PIPELINE_COMPLETE` event) with elapsed time, LLM step count, node count, total tokens, and total cost.
+**Pre-graph LLM steps:** Audio flows call `transcribeAudio()` before `invokeMemoGraph`. The resulting `LLMStep` (`node: transcription`) is passed via `invokeMemoGraph(..., { preGraphLlmSteps: [...] })` and merged into initial `state.llmSteps`, so the same `PipelineTraceService.flush` row includes transcription latency (token counts may be zero; audio API is not token-metered like chat).
+
+**Image-only path:** `processImageMessage` does not run the graph. When a vision API call runs, `PipelineTraceService.flushMinimal` writes a standalone `pipeline_traces` row (`trigger_type: image`) with one `image-analysis` step.
+
+After graph completion (both normal and interrupt paths), `invokeMemoGraph` calls `PipelineTraceService.flush(state)` fire-and-forget, which persists the trace to the `pipeline_traces` table. Completion is logged as structured JSON (`PIPELINE_COMPLETE` event) with elapsed time, **`llmSteps`** = count of steps that count toward aggregates (real LLM calls), **`llmStepsTotal`** = full `state.llmSteps.length` (includes the synthetic `reply_context` row), node count, total tokens, and total cost.
 
 ### Metadata accumulation contract
 

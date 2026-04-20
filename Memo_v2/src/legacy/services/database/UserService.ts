@@ -47,6 +47,11 @@ export interface UpsertGoogleTokenPayload {
   tokenType?: string | null;
 }
 
+export interface UserAndGoogleTokensResult {
+  user: UserRecord;
+  googleTokens: UserGoogleToken | null;
+}
+
 export class UserService extends BaseService {
   constructor(loggerInstance: any = defaultLogger) {
     super(loggerInstance);
@@ -74,6 +79,82 @@ export class UserService extends BaseService {
     );
 
     return row ? this.mapUser(row) : null;
+  }
+
+  async getUserAndGoogleTokensByPhone(
+    whatsappNumber: string,
+    provider: string = 'google'
+  ): Promise<UserAndGoogleTokensResult | null> {
+    const row = await this.executeSingleQuery<any>(
+      `SELECT
+         u.id AS user_id,
+         u.whatsapp_number,
+         u.plan_type,
+         u.timezone,
+         u.settings,
+         u.google_email,
+         u.onboarding_complete,
+         u.onboarding_last_prompt_at,
+         u.morning_brief_time,
+         u.created_at AS user_created_at,
+         u.updated_at AS user_updated_at,
+         u.subscription_status,
+         u.subscription_period_end,
+         u.cancel_at_period_end,
+         t.id AS token_id,
+         t.user_id AS token_user_id,
+         t.provider AS token_provider,
+         t.access_token,
+         t.refresh_token,
+         t.expires_at,
+         t.scope,
+         t.token_type,
+         t.created_at AS token_created_at,
+         t.updated_at AS token_updated_at
+       FROM users u
+       LEFT JOIN user_google_tokens t
+         ON t.user_id = u.id AND t.provider = $2
+       WHERE u.whatsapp_number = $1`,
+      [whatsappNumber, provider]
+    );
+
+    if (!row) {
+      return null;
+    }
+
+    const user: UserRecord = this.mapUser({
+      id: row.user_id,
+      whatsapp_number: row.whatsapp_number,
+      plan_type: row.plan_type,
+      timezone: row.timezone,
+      settings: row.settings,
+      google_email: row.google_email,
+      onboarding_complete: row.onboarding_complete,
+      onboarding_last_prompt_at: row.onboarding_last_prompt_at,
+      morning_brief_time: row.morning_brief_time,
+      created_at: row.user_created_at,
+      updated_at: row.user_updated_at,
+      subscription_status: row.subscription_status,
+      subscription_period_end: row.subscription_period_end,
+      cancel_at_period_end: row.cancel_at_period_end,
+    });
+
+    const googleTokens: UserGoogleToken | null = row.token_id
+      ? {
+          id: row.token_id,
+          user_id: row.token_user_id,
+          provider: row.token_provider,
+          access_token: row.access_token,
+          refresh_token: row.refresh_token,
+          expires_at: row.expires_at,
+          scope: row.scope ?? null,
+          token_type: row.token_type,
+          created_at: row.token_created_at,
+          updated_at: row.token_updated_at,
+        }
+      : null;
+
+    return { user, googleTokens };
   }
 
   async findOrCreateByWhatsappNumber(whatsappNumber: string): Promise<UserRecord> {

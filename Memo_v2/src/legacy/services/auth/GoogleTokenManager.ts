@@ -8,7 +8,7 @@ const GOOGLE_REDIRECT_URI =
   process.env.GOOGLE_REDIRECT_URI ||
   (process.env.APP_PUBLIC_URL ? `${process.env.APP_PUBLIC_URL.replace(/\/$/, '')}/auth/google/callback` : undefined);
 
-const TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000; // 5 minutes
+const TOKEN_REFRESH_BUFFER_MS = 72 * 60 * 60 * 1000; // 72 hours
 
 export interface TokenCheckResult {
   tokens: UserGoogleToken | null;

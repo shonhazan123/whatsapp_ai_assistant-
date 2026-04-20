@@ -35,9 +35,10 @@ import { HITL_TTL_MS } from "../types/hitl.js";
 // ============================================================================
 import { initializeServices } from "../services/v1-services.js";
 import { PipelineTraceService } from "../services/trace/PipelineTraceService.js";
+import { isLlmStepCountedInAggregates } from "../services/trace/traceHelpers.js";
 import { sendTypingIndicator } from "../services/whatsapp.js";
 import type { InterruptPayload, TriggerInput } from "../types/index.js";
-import type { MemoState } from "./state/MemoState.js";
+import type { LLMStep, MemoState } from "./state/MemoState.js";
 import { createInitialState, MemoStateAnnotation } from "./state/MemoState.js";
 initializeServices();
 
@@ -289,14 +290,19 @@ export async function hasPendingInterrupt(threadId: string): Promise<boolean> {
  * @param options - Additional options
  * @returns InvokeResult with response and interrupt status
  */
+/** Options for invokeMemoGraph / invokeMemoGraphSimple */
+export type InvokeMemoGraphOptions = {
+	whatsappMessageId?: string;
+	replyToMessageId?: string;
+	triggerType?: "user" | "cron" | "nudge" | "event";
+	/** LLM calls that ran before the graph (e.g. audio transcription) — merged into trace flush */
+	preGraphLlmSteps?: LLMStep[];
+};
+
 export async function invokeMemoGraph(
 	userPhone: string,
 	message: string,
-	options: {
-		whatsappMessageId?: string;
-		replyToMessageId?: string;
-		triggerType?: "user" | "cron" | "nudge" | "event";
-	} = {},
+	options: InvokeMemoGraphOptions = {},
 ): Promise<InvokeResult> {
 	const threadId = userPhone;
 	const config = { configurable: { thread_id: threadId } };
@@ -384,6 +390,10 @@ export async function invokeMemoGraph(
 		const graph = buildMemoGraph(input);
 
 		// Execute graph with initial state
+		const preSteps = options.preGraphLlmSteps?.length
+			? [...options.preGraphLlmSteps]
+			: [];
+
 		const initialState = createInitialState({
 			user: {
 				phone: userPhone,
@@ -407,6 +417,7 @@ export async function invokeMemoGraph(
 				timezone: "Asia/Jerusalem",
 				language: "he",
 			},
+			llmSteps: preSteps,
 		});
 
 		result = (await graph.invoke(initialState, config)) as typeof result;
@@ -446,13 +457,15 @@ export async function invokeMemoGraph(
 	// Normal completion
 	const elapsed = Date.now() - result.metadata.startTime;
 	const steps = result.llmSteps ?? [];
-	const totalCost = steps.reduce((s, st) => s + st.cost, 0);
-	const totalTokens = steps.reduce((s, st) => s + st.totalTokens, 0);
+	const countedSteps = steps.filter(isLlmStepCountedInAggregates);
+	const totalCost = countedSteps.reduce((s, st) => s + st.cost, 0);
+	const totalTokens = countedSteps.reduce((s, st) => s + st.totalTokens, 0);
 	console.log(JSON.stringify({
 		event: "PIPELINE_COMPLETE",
 		threadId,
 		elapsedMs: elapsed,
-		llmSteps: steps.length,
+		llmSteps: countedSteps.length,
+		llmStepsTotal: steps.length,
 		nodeCount: result.metadata.nodeExecutions.length,
 		totalTokens,
 		totalCost: +totalCost.toFixed(6),
@@ -485,11 +498,7 @@ export async function invokeMemoGraph(
 export async function invokeMemoGraphSimple(
 	userPhone: string,
 	message: string,
-	options: {
-		whatsappMessageId?: string;
-		replyToMessageId?: string;
-		triggerType?: "user" | "cron" | "nudge" | "event";
-	} = {},
+	options: InvokeMemoGraphOptions = {},
 ): Promise<string> {
 	const result = await invokeMemoGraph(userPhone, message, options);
 	return result.response;
@@ -497,6 +506,6 @@ export async function invokeMemoGraphSimple(
 
 // Export types and state
 export { createInitialState, MemoStateAnnotation } from "./state/MemoState.js";
-export type { ExecutionMetadata, MemoState } from "./state/MemoState.js";
+export type { ExecutionMetadata, LLMStep, MemoState } from "./state/MemoState.js";
 export { checkpointer };
 

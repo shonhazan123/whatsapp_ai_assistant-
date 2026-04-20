@@ -3,15 +3,41 @@
  * Analyzes images using GPT-4 Vision and returns structured data (copied from V1 OpenAIService.analyzeImage)
  */
 
+import { getNodeModel, getOpenAI } from "../../config/llm-config.js";
 import { getImageAnalysisLanguageMessage, getImageAnalysisPrompt, type ImageResponseLanguage } from "../../config/image-analysis-prompt.js";
-import { getOpenAI } from "../../config/llm-config.js";
+import type { LLMStep } from "../../graph/state/MemoState.js";
 import type { ImageAnalysisResult } from "../../types/imageAnalysis.js";
+import type { LLMUsage } from "../llm/LLMService.js";
 import { logger } from "../../utils/logger.js";
+import { buildLLMStep, extractTokenUsage } from "../trace/traceHelpers.js";
 import { ImageAnalysisHelper } from "./ImageAnalysisHelper.js";
 import { ImageCache } from "./ImageCache.js";
 import { ImageProcessor } from "./ImageProcessor.js";
 
 const imageCache = ImageCache.getInstance();
+
+export interface AnalyzeImageServiceResult {
+	analysis: ImageAnalysisResult;
+	/** Present when an OpenAI vision call was made (not for cache-only or validation-only paths) */
+	llmStep: LLMStep | null;
+}
+
+function buildImageAnalysisLlmStep(params: {
+	latencyMs: number;
+	completion: { usage?: LLMUsage };
+	outputText: string;
+}): LLMStep {
+	const model = getNodeModel("imageAnalysis").model;
+	const tokens = extractTokenUsage(params.completion.usage);
+	return buildLLMStep(
+		"image-analysis",
+		model,
+		tokens,
+		params.latencyMs,
+		[{ role: "user", content: "[image analysis request]" }],
+		params.outputText,
+	);
+}
 
 /**
  * @param userLanguage - User's preferred response language ('he' | 'en' | 'other'). Response (formattedMessage) will be in this language.
@@ -20,24 +46,27 @@ export async function analyzeImage(
 	imageBuffer: Buffer,
 	userCaption?: string,
 	userLanguage?: ImageResponseLanguage,
-): Promise<ImageAnalysisResult> {
+): Promise<AnalyzeImageServiceResult> {
 	try {
 		logger.info("🔍 Starting image analysis...", { userLanguage });
 
 		const cachedResult = imageCache.get(imageBuffer, userLanguage);
 		if (cachedResult) {
 			logger.info("✅ Using cached image analysis result");
-			return cachedResult;
+			return { analysis: cachedResult, llmStep: null };
 		}
 
 		const validation = ImageProcessor.validateImage(imageBuffer);
 		if (!validation.valid) {
 			logger.error(`Image validation failed: ${validation.error}`);
 			return {
-				imageType: "random",
-				description: validation.error || "Invalid image",
-				confidence: "low",
-				formattedMessage: `Sorry, I couldn't process your image. ${validation.error || "The image format is not supported or the image is corrupted."}`,
+				analysis: {
+					imageType: "random",
+					description: validation.error || "Invalid image",
+					confidence: "low",
+					formattedMessage: `Sorry, I couldn't process your image. ${validation.error || "The image format is not supported or the image is corrupted."}`,
+				},
+				llmStep: null,
 			};
 		}
 
@@ -55,11 +84,14 @@ export async function analyzeImage(
 			} catch (compressionError) {
 				logger.error("Image compression failed:", compressionError);
 				return {
-					imageType: "random",
-					description: "Image is too large to process",
-					confidence: "low",
-					formattedMessage:
-						"Sorry, your image is too large to process. Please send a smaller image (under 4MB).",
+					analysis: {
+						imageType: "random",
+						description: "Image is too large to process",
+						confidence: "low",
+						formattedMessage:
+							"Sorry, your image is too large to process. Please send a smaller image (under 4MB).",
+					},
+					llmStep: null,
 				};
 			}
 		}
@@ -67,7 +99,6 @@ export async function analyzeImage(
 		const mimeType = ImageProcessor.getMimeType(validation.format || "jpeg");
 		const base64Image = processedBuffer.toString("base64");
 
-		// System prompt is static (cacheable). Language is passed only in the user message.
 		const systemPrompt = getImageAnalysisPrompt();
 		const languageMessage = getImageAnalysisLanguageMessage(userLanguage);
 		const taskText = userCaption
@@ -79,6 +110,7 @@ export async function analyzeImage(
 		let completion: any;
 		let retries = 2;
 		let lastError: any;
+		let apiLatencyMs = 0;
 
 		for (let attempt = 0; attempt <= retries; attempt++) {
 			try {
@@ -86,9 +118,10 @@ export async function analyzeImage(
 					setTimeout(() => reject(new Error("Request timeout")), 60000);
 				});
 
+				const apiStart = Date.now();
 				completion = (await Promise.race([
 					openai.chat.completions.create({
-						model: "gpt-4o",
+						model: getNodeModel("imageAnalysis").model,
 						messages: [
 							{ role: "system", content: systemPrompt },
 							{
@@ -112,6 +145,7 @@ export async function analyzeImage(
 					}),
 					timeoutPromise,
 				])) as any;
+				apiLatencyMs = Date.now() - apiStart;
 
 				break;
 			} catch (apiError: any) {
@@ -155,7 +189,15 @@ export async function analyzeImage(
 		const responseContent = completion.choices[0]?.message?.content?.trim();
 		if (!responseContent) {
 			logger.warn("Image analysis returned empty content");
-			return ImageAnalysisHelper.getDefaultImageAnalysisResult();
+			const defaultAnalysis = ImageAnalysisHelper.getDefaultImageAnalysisResult();
+			return {
+				analysis: defaultAnalysis,
+				llmStep: buildImageAnalysisLlmStep({
+					latencyMs: apiLatencyMs,
+					completion,
+					outputText: "",
+				}),
+			};
 		}
 
 		let analysisResult: ImageAnalysisResult;
@@ -173,11 +215,18 @@ export async function analyzeImage(
 					"Could not extract JSON from image analysis, using description fallback",
 				);
 				return {
-					imageType: "random",
-					description: responseContent,
-					confidence: "low",
-					language: ImageAnalysisHelper.detectLanguageFromText(responseContent),
-					formattedMessage: `I analyzed your image: ${responseContent}\n\nIs there anything you'd like me to help you with?`,
+					analysis: {
+						imageType: "random",
+						description: responseContent,
+						confidence: "low",
+						language: ImageAnalysisHelper.detectLanguageFromText(responseContent),
+						formattedMessage: `I analyzed your image: ${responseContent}\n\nIs there anything you'd like me to help you with?`,
+					},
+					llmStep: buildImageAnalysisLlmStep({
+						latencyMs: apiLatencyMs,
+						completion,
+						outputText: responseContent,
+					}),
 				};
 			}
 		}
@@ -193,7 +242,14 @@ export async function analyzeImage(
 		logger.info(
 			`✅ Image analysis complete: ${analysisResult.imageType} (confidence: ${analysisResult.confidence})`,
 		);
-		return analysisResult;
+		return {
+			analysis: analysisResult,
+			llmStep: buildImageAnalysisLlmStep({
+				latencyMs: apiLatencyMs,
+				completion,
+				outputText: responseContent,
+			}),
+		};
 	} catch (error: any) {
 		logger.error("Error analyzing image:", error);
 		let errorMessage = "Sorry, I encountered an error analyzing your image.";
@@ -214,10 +270,13 @@ export async function analyzeImage(
 				"I couldn't process this image format. Please send a JPEG, PNG, or WebP image.";
 		}
 		return {
-			imageType: "random",
-			description: error.message || "Error analyzing image",
-			confidence: "low",
-			formattedMessage: `${errorMessage} You can also describe what you see and I'll help you with it.`,
+			analysis: {
+				imageType: "random",
+				description: error.message || "Error analyzing image",
+				confidence: "low",
+				formattedMessage: `${errorMessage} You can also describe what you see and I'll help you with it.`,
+			},
+			llmStep: null,
 		};
 	}
 }

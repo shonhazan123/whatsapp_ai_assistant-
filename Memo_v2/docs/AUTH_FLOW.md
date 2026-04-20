@@ -101,8 +101,7 @@ interface AuthContext {
 ### Data Flow
 
 1. **ContextAssemblyNode** (first node):
-   - Fetches user record via `UserService.findByWhatsappNumber()` (1 DB call)
-   - Fetches Google tokens via `UserService.getGoogleTokens()` (1 DB call)
+   - Fetches user record + Google tokens via `UserService.getUserAndGoogleTokensByPhone()` (1 DB call with join)
    - Refreshes tokens via `GoogleTokenManager.ensureFreshTokens()` (if needed)
    - Stores everything in `state.authContext`
    - Derives lightweight `state.user` (UserContext) for prompts/planner (includes optional `userName` from `users.settings.user_name`; used by ResponseWriterNode and morning digest)
@@ -114,7 +113,13 @@ interface AuthContext {
    - Build `RequestUserContext` from `AuthContext` (zero DB calls)
    - V1 services receive the same `RequestUserContext` they expect
 
-**Total: 2 DB calls per request (down from 6).**
+**Total: 1 DB call per request for auth hydration (down from 6 across old flow).**
+
+### Token Refresh Window
+
+- `GoogleTokenManager` refreshes proactively when token expiry is within the buffer window.
+- Current `TOKEN_REFRESH_BUFFER_MS` is set to **72 hours**.
+- This means a refresh can happen up to 72 hours before token expiry (or earlier if expiry is missing / force refresh is requested).
 
 ## Integration Points
 

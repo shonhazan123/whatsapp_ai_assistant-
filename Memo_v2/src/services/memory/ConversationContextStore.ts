@@ -102,8 +102,15 @@ export class ConversationContextStore {
    *
    * TODO — Redis persistence: atomic SET.
    */
-  applySummarizationResult(userId: string, summary: string, keptMessages: ConversationMessage[]): void {
-    this.setInternal(userId, { summary, recentMessages: [...keptMessages] });
+  applySummarizationResult(
+    userId: string,
+    summary: string,
+    keptMessages: ConversationMessage[]
+  ): void {
+    this.setInternal(userId, {
+      summary,
+      recentMessages: [...keptMessages],
+    });
   }
 
   /** Test / admin: clear one user. TODO — Redis: DEL key. */

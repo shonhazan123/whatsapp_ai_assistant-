@@ -21,6 +21,37 @@ import {
 } from '../llm/LLMService.js';
 import { buildLLMStep, extractTokenUsage } from './traceHelpers.js';
 
+/**
+ * Text content for pipeline trace `llm_steps[].output`.
+ * Function/tool responses have `content: null` in LLMResponse but still need a persisted output.
+ */
+export function traceOutputFromLlmResponse(response: LLMResponse): string {
+  if (response.content != null && response.content !== '') {
+    return response.content;
+  }
+
+  if (response.functionCall) {
+    return JSON.stringify({
+      type: 'function_call',
+      name: response.functionCall.name,
+      arguments: response.functionCall.arguments,
+    });
+  }
+
+  if (response.toolCalls && response.toolCalls.length > 0) {
+    return JSON.stringify({
+      type: 'tool_calls',
+      calls: response.toolCalls.map(tc => ({
+        id: tc.id,
+        name: tc.function.name,
+        arguments: tc.function.arguments,
+      })),
+    });
+  }
+
+  return '';
+}
+
 // ============================================================================
 // RETURN TYPES
 // ============================================================================
@@ -57,7 +88,7 @@ export async function traceLlmReasoningLog(
     tokens,
     latencyMs,
     request.messages,
-    response.content,
+    traceOutputFromLlmResponse(response),
   );
 
   return { response, llmStep };

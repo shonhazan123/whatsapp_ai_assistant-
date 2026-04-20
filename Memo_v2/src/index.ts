@@ -25,6 +25,7 @@ export {
     hasPendingInterrupt,
     invokeMemoGraph,
     invokeMemoGraphSimple,
+    type InvokeMemoGraphOptions,
     type InvokeResult
 } from "./graph/index.js";
 
