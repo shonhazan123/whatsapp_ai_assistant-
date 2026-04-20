@@ -41,6 +41,8 @@ flowchart TD
     memoryUpdate --> webhook
 ```
 
+**Tracing:** `ReplyContextNode` appends a synthetic `LLMStep` (`countInAggregates: false`) with `node` set to **`reply_context`**. Its `input[0].content` is a human-readable context window containing the user-facing context that is available before the planner runs (recent messages, summary, latest executions, enhanced/current user message). Real LLM rows still come from planner/resolvers/writers/summarizer.
+
 ## 2) HITL control-plane (pendingHITL contract)
 
 `HITLGateNode` is the single HITL control-plane. It manages one `pendingHITL` at a time and routes via `Command({ update, goto })`.

@@ -46,6 +46,11 @@ export interface LLMStep {
   input: Array<{ role: string; content: string }>;
   /** Full raw LLM response content (for debugging what came back) */
   output: string;
+  /**
+   * When false, this step is excluded from trace aggregates (tokens, cost, LLM call count).
+   * Used for synthetic debug rows (e.g. the human-readable context window on `reply_context`).
+   */
+  countInAggregates?: boolean;
 }
 
 // ============================================================================

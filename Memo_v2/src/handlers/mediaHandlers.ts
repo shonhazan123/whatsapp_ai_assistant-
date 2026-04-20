@@ -3,9 +3,11 @@
  * All memory is stored in Memo V2 (no V1 dependency).
  */
 
+import { randomUUID } from "crypto";
 import { invokeMemoGraph, type InvokeResult } from "../graph/index.js";
 import { analyzeImage } from "../services/image/ImageAnalysisService.js";
 import { getMemoryService } from "../services/memory/index.js";
+import { PipelineTraceService } from "../services/trace/PipelineTraceService.js";
 import { transcribeAudio } from "../services/transcription.js";
 import { detectUserResponseLanguage } from "../utils/languageDetection.js";
 
@@ -41,7 +43,11 @@ export async function processImageMessage(
 ): Promise<string> {
 	const textForLang = getTextForImageLanguage(userPhone, caption || "");
 	const userLanguage = detectUserResponseLanguage(textForLang, { defaultWhenEmpty: "he" });
-	const analysisResult = await analyzeImage(imageBuffer, caption || undefined, userLanguage);
+	const { analysis: analysisResult, llmStep } = await analyzeImage(
+		imageBuffer,
+		caption || undefined,
+		userLanguage,
+	);
 	const responseMessage =
 		analysisResult.formattedMessage ||
 		"I analyzed your image. Is there anything you'd like me to help you with?";
@@ -57,6 +63,30 @@ export async function processImageMessage(
 	});
 	getMemoryService().addAssistantMessage(userPhone, responseMessage);
 
+	if (llmStep) {
+		const traceId = randomUUID();
+		PipelineTraceService.flushMinimal({
+			traceId,
+			threadId: userPhone,
+			userPhone,
+			userMessage: caption?.trim() ? caption : "[Image]",
+			triggerType: "image",
+			llmSteps: [llmStep],
+			finalResponse: responseMessage,
+			completed: true,
+			interrupted: false,
+			error: null,
+		}).catch((e) =>
+			console.error(
+				JSON.stringify({
+					event: "TRACE_FLUSH_FAILED",
+					path: "image",
+					error: String(e),
+				}),
+			),
+		);
+	}
+
 	return responseMessage;
 }
 
@@ -68,11 +98,11 @@ export async function invokeMemoGraphFromAudio(
 	audioBuffer: Buffer,
 	whatsappMessageId: string,
 ): Promise<InvokeResult> {
-	const transcribedText = await transcribeAudio(audioBuffer);
-	console.log("transcribedText", transcribedText);
+	const { text: transcribedText, llmStep } = await transcribeAudio(audioBuffer);
 	return invokeMemoGraph(userPhone, transcribedText, {
 		whatsappMessageId,
 		triggerType: "user",
+		preGraphLlmSteps: [llmStep],
 	});
 }
 

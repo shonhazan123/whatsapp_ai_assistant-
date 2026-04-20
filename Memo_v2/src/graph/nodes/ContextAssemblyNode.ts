@@ -102,10 +102,11 @@ export class ContextAssemblyNode extends CodeNode {
         return this.getDefaultAuthContext(phone);
       }
 
-      const userRecord = await userService.findByWhatsappNumber(phone);
-      if (!userRecord) {
+      const userAndTokens = await userService.getUserAndGoogleTokensByPhone(phone);
+      if (!userAndTokens) {
         return this.getDefaultAuthContext(phone);
       }
+      const userRecord = userAndTokens.user;
 
       // Fetch Google tokens (separate table)
       let googleTokens = null;
@@ -114,7 +115,7 @@ export class ContextAssemblyNode extends CodeNode {
       let hasGmail = false;
 
       try {
-        const rawTokens = await userService.getGoogleTokens(userRecord.id);
+        const rawTokens = userAndTokens.googleTokens;
 
         if (rawTokens?.access_token && rawTokens?.refresh_token) {
           // Refresh tokens proactively if they are expired / about to expire

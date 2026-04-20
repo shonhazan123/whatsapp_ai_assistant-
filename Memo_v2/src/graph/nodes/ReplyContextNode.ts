@@ -12,6 +12,7 @@
  */
 
 import { CONVERSATION_RAW_MESSAGE_CAP } from '../../services/memory/ConversationContextStore.js';
+import { buildContextWindowSnapshotStep } from '../../services/trace/traceHelpers.js';
 import type { ImageContext } from '../../types/index.js';
 import type { MemoState } from '../state/MemoState.js';
 import { CodeNode } from './BaseNode.js';
@@ -51,13 +52,21 @@ export class ReplyContextNode extends CodeNode {
     if (imageContext) {
       enhancedMessage = this.buildImageContextMessage(imageContext, enhancedMessage);
     }
-    
+
+    const inputPatch = {
+      ...state.input,
+      enhancedMessage,
+      imageContext,
+    };
+
+    const snapshotState: MemoState = {
+      ...state,
+      input: inputPatch,
+    };
+
     return {
-      input: {
-        ...state.input,
-        enhancedMessage,
-        imageContext,
-      },
+      input: inputPatch,
+      llmSteps: [buildContextWindowSnapshotStep(snapshotState)],
     };
   }
   
