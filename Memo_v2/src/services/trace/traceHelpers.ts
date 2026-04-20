@@ -74,7 +74,7 @@ export function buildLLMStep(
     totalTokens: tokens.totalTokens,
     latencyMs,
     cost,
-    input: inputMessages,
+    input: inputMessages.filter(msg => msg.role !== 'system'),
     output: responseContent ?? '',
   };
 }

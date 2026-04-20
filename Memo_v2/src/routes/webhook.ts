@@ -84,6 +84,7 @@ if (ENVIRONMENT === "PRODUCTION") {
 					}
 				}
 			}
+			
 		} catch (error) {
 			logger.error("Error processing webhook:", error);
 			// Don't send status here - already sent 200 above
@@ -104,7 +105,8 @@ export async function handleIncomingMessage(
 	logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
 	try {
-		const rawNumber = message.from;
+		const rawNumber = 
+		message.from;
 		const userPhone = normalizeWhatsAppNumber(rawNumber);
 
 		// Phase 5: Conditional forwarding in PRODUCTION
